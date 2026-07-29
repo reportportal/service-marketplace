@@ -8,13 +8,18 @@ marketplace:
   auth:
     admin:
       username: admin
-      password: admin
+      # bcrypt of "admin" — test profile only; StartupSecurityValidator permits this under "test".
+      password-hash: $2a$10$bbdLQFSI9d1QNOxWBerBceaVlOSl30P8PGK7i7bPG9bQ8jOVQIrja
     jwt:
       secret: test-secret-key-at-least-32-characters-long
       issuer: marketplace.reportportal.io
       ttl-seconds: 3600
 
 spring:
+  profiles:
+    # Marks the suite as a development profile so StartupSecurityValidator permits the
+    # throwaway credentials below.
+    active: test
   main:
     allow-bean-definition-overriding: true
   servlet:

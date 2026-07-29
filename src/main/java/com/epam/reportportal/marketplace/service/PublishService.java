@@ -1,11 +1,13 @@
 package com.epam.reportportal.marketplace.service;
 
 import com.epam.reportportal.marketplace.domain.AssetsJson;
+import com.epam.reportportal.marketplace.domain.AccessTier;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
 import com.epam.reportportal.marketplace.domain.PluginJson;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
 import com.epam.reportportal.marketplace.storage.OptimisticConcurrency;
 import com.epam.reportportal.marketplace.util.JsonStore;
+import com.epam.reportportal.marketplace.util.PluginIdentifiers;
 import com.epam.reportportal.marketplace.util.Sha256Util;
 import com.epam.reportportal.marketplace.util.StoragePaths;
 import com.epam.reportportal.marketplace.web.dto.PublishBundle;
@@ -57,6 +59,11 @@ public class PublishService {
   }
 
   public PublishResponseDto publishVersion(String pluginId, PublishBundle bundle) {
+    if (!PluginIdentifiers.isValidId(pluginId)) {
+      throw new ValidationException(
+          "Invalid plugin id",
+          List.of(new ValidationFieldError("pluginId", PluginIdentifiers.idRequirement())));
+    }
     MarketplaceManifest manifest = manifestExtractor.extract(bundle.jar());
     if (!pluginId.equals(manifest.id())) {
       throw new ValidationException(
@@ -77,8 +84,10 @@ public class PublishService {
   private PublishResponseDto publishVersion(
       String pluginId, PublishBundle bundle, MarketplaceManifest manifest, boolean firstPublish) {
     String version = manifest.version();
-    String jarPath = StoragePaths.jarPath(pluginId, version);
-    if (objectStore.exists(jarPath)) {
+    AccessTier access = manifest.access() != null ? manifest.access() : AccessTier.PUBLIC;
+    String jarPath = StoragePaths.jarPath(pluginId, version, access);
+    if (objectStore.exists(StoragePaths.jarPath(pluginId, version))
+        || objectStore.exists(StoragePaths.premiumJarPath(pluginId, version))) {
       throw new ConflictException("Version already exists: " + version);
     }
 

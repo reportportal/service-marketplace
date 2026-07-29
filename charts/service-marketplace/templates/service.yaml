@@ -4,6 +4,10 @@ metadata:
   name: {{ include "service-marketplace.fullname" . }}
   labels:
     {{- include "service-marketplace.labels" . | nindent 4 }}
+  {{- if .Values.cloudArmor.securityPolicy }}
+  annotations:
+    cloud.google.com/backend-config: '{"default":"{{ include "service-marketplace.fullname" . }}-backend"}'
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   ports:

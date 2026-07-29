@@ -7,6 +7,8 @@ import com.epam.reportportal.marketplace.web.error.ConflictException;
 import com.epam.reportportal.marketplace.web.error.ForbiddenException;
 import com.epam.reportportal.marketplace.web.error.GoneException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
+import com.epam.reportportal.marketplace.web.error.ServiceUnavailableException;
+import com.epam.reportportal.marketplace.web.error.TooManyRequestsException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
 import com.epam.reportportal.marketplace.web.error.ValidationException;
 import java.util.List;
@@ -37,6 +39,12 @@ public class GlobalExceptionHandler {
     return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new ErrorResponseDto(ex.getCode(), ex.getMessage()));
   }
 
+  @ExceptionHandler(TooManyRequestsException.class)
+  ResponseEntity<ErrorResponseDto> tooManyRequests(TooManyRequestsException ex) {
+    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+        .body(new ErrorResponseDto(ex.getCode(), ex.getMessage()));
+  }
+
   @ExceptionHandler(ForbiddenException.class)
   ResponseEntity<?> forbidden(ForbiddenException ex) {
     if (ex.getPayload() != null) {
@@ -54,6 +62,13 @@ public class GlobalExceptionHandler {
   ResponseEntity<ValidationErrorResponseDto> validation(ValidationException ex) {
     return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
         .body(new ValidationErrorResponseDto(ex.getCode(), ex.getMessage(), ex.getErrors()));
+  }
+
+  @ExceptionHandler(ServiceUnavailableException.class)
+  ResponseEntity<ErrorResponseDto> serviceUnavailable(ServiceUnavailableException ex) {
+    LOGGER.warn("Rejected request for a disabled registry capability: {}", ex.getMessage());
+    return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+        .body(new ErrorResponseDto(ex.getCode(), ex.getMessage()));
   }
 
   @ExceptionHandler(ConflictException.class)

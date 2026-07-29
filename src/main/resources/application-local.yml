@@ -1,5 +1,8 @@
 # Local profile: filesystem storage + embedded CDN proxy at /cdn/** (LocalCdnController).
 # CDN_BASE_URL must match the base used in catalogue responses (default below).
+#
+# The credentials here are public knowledge and exist only for developer machines. This profile is
+# not active by default; StartupSecurityValidator rejects these values under any other profile.
 marketplace:
   storage:
     type: local

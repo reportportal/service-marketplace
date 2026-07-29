@@ -15,10 +15,18 @@ spec:
       labels:
         {{- include "service-marketplace.labels" . | nindent 8 }}
     spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: service-marketplace
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: 8080
               name: http
@@ -31,6 +39,8 @@ spec:
               value: {{ .Values.storage.type | quote }}
             - name: GCS_BUCKET
               value: {{ .Values.gcs.bucket | quote }}
+            - name: GCS_PRIVATE_BUCKET
+              value: {{ .Values.gcs.privateBucket | quote }}
             - name: GCS_LOCATION
               value: {{ .Values.gcs.location | quote }}
             - name: CDN_BASE_URL
@@ -72,6 +82,8 @@ spec:
               value: {{ .Values.githubOAuth.allowedTeam | quote }}
             - name: GITHUB_OAUTH_REDIRECT_URI
               value: {{ .Values.githubOAuth.redirectUri | quote }}
+            - name: GITHUB_OAUTH_STATE_TTL_SECONDS
+              value: {{ .Values.githubOAuth.oauthStateTtlSeconds | quote }}
             - name: PUBLISH_OIDC_AUDIENCE
               value: {{ .Values.publishOidcTrust.audience | quote }}
             {{- range $k, $v := .Values.env }}

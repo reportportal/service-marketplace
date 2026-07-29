@@ -9,11 +9,9 @@ data:
     marketplace:
       publish-oidc-trust:
         audience: {{ .Values.publishOidcTrust.audience | quote }}
-        allowed-sources:
 {{- if .Values.publishOidcTrust.allowedSources }}
+        allowed-sources:
 {{- range $repo, $pluginId := .Values.publishOidcTrust.allowedSources }}
           {{ $repo | quote }}: {{ $pluginId | quote }}
 {{- end }}
-{{- else }}
-          {}
 {{- end }}

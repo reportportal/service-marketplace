@@ -43,6 +43,12 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
+// The packaged jar carries no default profile so it fails closed on shipped credentials.
+// Local development opts in here instead.
+tasks.named('bootRun') {
+    systemProperty 'spring.profiles.active', 'local'
+}
+
 tasks.register('genAdminHash', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.epam.reportportal.marketplace.tools.BcryptGen'

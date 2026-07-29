@@ -88,6 +88,7 @@ public class MarketplaceProperties {
 
   public static class Gcs {
     private String bucket;
+    private String privateBucket;
     private String location = "US";
 
     public String getBucket() {
@@ -96,6 +97,14 @@ public class MarketplaceProperties {
 
     public void setBucket(String bucket) {
       this.bucket = bucket;
+    }
+
+    public String getPrivateBucket() {
+      return privateBucket;
+    }
+
+    public void setPrivateBucket(String privateBucket) {
+      this.privateBucket = privateBucket;
     }
 
     public String getLocation() {
@@ -132,6 +141,7 @@ public class MarketplaceProperties {
     private Admin admin = new Admin();
     private Jwt jwt = new Jwt();
     private GitHub github = new GitHub();
+    private LoginRateLimit loginRateLimit = new LoginRateLimit();
 
     public Admin getAdmin() {
       return admin;
@@ -156,12 +166,76 @@ public class MarketplaceProperties {
     public void setGithub(GitHub github) {
       this.github = github;
     }
+
+    public LoginRateLimit getLoginRateLimit() {
+      return loginRateLimit;
+    }
+
+    public void setLoginRateLimit(LoginRateLimit loginRateLimit) {
+      this.loginRateLimit = loginRateLimit;
+    }
+  }
+
+  public static class LoginRateLimit {
+    private boolean enabled = true;
+    private int maxAttempts = 5;
+    private long windowSeconds = 300;
+    private long lockoutSeconds = 60;
+    private double backoffMultiplier = 2.0;
+    private long maxLockoutSeconds = 900;
+
+    public boolean isEnabled() {
+      return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+      this.enabled = enabled;
+    }
+
+    public int getMaxAttempts() {
+      return maxAttempts;
+    }
+
+    public void setMaxAttempts(int maxAttempts) {
+      this.maxAttempts = maxAttempts;
+    }
+
+    public long getWindowSeconds() {
+      return windowSeconds;
+    }
+
+    public void setWindowSeconds(long windowSeconds) {
+      this.windowSeconds = windowSeconds;
+    }
+
+    public long getLockoutSeconds() {
+      return lockoutSeconds;
+    }
+
+    public void setLockoutSeconds(long lockoutSeconds) {
+      this.lockoutSeconds = lockoutSeconds;
+    }
+
+    public double getBackoffMultiplier() {
+      return backoffMultiplier;
+    }
+
+    public void setBackoffMultiplier(double backoffMultiplier) {
+      this.backoffMultiplier = backoffMultiplier;
+    }
+
+    public long getMaxLockoutSeconds() {
+      return maxLockoutSeconds;
+    }
+
+    public void setMaxLockoutSeconds(long maxLockoutSeconds) {
+      this.maxLockoutSeconds = maxLockoutSeconds;
+    }
   }
 
   public static class Admin {
     private String username = "admin";
     private String passwordHash;
-    private String password;
 
     public String getUsername() {
       return username;
@@ -177,14 +251,6 @@ public class MarketplaceProperties {
 
     public void setPasswordHash(String passwordHash) {
       this.passwordHash = passwordHash;
-    }
-
-    public String getPassword() {
-      return password;
-    }
-
-    public void setPassword(String password) {
-      this.password = password;
     }
   }
 
@@ -224,6 +290,7 @@ public class MarketplaceProperties {
     private String allowedOrg = "reportportal";
     private String allowedTeam = "";
     private String redirectUri;
+    private long oauthStateTtlSeconds = 600;
 
     public String getClientId() {
       return clientId;
@@ -263,6 +330,14 @@ public class MarketplaceProperties {
 
     public void setRedirectUri(String redirectUri) {
       this.redirectUri = redirectUri;
+    }
+
+    public long getOauthStateTtlSeconds() {
+      return oauthStateTtlSeconds;
+    }
+
+    public void setOauthStateTtlSeconds(long oauthStateTtlSeconds) {
+      this.oauthStateTtlSeconds = oauthStateTtlSeconds;
     }
   }
 

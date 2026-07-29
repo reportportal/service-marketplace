@@ -93,6 +93,10 @@ paths:
 
         Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
         screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
+
+        Archive limits (rejected with `400 VALIDATION_ERROR`): at most 10 000 entries scanned
+        while locating the manifest, `marketplace-manifest.json` at most 1 MB, and at most
+        256 MB of decompressed data across the scan.
       operationId: publishFirstVersion
       requestBody:
         required: true
@@ -516,7 +520,10 @@ paths:
       summary: Start GitHub OAuth login
       description: |
         Redirects the browser to GitHub for OAuth authorization (ADR-010). Intended for
-        Operator UI browser flows only.
+        Operator UI browser flows only. Issues a signed, short-lived OAuth `state` as an
+        HttpOnly `mp_oauth_state` cookie (default TTL 600s) and the same value in the GitHub
+        authorize URL. Unavailable when GitHub OAuth credentials are not configured — the
+        registry never falls back to a local stand-in identity.
       operationId: githubLogin
       responses:
         '302':
@@ -526,8 +533,14 @@ paths:
               schema:
                 type: string
                 format: uri
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_oauth_state=<jwt>; Path=/api/v1/auth/github; HttpOnly; SameSite=Lax; Max-Age=600
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
       security: []
 
   /api/v1/auth/github/callback:
@@ -536,8 +549,12 @@ paths:
         - Operator — Auth
       summary: GitHub OAuth callback
       description: |
-        OAuth callback handler. On success, verifies GitHub org/team membership and returns
-        a short-lived registry session JWT.
+        OAuth callback handler. Validates that the query `state` matches the `mp_oauth_state`
+        cookie and is a signed, unexpired OAuth-state JWT, then verifies GitHub org membership
+        and — when `GITHUB_OAUTH_ALLOWED_TEAM` is set — active team membership. On success,
+        issues a short-lived registry session JWT as an HttpOnly `mp_operator_session` cookie
+        and redirects the browser to the Operator UI. The JWT is never placed in the Location
+        query string. Unavailable when GitHub OAuth credentials are not configured.
       operationId: githubCallback
       parameters:
         - name: code
@@ -551,21 +568,26 @@ paths:
           schema:
             type: string
       responses:
-        '200':
-          description: Login successful
-          content:
-            application/json:
+        '302':
+          description: Redirect to Operator UI with session cookie set
+          headers:
+            Location:
               schema:
-                $ref: '#/components/schemas/AuthTokenResponse'
-              examples:
-                token:
-                  $ref: '#/components/examples/AuthTokenExample'
+                type: string
+                format: uri
+                example: /operator/
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_operator_session=<jwt>; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
       security: []
 
   /api/v1/auth/login:
@@ -575,7 +597,11 @@ paths:
       summary: Admin credential login
       description: |
         Fallback login with predefined admin username/password (ADR-010). Password is
-        verified against a bcrypt hash configured at deploy time.
+        verified against a bcrypt hash configured at deploy time (`ADMIN_PASSWORD_HASH` only;
+        plaintext password config is not supported). Sets the HttpOnly `mp_operator_session`
+        cookie for browser Operator UI use, and also returns the JWT in the response body for
+        non-browser clients. Per-username lockout returns `429` after repeated failures;
+        IP throttling is expected at the edge (Cloud Armor).
       operationId: adminLogin
       requestBody:
         required: true
@@ -586,12 +612,25 @@ paths:
       responses:
         '200':
           description: Login successful
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_operator_session=<jwt>; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthTokenResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          description: Too many login attempts for this username
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/InternalError'
       security: []
@@ -602,16 +641,22 @@ paths:
         - Operator — Auth
       summary: Log out
       description: |
-        Stateless JWT logout. Clients discard the token locally. No server-side session
-        store exists (ADR-009).
+        Clears the HttpOnly `mp_operator_session` cookie. Non-browser clients that store the
+        JWT themselves should discard it locally. No server-side session store exists (ADR-009).
       operationId: logout
       responses:
         '204':
-          description: Logged out (client-side token discard)
+          description: Logged out; session cookie cleared
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_operator_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0
         '401':
           $ref: '#/components/responses/Unauthorized'
       security:
         - operatorSessionJwt: []
+        - operatorSessionCookie: []
 
   /api/v1/licenses:
     get:
@@ -729,7 +774,18 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Registry operator session token issued on login (ADR-010)
+      description: |
+        Registry operator session token issued on login (ADR-010). Preferred by non-browser
+        clients. Browser Operator UI uses `operatorSessionCookie` instead so the JWT never
+        appears in URLs or JavaScript-accessible storage.
+    operatorSessionCookie:
+      type: apiKey
+      in: cookie
+      name: mp_operator_session
+      description: |
+        HttpOnly session cookie carrying the same JWT as `operatorSessionJwt`. Set by
+        `/api/v1/auth/login` and `/api/v1/auth/github/callback`; cleared by logout.
+        Attributes: `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure` when the request is HTTPS.
     githubOidcJwt:
       type: http
       scheme: bearer
@@ -760,7 +816,8 @@ components:
       name: version
       in: path
       required: true
-      description: Semantic version (semver)
+      description: |
+        Semantic version (semver). Must also be a single storage-key segment (no `/`, `\`, or `..`).
       schema:
         type: string
         pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\w.-]+)?(?:\+[\w.-]+)?$'
@@ -772,6 +829,9 @@ components:
       required: true
       schema:
         type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        minLength: 2
+        maxLength: 64
         example: acme-corp
 
     CategoryQuery:
@@ -880,6 +940,16 @@ components:
             code: INTERNAL_ERROR
             message: Unexpected registry error
 
+    ServiceUnavailable:
+      description: Capability is not configured on this deployment
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: SERVICE_UNAVAILABLE
+            message: GitHub OAuth is not configured
+
   schemas:
     PluginCategory:
       type: string
@@ -956,12 +1026,16 @@ components:
       properties:
         id:
           type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
           example: plugin-jira-cloud
         name:
           type: string
           example: Jira Cloud Integration
         version:
           type: string
+          pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\w.-]+)?(?:\+[\w.-]+)?$'
+          description: |
+            Semantic version. Must also be a single storage-key segment (no `/`, `\`, or `..`).
           example: '1.4.2'
         description:
           type: string
@@ -1229,7 +1303,10 @@ components:
         jar:
           type: string
           format: binary
-          description: Plugin `.jar` containing `marketplace-manifest.json`
+          description: |
+            Plugin `.jar` containing `marketplace-manifest.json`. The archive is scanned under
+            entry-count, manifest-size, and decompressed-byte limits; archives that exceed them
+            are rejected as invalid.
         changelog:
           type: string
           format: binary
@@ -1291,9 +1368,13 @@ components:
       properties:
         username:
           type: string
+          minLength: 1
+          maxLength: 64
         password:
           type: string
           format: password
+          minLength: 1
+          maxLength: 128
 
     AuthTokenResponse:
       type: object
@@ -1370,6 +1451,9 @@ components:
       properties:
         customerId:
           type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+          minLength: 2
+          maxLength: 64
         expiresAt:
           type: string
           format: date

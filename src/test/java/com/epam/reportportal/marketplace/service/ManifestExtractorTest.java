@@ -2,6 +2,7 @@ package com.epam.reportportal.marketplace.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.epam.reportportal.marketplace.domain.AccessTier;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
@@ -44,4 +45,31 @@ class ManifestExtractorTest {
         null);
     assertThrows(ValidationException.class, () -> extractor.extract(TestJarFactory.createJar(manifest)));
   }
+
+  @Test
+  void rejectsPathLikePluginId() throws Exception {
+    MarketplaceManifest manifest =
+        TestJarFactory.sampleManifest("../evil", "1.0.0", AccessTier.PUBLIC);
+    ValidationException failure =
+        assertThrows(ValidationException.class, () -> extractor.extract(TestJarFactory.createJar(manifest)));
+    assertEquals("VALIDATION_ERROR", failure.getCode());
+    assertTrue(failure.getErrors().stream().anyMatch(e -> "manifest.id".equals(e.field())));
+  }
+
+  @Test
+  void rejectsPathTraversalInVersionPreRelease() throws Exception {
+    MarketplaceManifest manifest =
+        TestJarFactory.sampleManifest("plugin-test", "1.0.0-../x", AccessTier.PUBLIC);
+    ValidationException failure =
+        assertThrows(ValidationException.class, () -> extractor.extract(TestJarFactory.createJar(manifest)));
+    assertTrue(failure.getErrors().stream().anyMatch(e -> "manifest.version".equals(e.field())));
+  }
+
+  @Test
+  void rejectsUppercaseAndUnderscorePluginIds() throws Exception {
+    MarketplaceManifest manifest =
+        TestJarFactory.sampleManifest("Plugin_Test", "1.0.0", AccessTier.PUBLIC);
+    assertThrows(ValidationException.class, () -> extractor.extract(TestJarFactory.createJar(manifest)));
+  }
+
 }

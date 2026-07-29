@@ -60,7 +60,7 @@ public class ArtifactService {
         objectStore, objectMapper, StoragePaths.manifestPath(pluginId, version), MarketplaceManifest.class);
     AccessTier access = manifest != null && manifest.access() != null ? manifest.access() : AccessTier.PUBLIC;
 
-    String jarPath = StoragePaths.jarPath(pluginId, version);
+    String jarPath = StoragePaths.jarPath(pluginId, version, access);
     if (!objectStore.exists(jarPath)) {
       throw new NotFoundException("Artifact not found");
     }

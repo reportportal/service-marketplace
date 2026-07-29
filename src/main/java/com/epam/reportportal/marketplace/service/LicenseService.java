@@ -5,15 +5,18 @@ import com.epam.reportportal.marketplace.domain.LicenseEntitlement;
 import com.epam.reportportal.marketplace.domain.LicensePublicKey;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
 import com.epam.reportportal.marketplace.storage.OptimisticConcurrency;
+import com.epam.reportportal.marketplace.util.CustomerIdentifiers;
 import com.epam.reportportal.marketplace.util.JsonStore;
 import com.epam.reportportal.marketplace.util.StoragePaths;
 import com.epam.reportportal.marketplace.web.dto.CreateLicenseResponseDto;
 import com.epam.reportportal.marketplace.web.dto.LicenseEntitlementDto;
 import com.epam.reportportal.marketplace.web.dto.LicenseEntitlementListResponseDto;
 import com.epam.reportportal.marketplace.web.dto.RotateLicenseKeyResponseDto;
+import com.epam.reportportal.marketplace.web.dto.ValidationFieldError;
 import com.epam.reportportal.marketplace.web.error.ConflictException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
+import com.epam.reportportal.marketplace.web.error.ValidationException;
 import tools.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.crypto.Ed25519Verifier;
 import com.nimbusds.jose.jwk.Curve;
@@ -48,6 +51,7 @@ public class LicenseService {
   }
 
   public CreateLicenseResponseDto createEntitlement(String customerId, LocalDate expiresAt) {
+    requireCustomerId(customerId);
     return OptimisticConcurrency.execute(() -> {
       AuthorizedKeysDocument doc = loadDocument();
       if (doc.getEntitlements().stream().anyMatch(e -> customerId.equals(e.getCustomerId()))) {
@@ -68,6 +72,7 @@ public class LicenseService {
   }
 
   public void revokeEntitlement(String customerId) {
+    requireCustomerId(customerId);
     OptimisticConcurrency.execute(() -> {
       AuthorizedKeysDocument doc = loadDocument();
       boolean removed = doc.getEntitlements().removeIf(e -> customerId.equals(e.getCustomerId()));
@@ -80,6 +85,7 @@ public class LicenseService {
   }
 
   public RotateLicenseKeyResponseDto rotateKey(String customerId) {
+    requireCustomerId(customerId);
     return OptimisticConcurrency.execute(() -> {
       AuthorizedKeysDocument doc = loadDocument();
       LicenseEntitlement entitlement = doc.getEntitlements().stream()
@@ -145,6 +151,14 @@ public class LicenseService {
       doc = new AuthorizedKeysDocument();
     }
     return doc;
+  }
+
+  private void requireCustomerId(String customerId) {
+    if (!CustomerIdentifiers.isValidId(customerId)) {
+      throw new ValidationException(
+          "Invalid customer id",
+          List.of(new ValidationFieldError("customerId", CustomerIdentifiers.idRequirement())));
+    }
   }
 
   private void saveDocument(AuthorizedKeysDocument doc) {

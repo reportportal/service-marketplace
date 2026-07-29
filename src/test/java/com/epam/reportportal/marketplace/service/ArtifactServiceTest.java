@@ -2,6 +2,8 @@ package com.epam.reportportal.marketplace.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 import com.epam.reportportal.marketplace.domain.AccessTier;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
@@ -32,6 +34,27 @@ class ArtifactServiceTest {
     ArtifactResult result = artifactService.resolveArtifact("plugin-public", "1.0.0", null);
     assertEquals(ArtifactResult.Type.REDIRECT, result.type());
     assertEquals("http://cdn.test/plugins/plugin-public/versions/1.0.0/plugin-public-1.0.0.jar", result.redirectUrl());
+  }
+
+  @Test
+  void premiumPluginUsesPrivateSignedUrl() throws Exception {
+    var ctx = TestStorageFactory.create();
+    ManifestExtractor manifestExtractor = new ManifestExtractor(ctx.mapper());
+    IndexService indexService = new IndexService(ctx.store(), ctx.mapper());
+    PublishService publishService =
+        new PublishService(ctx.store(), ctx.mapper(), manifestExtractor, indexService, ctx.cdn());
+    LicenseService licenseService = mock(LicenseService.class);
+    ArtifactService artifactService =
+        new ArtifactService(ctx.store(), ctx.mapper(), ctx.properties(), licenseService);
+
+    MarketplaceManifest manifest =
+        TestJarFactory.sampleManifest("plugin-premium", "1.0.0", AccessTier.PREMIUM);
+    publishService.publishFirst(new PublishBundle(TestJarFactory.createJar(manifest), null, null));
+
+    ArtifactResult result =
+        artifactService.resolveArtifact("plugin-premium", "1.0.0", "valid-license");
+    assertEquals(ArtifactResult.Type.PREMIUM, result.type());
+    assertTrue(result.premium().downloadUrl().contains("/cdn-private/private/plugins/"));
   }
 
   @Test

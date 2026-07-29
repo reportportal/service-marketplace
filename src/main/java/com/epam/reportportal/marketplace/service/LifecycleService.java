@@ -6,6 +6,7 @@ import com.epam.reportportal.marketplace.domain.TrustTier;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
 import com.epam.reportportal.marketplace.storage.OptimisticConcurrency;
 import com.epam.reportportal.marketplace.util.JsonStore;
+import com.epam.reportportal.marketplace.util.PluginIdentifiers;
 import com.epam.reportportal.marketplace.util.StoragePaths;
 import com.epam.reportportal.marketplace.web.dto.PluginOperatorStateDto;
 import com.epam.reportportal.marketplace.web.dto.PluginTombstoneDto;
@@ -37,6 +38,8 @@ public class LifecycleService {
   }
 
   public BlockedVersion blockVersion(String pluginId, String version, String reason) {
+    requirePluginId(pluginId);
+    requireVersion(version);
     return OptimisticConcurrency.execute(() -> {
       PluginJson plugin = loadPlugin(pluginId);
       if (!plugin.getVersions().contains(version)) {
@@ -63,6 +66,7 @@ public class LifecycleService {
   }
 
   public PluginTombstoneDto removePlugin(String pluginId, String removalReason, String removedBy) {
+    requirePluginId(pluginId);
     PluginJson plugin = loadPlugin(pluginId);
     for (String version : List.copyOf(plugin.getVersions())) {
       deleteVersionArtifacts(pluginId, version);
@@ -84,6 +88,7 @@ public class LifecycleService {
   }
 
   public PluginOperatorStateDto patchTier(String pluginId, TrustTier tier) {
+    requirePluginId(pluginId);
     if (tier != TrustTier.OFFICIAL) {
       throw new ValidationException("Only official tier is accepted", List.of(
           new ValidationFieldError("tier", "Only tier=official is accepted in Phase 1/2")));
@@ -105,10 +110,12 @@ public class LifecycleService {
   }
 
   private void deleteVersionArtifacts(String pluginId, String version) {
-    String prefix = StoragePaths.versionDir(pluginId, version) + "/";
-    for (String key : objectStore.listPrefix(prefix)) {
-      objectStore.delete(key);
-    }
+    deletePrefix(StoragePaths.versionDir(pluginId, version) + "/");
+    deletePrefix(StoragePaths.privateVersionDir(pluginId, version) + "/");
+  }
+
+  private void deletePrefix(String prefix) {
+    objectStore.listPrefix(prefix).forEach(objectStore::delete);
   }
 
   private PluginJson loadPlugin(String pluginId) {
@@ -127,5 +134,21 @@ public class LifecycleService {
     String path = StoragePaths.pluginJson(plugin.getId());
     long generation = objectStore.getGeneration(path).orElse(-1L);
     JsonStore.writeIfGenerationMatch(objectStore, objectMapper, path, plugin, generation);
+  }
+
+  private static void requirePluginId(String pluginId) {
+    if (!PluginIdentifiers.isValidId(pluginId)) {
+      throw new ValidationException(
+          "Invalid plugin id",
+          List.of(new ValidationFieldError("pluginId", PluginIdentifiers.idRequirement())));
+    }
+  }
+
+  private static void requireVersion(String version) {
+    if (!PluginIdentifiers.isValidVersion(version)) {
+      throw new ValidationException(
+          "Invalid version",
+          List.of(new ValidationFieldError("version", PluginIdentifiers.versionRequirement())));
+    }
   }
 }

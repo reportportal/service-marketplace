@@ -1,6 +1,7 @@
 package com.epam.reportportal.marketplace.web;
 
 import com.epam.reportportal.marketplace.storage.ObjectStore;
+import com.epam.reportportal.marketplace.util.StoragePaths;
 import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -8,6 +9,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -25,21 +27,47 @@ public class LocalCdnController {
   }
 
   @GetMapping("/cdn/**")
-  public ResponseEntity<byte[]> get(HttpServletRequest request) {
-    String uri = request.getRequestURI();
-    String prefix = request.getContextPath() + "/cdn/";
-    if (!uri.startsWith(prefix)) {
+  public ResponseEntity<byte[]> getPublic(HttpServletRequest request) {
+    String objectPath = objectPath(request, "/cdn/");
+    if (objectPath == null
+        || objectPath.isBlank()
+        || objectPath.contains("..")
+        || !StoragePaths.isPublic(objectPath)
+        || !objectStore.exists(objectPath)) {
       return ResponseEntity.notFound().build();
     }
-    String objectPath = uri.substring(prefix.length());
-    if (objectPath.isBlank() || objectPath.contains("..") || !objectStore.exists(objectPath)) {
+    return serve(objectPath, "public, max-age=3600");
+  }
+
+  @GetMapping("/cdn-private/**")
+  public ResponseEntity<byte[]> getSigned(
+      HttpServletRequest request,
+      @RequestParam long expires,
+      @RequestParam String signature) {
+    String objectPath = objectPath(request, "/cdn-private/");
+    if (objectPath == null
+        || objectPath.isBlank()
+        || objectPath.contains("..")
+        || !StoragePaths.isPrivate(objectPath)
+        || !objectStore.exists(objectPath)
+        || !objectStore.verifySignedUrl(objectPath, expires, signature)) {
       return ResponseEntity.notFound().build();
     }
+    return serve(objectPath, "private, no-store");
+  }
+
+  private ResponseEntity<byte[]> serve(String objectPath, String cacheControl) {
     byte[] bytes = objectStore.readBytes(objectPath);
     return ResponseEntity.ok()
-        .header(HttpHeaders.CACHE_CONTROL, "public, max-age=3600")
+        .header(HttpHeaders.CACHE_CONTROL, cacheControl)
         .contentType(contentType(objectPath))
         .body(bytes);
+  }
+
+  private static String objectPath(HttpServletRequest request, String routePrefix) {
+    String uri = request.getRequestURI();
+    String prefix = request.getContextPath() + routePrefix;
+    return uri.startsWith(prefix) ? uri.substring(prefix.length()) : null;
   }
 
   private static MediaType contentType(String path) {

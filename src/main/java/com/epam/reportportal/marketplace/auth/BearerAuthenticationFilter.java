@@ -31,28 +31,43 @@ public class BearerAuthenticationFilter extends OncePerRequestFilter {
       throws ServletException, IOException {
     String header = request.getHeader("Authorization");
     if (header != null && header.startsWith("Bearer ")) {
-      String token = header.substring(7);
-      if (oidcPublishAuthService.isOidcToken(token)) {
-        try {
-          // Signature + issuer + audience verified; repo→plugin allow-list checked at publish time
-          oidcPublishAuthService.validatePublishToken(token, null);
-          SecurityContextHolder.getContext().setAuthentication(
-              new UsernamePasswordAuthenticationToken(
-                  "github-actions", null, List.of(new SimpleGrantedAuthority("ROLE_OIDC_PUBLISH"))));
-        } catch (RuntimeException ignored) {
-          // Leave unauthenticated; authorization layer will reject protected routes
-        }
-      } else {
-        SessionJwtService.SessionPrincipal principal = sessionJwtService.validateToken(token);
-        if (principal != null && principal.isOperator()) {
-          SecurityContextHolder.getContext().setAuthentication(
-              new UsernamePasswordAuthenticationToken(
-                  principal.subject(),
-                  null,
-                  List.of(new SimpleGrantedAuthority("ROLE_OPERATOR"))));
-        }
-      }
+      authenticateBearer(header.substring(7));
+    } else {
+      authenticateCookie(OperatorSessionCookie.read(request));
     }
     filterChain.doFilter(request, response);
+  }
+
+  private void authenticateBearer(String token) {
+    if (oidcPublishAuthService.isOidcToken(token)) {
+      try {
+        // Signature + issuer + audience verified; repo→plugin allow-list checked at publish time
+        oidcPublishAuthService.validatePublishToken(token, null);
+        SecurityContextHolder.getContext().setAuthentication(
+            new UsernamePasswordAuthenticationToken(
+                "github-actions", null, List.of(new SimpleGrantedAuthority("ROLE_OIDC_PUBLISH"))));
+      } catch (RuntimeException ignored) {
+        // Leave unauthenticated; authorization layer will reject protected routes
+      }
+      return;
+    }
+    authenticateOperator(token);
+  }
+
+  private void authenticateCookie(String token) {
+    if (token != null) {
+      authenticateOperator(token);
+    }
+  }
+
+  private void authenticateOperator(String token) {
+    SessionJwtService.SessionPrincipal principal = sessionJwtService.validateToken(token);
+    if (principal != null && principal.isOperator()) {
+      SecurityContextHolder.getContext().setAuthentication(
+          new UsernamePasswordAuthenticationToken(
+              principal.subject(),
+              null,
+              List.of(new SimpleGrantedAuthority("ROLE_OPERATOR"))));
+    }
   }
 }

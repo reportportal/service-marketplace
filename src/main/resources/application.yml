@@ -1,6 +1,6 @@
 spring:
-  profiles:
-    active: local
+  # No default profile: a jar started without configuration must fail closed rather than fall
+  # back to the development credentials in application-local.yml. Use SPRING_PROFILES_ACTIVE.
   servlet:
     multipart:
       # Publish bundles are plugin jars, not small forms. The Boot defaults (1MB file /
@@ -19,6 +19,7 @@ marketplace:
       root: ${STORAGE_LOCAL_ROOT:./data/marketplace}
   gcs:
     bucket: ${GCS_BUCKET:reportportal-marketplace}
+    private-bucket: ${GCS_PRIVATE_BUCKET:reportportal-marketplace-private}
     location: ${GCS_LOCATION:US}
   cdn:
     base-url: ${CDN_BASE_URL:http://localhost:8080/cdn}
@@ -27,8 +28,15 @@ marketplace:
     admin:
       username: ${ADMIN_USERNAME:admin}
       password-hash: ${ADMIN_PASSWORD_HASH:}
+    login-rate-limit:
+      enabled: ${LOGIN_RATE_LIMIT_ENABLED:true}
+      max-attempts: ${LOGIN_RATE_LIMIT_MAX_ATTEMPTS:5}
+      window-seconds: ${LOGIN_RATE_LIMIT_WINDOW_SECONDS:300}
+      lockout-seconds: ${LOGIN_RATE_LIMIT_LOCKOUT_SECONDS:60}
+      backoff-multiplier: ${LOGIN_RATE_LIMIT_BACKOFF_MULTIPLIER:2.0}
+      max-lockout-seconds: ${LOGIN_RATE_LIMIT_MAX_LOCKOUT_SECONDS:900}
     jwt:
-      secret: ${JWT_SECRET:change-me-in-production-use-long-random-string}
+      secret: ${JWT_SECRET:}
       issuer: ${JWT_ISSUER:marketplace.reportportal.io}
       ttl-seconds: ${JWT_TTL_SECONDS:28800}
     github:
@@ -37,10 +45,12 @@ marketplace:
       allowed-org: ${GITHUB_OAUTH_ALLOWED_ORG:reportportal}
       allowed-team: ${GITHUB_OAUTH_ALLOWED_TEAM:}
       redirect-uri: ${GITHUB_OAUTH_REDIRECT_URI:http://localhost:8080/api/v1/auth/github/callback}
+      oauth-state-ttl-seconds: ${GITHUB_OAUTH_STATE_TTL_SECONDS:600}
   publish-oidc-trust:
     audience: ${PUBLISH_OIDC_AUDIENCE:marketplace.reportportal.io}
     issuer: https://token.actions.githubusercontent.com
-    allowed-sources: {}
+    # allowed-sources is intentionally absent: it defaults to an empty map, which disables
+    # OIDC publishing until a deployment maps owner/repo -> plugin id.
 
 management:
   endpoints:

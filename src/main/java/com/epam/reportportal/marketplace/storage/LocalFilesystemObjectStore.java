@@ -3,25 +3,35 @@ package com.epam.reportportal.marketplace.storage;
 import com.epam.reportportal.marketplace.config.MarketplaceProperties;
 import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
 public class LocalFilesystemObjectStore implements ObjectStore {
 
   private final Path root;
   private final MarketplaceProperties properties;
+  private final byte[] signedUrlKey = new byte[32];
 
   public LocalFilesystemObjectStore(MarketplaceProperties properties, ObjectMapper objectMapper) {
     this.properties = properties;
     this.root = Path.of(properties.getStorage().getLocal().getRoot()).toAbsolutePath().normalize();
+    new SecureRandom().nextBytes(signedUrlKey);
     try {
       Files.createDirectories(root);
     } catch (IOException e) {
@@ -122,13 +132,40 @@ public class LocalFilesystemObjectStore implements ObjectStore {
   public SignedUrl createSignedUrl(String key, Duration maxTtl) {
     Duration ttl = maxTtl.compareTo(Duration.ofSeconds(60)) > 0 ? Duration.ofSeconds(60) : maxTtl;
     Instant expiresAt = Instant.now().plus(ttl);
-    Path file = resolve(key);
     String baseUrl = properties.getCdn().getBaseUrl();
     if (baseUrl != null && !baseUrl.isBlank()) {
-      String url = baseUrl.endsWith("/") ? baseUrl + key : baseUrl + "/" + key;
+      String normalizedBase = baseUrl.replaceAll("/+$", "");
+      String signedBase = normalizedBase.endsWith("/cdn")
+          ? normalizedBase.substring(0, normalizedBase.length() - 4) + "/cdn-private"
+          : normalizedBase + "/cdn-private";
+      long expires = expiresAt.getEpochSecond();
+      String signature = sign(key, expires);
+      String url = signedBase + "/" + key + "?expires=" + expires + "&signature=" + signature;
       return new SignedUrl(url, expiresAt);
     }
-    return new SignedUrl(file.toUri().toString(), expiresAt);
+    throw new ObjectStoreException("CDN base URL is required for local signed URLs");
+  }
+
+  @Override
+  public boolean verifySignedUrl(String key, long expiresAtEpochSecond, String signature) {
+    long now = Instant.now().getEpochSecond();
+    if (expiresAtEpochSecond < now || expiresAtEpochSecond > now + 65 || signature == null) {
+      return false;
+    }
+    byte[] expected = sign(key, expiresAtEpochSecond).getBytes(StandardCharsets.US_ASCII);
+    byte[] actual = signature.getBytes(StandardCharsets.US_ASCII);
+    return MessageDigest.isEqual(expected, actual);
+  }
+
+  private String sign(String key, long expiresAtEpochSecond) {
+    try {
+      Mac mac = Mac.getInstance("HmacSHA256");
+      mac.init(new SecretKeySpec(signedUrlKey, "HmacSHA256"));
+      byte[] payload = (key + "\n" + expiresAtEpochSecond).getBytes(StandardCharsets.UTF_8);
+      return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(payload));
+    } catch (GeneralSecurityException e) {
+      throw new ObjectStoreException("Failed to sign local artifact URL", e);
+    }
   }
 
   private Path resolve(String key) {

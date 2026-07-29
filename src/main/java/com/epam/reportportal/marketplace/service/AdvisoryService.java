@@ -5,9 +5,12 @@ import com.epam.reportportal.marketplace.domain.AdvisorySeverity;
 import com.epam.reportportal.marketplace.domain.PluginJson;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
 import com.epam.reportportal.marketplace.util.JsonStore;
+import com.epam.reportportal.marketplace.util.PluginIdentifiers;
 import com.epam.reportportal.marketplace.util.StoragePaths;
 import com.epam.reportportal.marketplace.web.dto.SecurityAdvisoryDto;
+import com.epam.reportportal.marketplace.web.dto.ValidationFieldError;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
+import com.epam.reportportal.marketplace.web.error.ValidationException;
 import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
@@ -30,6 +33,16 @@ public class AdvisoryService {
   }
 
   public SecurityAdvisoryDto attachAdvisory(String pluginId, String version, AdvisorySeverity severity, String text) {
+    if (!PluginIdentifiers.isValidId(pluginId)) {
+      throw new ValidationException(
+          "Invalid plugin id",
+          List.of(new ValidationFieldError("pluginId", PluginIdentifiers.idRequirement())));
+    }
+    if (!PluginIdentifiers.isValidVersion(version)) {
+      throw new ValidationException(
+          "Invalid version",
+          List.of(new ValidationFieldError("version", PluginIdentifiers.versionRequirement())));
+    }
     PluginJson plugin = JsonStore.read(objectStore, objectMapper, StoragePaths.pluginJson(pluginId), PluginJson.class);
     if (plugin == null || plugin.isRemoved() || !plugin.getVersions().contains(version)) {
       throw new NotFoundException("Version not found: " + version);

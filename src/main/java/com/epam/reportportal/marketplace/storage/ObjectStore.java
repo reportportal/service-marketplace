@@ -24,6 +24,10 @@ public interface ObjectStore {
 
   SignedUrl createSignedUrl(String key, Duration maxTtl);
 
+  default boolean verifySignedUrl(String key, long expiresAtEpochSecond, String signature) {
+    return false;
+  }
+
   record SignedUrl(String url, java.time.Instant expiresAt) {}
 
   record StoredObject(byte[] data, long generation) {}
