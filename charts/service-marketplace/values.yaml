@@ -1,0 +1,55 @@
+replicaCount: 1
+
+image:
+  repository: reportportal/service-marketplace
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+gcs:
+  bucket: reportportal-marketplace
+  location: us-east1
+
+cdn:
+  baseUrl: https://cdn.marketplace.reportportal.io
+  urlMap: marketplace-url-map
+
+storage:
+  type: gcs
+
+admin:
+  username: admin
+  # bcrypt hash — generate with: ./gradlew genAdminHash --args='your-password'
+  passwordHash: ""
+
+jwt:
+  secret: ""
+  issuer: marketplace.reportportal.io
+  ttlSeconds: 28800
+
+githubOAuth:
+  clientId: ""
+  clientSecret: ""
+  allowedOrg: reportportal
+  allowedTeam: ""
+  redirectUri: https://marketplace.reportportal.io/api/v1/auth/github/callback
+
+publishOidcTrust:
+  audience: marketplace.reportportal.io
+  # Map GitHub repository (owner/name) -> plugin id
+  allowedSources: {}
+  # example:
+  #   reportportal/plugin-jira-cloud: plugin-jira-cloud
+
+env: {}

@@ -1,0 +1,25 @@
+marketplace:
+  storage:
+    type: local
+    local:
+      root: ./build/test-marketplace
+  cdn:
+    base-url: http://localhost:8080/cdn
+  auth:
+    admin:
+      username: admin
+      password: admin
+    jwt:
+      secret: test-secret-key-at-least-32-characters-long
+      issuer: marketplace.reportportal.io
+      ttl-seconds: 3600
+
+spring:
+  main:
+    allow-bean-definition-overriding: true
+  servlet:
+    multipart:
+      # This file shadows src/main/resources/application.yml on the test classpath, so the
+      # publish upload limits have to be mirrored here to be exercised by integration tests.
+      max-file-size: 128MB
+      max-request-size: 160MB

@@ -1,0 +1,15 @@
+docs/node_modules/
+operator-ui/node_modules/
+actions/**/node_modules/
+docs/openapi/dist/
+.gradle/
+build/
+bin/
+data/
+out/
+*.iml
+.idea/
+*.class
+*.log
+.DS_Store
+local.properties
