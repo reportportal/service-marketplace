@@ -8,7 +8,7 @@ import com.epam.reportportal.marketplace.util.JsonStore;
 import com.epam.reportportal.marketplace.util.StoragePaths;
 import com.epam.reportportal.marketplace.web.dto.SecurityAdvisoryDto;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.stereotype.Service;

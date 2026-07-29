@@ -1,9 +1,6 @@
 package com.epam.reportportal.marketplace.service;
 
-import com.epam.reportportal.marketplace.domain.AccessTier;
 import com.epam.reportportal.marketplace.domain.AssetsJson;
-import com.epam.reportportal.marketplace.domain.IndexJson;
-import com.epam.reportportal.marketplace.domain.IndexPluginEntry;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
 import com.epam.reportportal.marketplace.domain.PluginJson;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
@@ -17,7 +14,7 @@ import com.epam.reportportal.marketplace.web.error.ConflictException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.ValidationException;
 import com.epam.reportportal.marketplace.web.dto.ValidationFieldError;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -80,7 +77,6 @@ public class PublishService {
   private PublishResponseDto publishVersion(
       String pluginId, PublishBundle bundle, MarketplaceManifest manifest, boolean firstPublish) {
     String version = manifest.version();
-    String versionDir = StoragePaths.versionDir(pluginId, version);
     String jarPath = StoragePaths.jarPath(pluginId, version);
     if (objectStore.exists(jarPath)) {
       throw new ConflictException("Version already exists: " + version);

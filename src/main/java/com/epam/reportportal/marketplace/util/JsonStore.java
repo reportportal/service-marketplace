@@ -1,9 +1,8 @@
 package com.epam.reportportal.marketplace.util;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
-import java.io.IOException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 public final class JsonStore {
 
@@ -15,7 +14,7 @@ public final class JsonStore {
     }
     try {
       return mapper.readValue(store.readBytes(key), type);
-    } catch (IOException e) {
+    } catch (RuntimeException e) {
       throw new IllegalStateException("Failed to deserialize " + key, e);
     }
   }
@@ -26,7 +25,7 @@ public final class JsonStore {
     }
     try {
       return mapper.readValue(store.readBytes(key), type);
-    } catch (IOException e) {
+    } catch (RuntimeException e) {
       throw new IllegalStateException("Failed to deserialize " + key, e);
     }
   }
@@ -34,7 +33,7 @@ public final class JsonStore {
   public static void write(ObjectStore store, ObjectMapper mapper, String key, Object value) {
     try {
       store.writeBytes(key, mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(value));
-    } catch (IOException e) {
+    } catch (RuntimeException e) {
       throw new IllegalStateException("Failed to serialize " + key, e);
     }
   }
@@ -44,7 +43,7 @@ public final class JsonStore {
     try {
       store.writeBytesIfGenerationMatch(
           key, mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(value), generation);
-    } catch (IOException e) {
+    } catch (RuntimeException e) {
       throw new IllegalStateException("Failed to serialize " + key, e);
     }
   }

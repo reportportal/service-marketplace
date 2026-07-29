@@ -3,7 +3,7 @@ package com.epam.reportportal.marketplace.config;
 import com.epam.reportportal.marketplace.storage.GcsObjectStore;
 import com.epam.reportportal.marketplace.storage.LocalFilesystemObjectStore;
 import com.epam.reportportal.marketplace.storage.ObjectStore;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

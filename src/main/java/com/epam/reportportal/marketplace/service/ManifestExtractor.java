@@ -1,16 +1,13 @@
 package com.epam.reportportal.marketplace.service;
 
 import com.epam.reportportal.marketplace.domain.AccessTier;
-import com.epam.reportportal.marketplace.domain.Author;
-import com.epam.reportportal.marketplace.domain.Compatibility;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
 import com.epam.reportportal.marketplace.domain.PluginCategory;
 import com.epam.reportportal.marketplace.web.dto.ValidationFieldError;
 import com.epam.reportportal.marketplace.web.error.ValidationException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
@@ -33,7 +30,7 @@ public class ManifestExtractor {
     MarketplaceManifest manifest;
     try {
       manifest = objectMapper.readValue(manifestBytes, MarketplaceManifest.class);
-    } catch (IOException e) {
+    } catch (RuntimeException e) {
       throw new ValidationException("Invalid marketplace-manifest.json", List.of(
           new ValidationFieldError("manifest", "Failed to parse marketplace-manifest.json")));
     }

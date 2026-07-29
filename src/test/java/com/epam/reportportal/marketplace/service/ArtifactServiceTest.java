@@ -22,8 +22,6 @@ class ArtifactServiceTest {
     IndexService indexService = new IndexService(ctx.store(), ctx.mapper());
     PublishService publishService =
         new PublishService(ctx.store(), ctx.mapper(), manifestExtractor, indexService, ctx.cdn());
-    LifecycleService lifecycleService =
-        new LifecycleService(ctx.store(), ctx.mapper(), indexService, ctx.cdn());
     LicenseService licenseService = new LicenseService(ctx.store(), ctx.mapper());
     ArtifactService artifactService =
         new ArtifactService(ctx.store(), ctx.mapper(), ctx.properties(), licenseService);

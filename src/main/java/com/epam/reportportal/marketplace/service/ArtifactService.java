@@ -16,7 +16,7 @@ import com.epam.reportportal.marketplace.web.error.ForbiddenException;
 import com.epam.reportportal.marketplace.web.error.GoneException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import org.springframework.stereotype.Service;
 

@@ -6,13 +6,12 @@ import com.epam.reportportal.marketplace.domain.Compatibility;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
 import com.epam.reportportal.marketplace.domain.PluginCategory;
 import com.epam.reportportal.marketplace.service.ManifestExtractor;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Random;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import tools.jackson.databind.json.JsonMapper;
 
 public final class TestJarFactory {
 
@@ -28,7 +27,7 @@ public final class TestJarFactory {
    * bundles closer to the size of a real plugin jar.
    */
   public static byte[] createJar(MarketplaceManifest manifest, int paddingBytes) throws IOException {
-    ObjectMapper mapper = new ObjectMapper().registerModule(new JavaTimeModule());
+    JsonMapper mapper = JsonMapper.builder().build();
     byte[] manifestBytes = mapper.writeValueAsBytes(manifest);
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     try (ZipOutputStream zos = new ZipOutputStream(baos)) {

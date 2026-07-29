@@ -1,7 +1,7 @@
 package com.epam.reportportal.marketplace.storage;
 
 import com.epam.reportportal.marketplace.config.MarketplaceProperties;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;

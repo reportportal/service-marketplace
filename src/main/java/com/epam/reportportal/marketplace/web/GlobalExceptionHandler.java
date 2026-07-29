@@ -20,6 +20,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.server.ContentTooLargeException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -51,7 +52,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(ValidationException.class)
   ResponseEntity<ValidationErrorResponseDto> validation(ValidationException ex) {
-    return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+    return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
         .body(new ValidationErrorResponseDto(ex.getCode(), ex.getMessage(), ex.getErrors()));
   }
 
@@ -65,14 +66,14 @@ public class GlobalExceptionHandler {
     List<ValidationFieldError> errors = ex.getBindingResult().getFieldErrors().stream()
         .map(this::toFieldError)
         .toList();
-    return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+    return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
         .body(new ValidationErrorResponseDto("VALIDATION_ERROR", "Request validation failed", errors));
   }
 
-  @ExceptionHandler(MaxUploadSizeExceededException.class)
-  ResponseEntity<ErrorResponseDto> uploadTooLarge(MaxUploadSizeExceededException ex) {
+  @ExceptionHandler({MaxUploadSizeExceededException.class, ContentTooLargeException.class})
+  ResponseEntity<ErrorResponseDto> uploadTooLarge(Exception ex) {
     LOGGER.warn("Rejected publish bundle exceeding the configured upload limit", ex);
-    return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+    return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE)
         .body(new ErrorResponseDto("PAYLOAD_TOO_LARGE",
             "Publish bundle exceeds the maximum upload size accepted by the registry"));
   }

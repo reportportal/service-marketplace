@@ -12,7 +12,7 @@ import com.epam.reportportal.marketplace.web.dto.PluginTombstoneDto;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.ValidationException;
 import com.epam.reportportal.marketplace.web.dto.ValidationFieldError;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.stereotype.Service;

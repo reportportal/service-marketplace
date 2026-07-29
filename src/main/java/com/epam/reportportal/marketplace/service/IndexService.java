@@ -9,7 +9,7 @@ import com.epam.reportportal.marketplace.storage.ObjectStore;
 import com.epam.reportportal.marketplace.storage.OptimisticConcurrency;
 import com.epam.reportportal.marketplace.util.JsonStore;
 import com.epam.reportportal.marketplace.util.StoragePaths;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.springframework.stereotype.Service;
 

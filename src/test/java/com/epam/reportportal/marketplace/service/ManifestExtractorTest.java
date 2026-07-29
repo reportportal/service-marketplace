@@ -7,8 +7,7 @@ import com.epam.reportportal.marketplace.domain.AccessTier;
 import com.epam.reportportal.marketplace.domain.MarketplaceManifest;
 import com.epam.reportportal.marketplace.support.TestJarFactory;
 import com.epam.reportportal.marketplace.web.error.ValidationException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -18,7 +17,7 @@ class ManifestExtractorTest {
 
   @BeforeEach
   void setUp() {
-    extractor = new ManifestExtractor(new ObjectMapper().registerModule(new JavaTimeModule()));
+    extractor = new ManifestExtractor(JsonMapper.builder().build());
   }
 
   @Test

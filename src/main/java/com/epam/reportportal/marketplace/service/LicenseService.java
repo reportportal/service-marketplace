@@ -14,7 +14,7 @@ import com.epam.reportportal.marketplace.web.dto.RotateLicenseKeyResponseDto;
 import com.epam.reportportal.marketplace.web.error.ConflictException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.crypto.Ed25519Verifier;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jose.jwk.OctetKeyPair;
