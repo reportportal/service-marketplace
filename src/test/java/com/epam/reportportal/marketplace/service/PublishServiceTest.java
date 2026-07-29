@@ -10,7 +10,6 @@ import com.epam.reportportal.marketplace.support.TestStorageFactory;
 import com.epam.reportportal.marketplace.util.StoragePaths;
 import com.epam.reportportal.marketplace.web.dto.PublishBundle;
 import com.epam.reportportal.marketplace.web.dto.PublishResponseDto;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class PublishServiceTest {

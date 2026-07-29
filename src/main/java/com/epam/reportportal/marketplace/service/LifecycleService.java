@@ -1,6 +1,5 @@
 package com.epam.reportportal.marketplace.service;
 
-import com.epam.reportportal.marketplace.domain.AdvisoryJson;
 import com.epam.reportportal.marketplace.domain.BlockedVersion;
 import com.epam.reportportal.marketplace.domain.PluginJson;
 import com.epam.reportportal.marketplace.domain.TrustTier;

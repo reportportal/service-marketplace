@@ -6,7 +6,6 @@ import com.epam.reportportal.marketplace.web.dto.ValidationFieldError;
 import com.epam.reportportal.marketplace.web.error.ConflictException;
 import com.epam.reportportal.marketplace.web.error.ForbiddenException;
 import com.epam.reportportal.marketplace.web.error.GoneException;
-import com.epam.reportportal.marketplace.web.error.MarketplaceException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
 import com.epam.reportportal.marketplace.web.error.ValidationException;

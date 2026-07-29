@@ -15,7 +15,6 @@ import com.epam.reportportal.marketplace.web.error.ConflictException;
 import com.epam.reportportal.marketplace.web.error.NotFoundException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.nimbusds.jose.crypto.Ed25519Signer;
 import com.nimbusds.jose.crypto.Ed25519Verifier;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jose.jwk.OctetKeyPair;
@@ -26,7 +25,6 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 

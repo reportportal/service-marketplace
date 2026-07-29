@@ -5,20 +5,25 @@ import com.epam.reportportal.marketplace.web.error.ForbiddenException;
 import com.epam.reportportal.marketplace.web.error.UnauthorizedException;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.jwk.source.JWKSource;
-import com.nimbusds.jose.jwk.source.RemoteJWKSet;
+import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
 import com.nimbusds.jose.proc.JWSKeySelector;
 import com.nimbusds.jose.proc.JWSVerificationKeySelector;
 import com.nimbusds.jose.proc.SecurityContext;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.proc.ConfigurableJWTProcessor;
 import com.nimbusds.jwt.proc.DefaultJWTProcessor;
+import java.net.URI;
 import java.net.URL;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import org.springframework.stereotype.Service;
 
 @Service
 public class OidcPublishAuthService {
+
+  private static final Duration JWKS_TTL = Duration.ofHours(24);
+  private static final Duration JWKS_REFRESH_TIMEOUT = Duration.ofSeconds(30);
 
   private final MarketplaceProperties properties;
   private volatile CachedJwks cachedJwks;
@@ -104,8 +109,12 @@ public class OidcPublishAuthService {
       synchronized (this) {
         current = cachedJwks;
         if (current == null || current.expiresAt.isBefore(Instant.now())) {
-          URL jwksUrl = new URL("https://token.actions.githubusercontent.com/.well-known/jwks.json");
-          cachedJwks = new CachedJwks(new RemoteJWKSet<>(jwksUrl), Instant.now().plusSeconds(86400));
+          URL jwksUrl = URI.create(properties.getPublishOidcTrust().getIssuer()
+              + "/.well-known/jwks.json").toURL();
+          JWKSource<SecurityContext> source = JWKSourceBuilder.<SecurityContext>create(jwksUrl)
+              .cache(JWKS_TTL.toMillis(), JWKS_REFRESH_TIMEOUT.toMillis())
+              .build();
+          cachedJwks = new CachedJwks(source, Instant.now().plus(JWKS_TTL));
           current = cachedJwks;
         }
       }
