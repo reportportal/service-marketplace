@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Marketplace Operator</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1a1d21;
+      --muted: #5c6570;
+      --border: #d8dee6;
+      --accent: #0b6e4f;
+      --accent-hover: #095a41;
+      --danger: #b42318;
+      --warn: #b54708;
+      --chip: #e8f5ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Candara, Calibri, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    header h1 { font-size: 1.1rem; margin: 0; font-weight: 650; letter-spacing: 0.01em; }
+    nav { display: flex; gap: 0.5rem; align-items: center; }
+    nav button, .btn {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 0.4rem 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font: inherit;
+    }
+    nav button.active, .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn.primary:hover { background: var(--accent-hover); }
+    .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+    main { max-width: 1100px; margin: 1.25rem auto; padding: 0 1rem 2rem; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .muted { color: var(--muted); font-size: 0.92rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+    label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.9rem; min-width: 160px; flex: 1; }
+    input, select, textarea {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.45rem 0.55rem;
+      font: inherit;
+      background: #fff;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+    .badge {
+      display: inline-block;
+      background: var(--chip);
+      color: var(--accent);
+      border: 1px solid #b9ddcd;
+      border-radius: 999px;
+      padding: 0.1rem 0.55rem;
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+    .error { color: var(--danger); white-space: pre-wrap; }
+    .ok { color: var(--accent); white-space: pre-wrap; }
+    .hidden { display: none !important; }
+    .actions { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+    dialog { border: 1px solid var(--border); border-radius: 10px; padding: 1rem; max-width: 520px; width: 92%; }
+    dialog::backdrop { background: rgba(20, 24, 28, 0.35); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ReportPortal Marketplace Operator</h1>
+    <nav id="nav" class="hidden">
+      <button type="button" data-view="plugins" class="active">Plugins</button>
+      <button type="button" data-view="licenses">Licenses</button>
+      <button type="button" id="logoutBtn">Logout</button>
+    </nav>
+  </header>
+  <main>
+    <section id="loginView" class="card">
+      <h2>Sign in</h2>
+      <p class="muted">Use admin credentials (local/dev) or GitHub OAuth when configured.</p>
+      <form id="loginForm" class="row">
+        <label>Username <input name="username" autocomplete="username" required /></label>
+        <label>Password <input name="password" type="password" autocomplete="current-password" required /></label>
+        <button class="btn primary" type="submit">Login</button>
+        <a class="btn" href="/api/v1/auth/github/login">Login with GitHub</a>
+      </form>
+      <p id="loginError" class="error"></p>
+    </section>
+
+    <section id="pluginsView" class="hidden">
+      <div class="card">
+        <div class="row" style="justify-content: space-between; align-items: center;">
+          <div>
+            <h2 style="margin:0;">Plugins</h2>
+            <p class="muted" style="margin:0.25rem 0 0;">Catalogue + lifecycle actions</p>
+          </div>
+          <button class="btn primary" id="refreshPlugins">Refresh</button>
+        </div>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Name</th><th>Latest</th><th>Category</th><th>Access</th><th>Trust</th><th></th></tr>
+          </thead>
+          <tbody id="pluginRows"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>First publish</h3>
+        <form id="firstPublishForm" class="row">
+          <label>JAR <input type="file" name="jar" accept=".jar" required /></label>
+          <label>CHANGELOG.md <input type="file" name="changelog" accept=".md,text/markdown" /></label>
+          <label>Screenshots <input type="file" name="screenshots" accept="image/png,image/jpeg" multiple /></label>
+          <button class="btn primary" type="submit">Publish new plugin</button>
+        </form>
+        <p id="firstPublishMsg" class="ok"></p>
+      </div>
+    </section>
+
+    <section id="licensesView" class="hidden">
+      <div class="card">
+        <div class="row" style="justify-content: space-between;">
+          <h2 style="margin:0;">License entitlements</h2>
+          <button class="btn" id="refreshLicenses">Refresh</button>
+        </div>
+        <table>
+          <thead><tr><th>Customer</th><th>Keys</th><th>Created</th><th></th></tr></thead>
+          <tbody id="licenseRows"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3>Create entitlement</h3>
+        <form id="createLicenseForm" class="row">
+          <label>Customer ID <input name="customerId" required /></label>
+          <button class="btn primary" type="submit">Create</button>
+        </form>
+        <p id="createLicenseMsg" class="ok"></p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="pluginDialog">
+    <form method="dialog" id="pluginDialogForm">
+      <h3 id="dialogTitle">Plugin</h3>
+      <p id="dialogMeta" class="muted"></p>
+      <div class="row">
+        <label>JAR (new version) <input type="file" name="jar" accept=".jar" /></label>
+        <label>CHANGELOG <input type="file" name="changelog" accept=".md,text/markdown" /></label>
+        <button class="btn primary" value="publish-version" id="publishVersionBtn">Publish version</button>
+      </div>
+      <hr />
+      <div class="row">
+        <label>Version to block <input name="blockVersion" placeholder="1.2.0" /></label>
+        <label>Reason <input name="blockReason" placeholder="CVE-..." /></label>
+        <button class="btn" value="block" id="blockBtn">Block</button>
+      </div>
+      <hr />
+      <div class="row">
+        <label>Advisory severity
+          <select name="severity">
+            <option>low</option><option>medium</option><option selected>high</option><option>critical</option>
+          </select>
+        </label>
+        <label>Version <input name="advisoryVersion" placeholder="1.2.0" /></label>
+        <label style="flex:2;">Text <input name="advisoryText" /></label>
+        <button class="btn" value="advisory" id="advisoryBtn">Attach advisory</button>
+      </div>
+      <hr />
+      <div class="row">
+        <label style="flex:2;">Removal reason <input name="removalReason" required placeholder="Public reason for 410 Gone" /></label>
+        <button class="btn danger" value="remove" id="removeBtn">Remove plugin</button>
+      </div>
+      <p id="dialogMsg" class="error"></p>
+      <menu class="actions">
+        <button class="btn" value="cancel">Close</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script>
+    const TOKEN_KEY = "mp_operator_jwt";
+    let currentPluginId = null;
+
+    const $ = (id) => document.getElementById(id);
+    const token = () => sessionStorage.getItem(TOKEN_KEY);
+
+    function authHeaders(json = true) {
+      const h = { Authorization: "Bearer " + token() };
+      if (json) h["Content-Type"] = "application/json";
+      return h;
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+      if (!res.ok) {
+        const msg = body && body.message ? body.message : (typeof body === "string" ? body : res.statusText);
+        throw new Error(msg || ("HTTP " + res.status));
+      }
+      return body;
+    }
+
+    function showView(name) {
+      $("loginView").classList.toggle("hidden", name !== "login");
+      $("pluginsView").classList.toggle("hidden", name !== "plugins");
+      $("licensesView").classList.toggle("hidden", name !== "licenses");
+      $("nav").classList.toggle("hidden", name === "login");
+      document.querySelectorAll("#nav button[data-view]").forEach((b) => {
+        b.classList.toggle("active", b.dataset.view === name);
+      });
+    }
+
+    async function ensureSession() {
+      if (!token()) {
+        showView("login");
+        return false;
+      }
+      showView("plugins");
+      await loadPlugins();
+      return true;
+    }
+
+    $("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("loginError").textContent = "";
+      const fd = new FormData(e.target);
+      try {
+        const body = await api("/api/v1/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: fd.get("username"),
+            password: fd.get("password")
+          })
+        });
+        sessionStorage.setItem(TOKEN_KEY, body.accessToken || body.token || body.jwt);
+        showView("plugins");
+        await loadPlugins();
+      } catch (err) {
+        $("loginError").textContent = err.message;
+      }
+    });
+
+    $("logoutBtn").addEventListener("click", async () => {
+      try { await api("/api/v1/auth/logout", { method: "POST", headers: authHeaders() }); } catch (_) {}
+      sessionStorage.removeItem(TOKEN_KEY);
+      showView("login");
+    });
+
+    document.querySelectorAll("#nav button[data-view]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        showView(btn.dataset.view);
+        if (btn.dataset.view === "plugins") await loadPlugins();
+        if (btn.dataset.view === "licenses") await loadLicenses();
+      });
+    });
+
+    $("refreshPlugins").addEventListener("click", () => loadPlugins());
+    $("refreshLicenses").addEventListener("click", () => loadLicenses());
+
+    function trustBadge(tier) {
+      if (!tier || tier === "official") {
+        return `<span class="badge" title="Trust tier is read-only in Phase 1/2">Official</span>`;
+      }
+      return `<span class="muted">${tier}</span>`;
+    }
+
+    async function loadPlugins() {
+      const data = await api("/api/v1/plugins");
+      const rows = $("pluginRows");
+      rows.innerHTML = "";
+      (data.plugins || []).forEach((p) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${p.id}</code></td>
+          <td>${p.name || ""}</td>
+          <td>${p.latestVersion || ""}</td>
+          <td>${p.category || ""}</td>
+          <td>${p.access || "public"}</td>
+          <td>${trustBadge(p.tier)}</td>
+          <td class="actions"><button class="btn" data-id="${p.id}">Manage</button></td>`;
+        tr.querySelector("button").addEventListener("click", () => openPlugin(p.id, p));
+        rows.appendChild(tr);
+      });
+    }
+
+    function openPlugin(id, meta) {
+      currentPluginId = id;
+      $("dialogTitle").textContent = id;
+      const trust = meta.tier || "official";
+      $("dialogMeta").textContent =
+        `${meta.name || ""} · latest ${meta.latestVersion || "—"} · access ${meta.access || "public"} · trust ${trust} (read-only)`;
+      $("dialogMsg").textContent = "";
+      $("pluginDialog").showModal();
+    }
+
+    $("firstPublishForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("firstPublishMsg").textContent = "";
+      const fd = new FormData(e.target);
+      const body = new FormData();
+      body.append("jar", fd.get("jar"));
+      if (fd.get("changelog") && fd.get("changelog").size) body.append("changelog", fd.get("changelog"));
+      const shots = e.target.screenshots.files;
+      for (const f of shots) body.append("screenshots", f);
+      try {
+        const res = await fetch("/api/v1/plugins", { method: "POST", headers: { Authorization: "Bearer " + token() }, body });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.message || res.statusText);
+        $("firstPublishMsg").textContent = `Published ${json.pluginId}@${json.version} sha256=${json.sha256}`;
+        e.target.reset();
+        await loadPlugins();
+      } catch (err) {
+        $("firstPublishMsg").className = "error";
+        $("firstPublishMsg").textContent = err.message;
+      }
+    });
+
+    $("publishVersionBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const form = $("pluginDialogForm");
+      const jar = form.jar.files[0];
+      if (!jar) { $("dialogMsg").textContent = "Select a JAR"; return; }
+      const body = new FormData();
+      body.append("jar", jar);
+      if (form.changelog.files[0]) body.append("changelog", form.changelog.files[0]);
+      try {
+        const res = await fetch(`/api/v1/plugins/${currentPluginId}/versions`, {
+          method: "POST", headers: { Authorization: "Bearer " + token() }, body
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.message || res.statusText);
+        $("dialogMsg").className = "ok";
+        $("dialogMsg").textContent = `Published ${json.version}`;
+        await loadPlugins();
+      } catch (err) {
+        $("dialogMsg").className = "error";
+        $("dialogMsg").textContent = err.message;
+      }
+    });
+
+    $("blockBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const form = $("pluginDialogForm");
+      try {
+        await api(`/api/v1/plugins/${currentPluginId}/versions/${form.blockVersion.value}/block`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ reason: form.blockReason.value })
+        });
+        $("dialogMsg").className = "ok";
+        $("dialogMsg").textContent = "Version blocked";
+      } catch (err) {
+        $("dialogMsg").className = "error";
+        $("dialogMsg").textContent = err.message;
+      }
+    });
+
+    $("advisoryBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const form = $("pluginDialogForm");
+      try {
+        await api(`/api/v1/plugins/${currentPluginId}/versions/${form.advisoryVersion.value}/advisory`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ severity: form.severity.value, text: form.advisoryText.value })
+        });
+        $("dialogMsg").className = "ok";
+        $("dialogMsg").textContent = "Advisory attached";
+      } catch (err) {
+        $("dialogMsg").className = "error";
+        $("dialogMsg").textContent = err.message;
+      }
+    });
+
+    $("removeBtn").addEventListener("click", async (e) => {
+      e.preventDefault();
+      const form = $("pluginDialogForm");
+      const reason = form.removalReason.value;
+      if (!reason) { $("dialogMsg").textContent = "removalReason is required"; return; }
+      if (!confirm("This permanently deletes all version artifacts from storage. Continue?")) return;
+      try {
+        await api(`/api/v1/plugins/${currentPluginId}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+          body: JSON.stringify({ removalReason: reason })
+        });
+        $("pluginDialog").close();
+        await loadPlugins();
+      } catch (err) {
+        $("dialogMsg").className = "error";
+        $("dialogMsg").textContent = err.message;
+      }
+    });
+
+    async function loadLicenses() {
+      const data = await api("/api/v1/licenses", { headers: authHeaders(false) });
+      const rows = $("licenseRows");
+      rows.innerHTML = "";
+      (data.entitlements || []).forEach((e) => {
+        const keys = (e.publicKeys || e.keys || []).length;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><code>${e.customerId}</code></td>
+          <td>${keys}</td>
+          <td>${e.issuedAt || e.createdAt || ""}</td>
+          <td class="actions">
+            <button class="btn" data-act="rotate">Rotate</button>
+            <button class="btn danger" data-act="revoke">Revoke</button>
+          </td>`;
+        tr.querySelector('[data-act="rotate"]').onclick = async () => {
+          try {
+            const res = await api(`/api/v1/licenses/${e.customerId}/keys`, { method: "POST", headers: authHeaders(false) });
+            alert("New private key (copy now):\n" + (res.privateKey || res.privateKeyPem || ""));
+            await loadLicenses();
+          } catch (err) { alert(err.message); }
+        };
+        tr.querySelector('[data-act="revoke"]').onclick = async () => {
+          if (!confirm("Revoke entitlement for " + e.customerId + "?")) return;
+          try {
+            await api(`/api/v1/licenses/${e.customerId}`, { method: "DELETE", headers: authHeaders(false) });
+            await loadLicenses();
+          } catch (err) { alert(err.message); }
+        };
+        rows.appendChild(tr);
+      });
+    }
+
+    $("createLicenseForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("createLicenseMsg").textContent = "";
+      const customerId = new FormData(e.target).get("customerId");
+      try {
+        const res = await api("/api/v1/licenses", {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ customerId })
+        });
+        $("createLicenseMsg").className = "ok";
+        $("createLicenseMsg").textContent =
+          "Created. Private key (shown once):\n" + (res.privateKey || res.privateKeyPem);
+        e.target.reset();
+        await loadLicenses();
+      } catch (err) {
+        $("createLicenseMsg").className = "error";
+        $("createLicenseMsg").textContent = err.message;
+      }
+    });
+
+    // Handle GitHub OAuth callback token in query (?token=)
+    const params = new URLSearchParams(location.search);
+    if (params.get("token")) {
+      sessionStorage.setItem(TOKEN_KEY, params.get("token"));
+      history.replaceState({}, "", "/operator/");
+    }
+
+    ensureSession();
+  </script>
+</body>
+</html>
