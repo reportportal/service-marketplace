@@ -1,5 +1,0 @@
-1. Deploy with Helm after setting secrets in values (admin password bcrypt, JWT secret, GitHub OAuth).
-2. Ensure the GCS bucket exists and the workload identity / SA can read/write objects.
-3. Configure Cloud CDN URL map name in `cdn.urlMap` for cache invalidation.
-4. Operator UI: http://<host>/operator/
-5. Health: http://<host>/actuator/health
