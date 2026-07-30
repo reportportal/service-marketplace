@@ -27,15 +27,10 @@ On Windows:
 
 **Local admin login:** username `admin`, password is the same.
 
-The packaged jar carries **no default profile**, so those development credentials never reach a
-deployment by accident. Started without configuration it refuses to boot; run it with
+The packaged jar carries **no default profile**, run it with
 `SPRING_PROFILES_ACTIVE=local` for a throwaway local instance, or provide real secrets (see below).
 
 Optional GitHub OAuth: set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` to enable **Login with GitHub**. Until both are set, both GitHub auth endpoints return `503`.
-
-Operator browser sessions use an HttpOnly `mp_operator_session` cookie (set by admin login and the
-GitHub OAuth callback). The JWT is never placed in a redirect query string. Non-browser clients can
-still use `Authorization: Bearer`.
 
 ### Tests
 
@@ -53,35 +48,30 @@ Operator publish, block, remove, advisory, license, and auth endpoints are docum
 
 Spring relaxed binding maps env vars to `marketplace.*` properties (see `application.yml`).
 
-| Variable                     | Property                                    | Purpose                                            |
-| ---------------------------- | ------------------------------------------- | -------------------------------------------------- |
-| `STORAGE_TYPE`               | `marketplace.storage.type`                  | `local` (default) or `gcs`                         |
-| `STORAGE_LOCAL_ROOT`         | `marketplace.storage.local.root`            | Local object root (default `./data/marketplace`)   |
-| `GCS_BUCKET`                 | `marketplace.gcs.bucket`                    | Public GCS bucket (Cloud CDN origin)               |
-| `GCS_PRIVATE_BUCKET`         | `marketplace.gcs.private-bucket`            | Private GCS bucket for premium artifacts           |
-| `GCS_LOCATION`               | `marketplace.gcs.location`                  | GCS bucket location                                |
-| `CDN_BASE_URL`               | `marketplace.cdn.base-url`                  | Public CDN base URL for catalogue/asset links      |
-| `CDN_URL_MAP`                | `marketplace.cdn.url-map`                   | GCP URL map name for cache invalidation            |
-| `ADMIN_USERNAME`             | `marketplace.auth.admin.username`           | Operator admin username                            |
-| `ADMIN_PASSWORD_HASH`        | `marketplace.auth.admin.password-hash`      | **Required** bcrypt hash (plaintext admin password is not supported) |
-| `JWT_SECRET`                 | `marketplace.auth.jwt.secret`               | **Required.** Session/OAuth-state JWT signing secret, ≥32 chars |
-| `JWT_ISSUER`                 | `marketplace.auth.jwt.issuer`               | JWT `iss` claim                                    |
-| `JWT_TTL_SECONDS`            | `marketplace.auth.jwt.ttl-seconds`          | Session lifetime                                   |
-| `GITHUB_OAUTH_CLIENT_ID`     | `marketplace.auth.github.client-id`         | GitHub OAuth App client id                         |
-| `GITHUB_OAUTH_CLIENT_SECRET` | `marketplace.auth.github.client-secret`     | GitHub OAuth App secret                            |
-| `GITHUB_OAUTH_ALLOWED_ORG`   | `marketplace.auth.github.allowed-org`       | Required org membership                            |
-| `GITHUB_OAUTH_ALLOWED_TEAM`  | `marketplace.auth.github.allowed-team`      | Optional team **slug** (e.g. `core-team`); enforced when set |
-| `GITHUB_OAUTH_REDIRECT_URI`  | `marketplace.auth.github.redirect-uri`      | OAuth callback URL                                 |
-| `GITHUB_OAUTH_STATE_TTL_SECONDS` | `marketplace.auth.github.oauth-state-ttl-seconds` | Signed OAuth `state` TTL (default `600`) |
-| `LOGIN_RATE_LIMIT_*`         | `marketplace.auth.login-rate-limit.*`       | Per-username admin login lockout (see below)       |
-| `PUBLISH_OIDC_AUDIENCE`      | `marketplace.publish-oidc-trust.audience`   | Expected OIDC `aud` for CI publish                 |
-| `MAX_UPLOAD_FILE_SIZE`       | `spring.servlet.multipart.max-file-size`    | Max size of a single bundle part (default `128MB`) |
-| `MAX_UPLOAD_REQUEST_SIZE`    | `spring.servlet.multipart.max-request-size` | Max size of the whole bundle (default `160MB`)     |
-
-Multipart limits bound how many bytes a publisher may upload, not how much work a crafted archive
-can force during manifest extraction. `ManifestExtractor` therefore scans at most 10 000 entries,
-reads at most 1 MB of `marketplace-manifest.json`, and aborts once the scan has inflated 256 MB.
-Archives past any of these limits are rejected with `400 VALIDATION_ERROR`.
+| Variable                         | Property                                          | Purpose                                                              |
+| -------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------- |
+| `STORAGE_TYPE`                   | `marketplace.storage.type`                        | `local` (default) or `gcs`                                           |
+| `STORAGE_LOCAL_ROOT`             | `marketplace.storage.local.root`                  | Local object root (default `./data/marketplace`)                     |
+| `GCS_BUCKET`                     | `marketplace.gcs.bucket`                          | Public GCS bucket (Cloud CDN origin)                                 |
+| `GCS_PRIVATE_BUCKET`             | `marketplace.gcs.private-bucket`                  | Private GCS bucket for premium artifacts                             |
+| `GCS_LOCATION`                   | `marketplace.gcs.location`                        | GCS bucket location                                                  |
+| `CDN_BASE_URL`                   | `marketplace.cdn.base-url`                        | Public CDN base URL for catalogue/asset links                        |
+| `CDN_URL_MAP`                    | `marketplace.cdn.url-map`                         | GCP URL map name for cache invalidation                              |
+| `ADMIN_USERNAME`                 | `marketplace.auth.admin.username`                 | Operator admin username                                              |
+| `ADMIN_PASSWORD_HASH`            | `marketplace.auth.admin.password-hash`            | **Required** bcrypt hash (plaintext admin password is not supported) |
+| `JWT_SECRET`                     | `marketplace.auth.jwt.secret`                     | **Required.** Session/OAuth-state JWT signing secret, ≥32 chars      |
+| `JWT_ISSUER`                     | `marketplace.auth.jwt.issuer`                     | JWT `iss` claim                                                      |
+| `JWT_TTL_SECONDS`                | `marketplace.auth.jwt.ttl-seconds`                | Session lifetime                                                     |
+| `GITHUB_OAUTH_CLIENT_ID`         | `marketplace.auth.github.client-id`               | GitHub OAuth App client id                                           |
+| `GITHUB_OAUTH_CLIENT_SECRET`     | `marketplace.auth.github.client-secret`           | GitHub OAuth App secret                                              |
+| `GITHUB_OAUTH_ALLOWED_ORG`       | `marketplace.auth.github.allowed-org`             | Required org membership                                              |
+| `GITHUB_OAUTH_ALLOWED_TEAM`      | `marketplace.auth.github.allowed-team`            | Optional team **slug** (e.g. `core-team`); enforced when set         |
+| `GITHUB_OAUTH_REDIRECT_URI`      | `marketplace.auth.github.redirect-uri`            | OAuth callback URL                                                   |
+| `GITHUB_OAUTH_STATE_TTL_SECONDS` | `marketplace.auth.github.oauth-state-ttl-seconds` | Signed OAuth `state` TTL (default `600`)                             |
+| `LOGIN_RATE_LIMIT_*`             | `marketplace.auth.login-rate-limit.*`             | Per-username admin login lockout (see below)                         |
+| `PUBLISH_OIDC_AUDIENCE`          | `marketplace.publish-oidc-trust.audience`         | Expected OIDC `aud` for CI publish                                   |
+| `MAX_UPLOAD_FILE_SIZE`           | `spring.servlet.multipart.max-file-size`          | Max size of a single bundle part (default `128MB`)                   |
+| `MAX_UPLOAD_REQUEST_SIZE`        | `spring.servlet.multipart.max-request-size`       | Max size of the whole bundle (default `160MB`)                       |
 
 Outside the `local` and `test` profiles, `StartupSecurityValidator` aborts startup when `JWT_SECRET`
 is missing, shorter than 32 characters, or equal to a value committed to this repository, and when

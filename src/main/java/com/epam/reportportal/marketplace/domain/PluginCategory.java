@@ -7,7 +7,9 @@ public enum PluginCategory {
   BUG_TRACKING("bug-tracking"),
   NOTIFICATIONS("notifications"),
   AUTHORIZATION("authorization"),
-  IMPORT("import");
+  IMPORT("import"),
+  OTHER("other");
+
 
   private final String value;
 
