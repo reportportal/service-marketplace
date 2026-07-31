@@ -1,14 +1,22 @@
-# ReportPortal Plugin Marketplace (`service-marketplace`)
-
-Go greenfield implementation on the **`dev`** branch. This is the active registry service.
-
-> **Note:** The Java implementation on `main` / `review-fixes` is **historical only** and is not maintained. All new development happens here on `dev`.
+# ReportPortal Plugin Marketplace
 
 ## Overview
 
-HTTP registry for ReportPortal plugin catalogue, publish, lifecycle, licensing, and operator console. Implements [OpenAPI v1](docs/openapi/service-marketplace-v1.yaml) stages 0–10.
+HTTP registry for ReportPortal plugin catalogue, publish, lifecycle, licensing, and operator console. Implements [OpenAPI v1](docs/openapi/service-marketplace-v1.yaml).
 
 ## Quick start (local)
+
+Requires [Go 1.22+](https://go.dev/dl/) on your `PATH`.
+
+Production requires strong `JWT_SECRET` and `STORAGE_SIGNING_SECRET` (≥32 chars). Set `TRUSTED_PROXY_HOPS` only when behind a trusted reverse proxy.
+
+After start:
+
+- Health: `GET http://localhost:8080/health`, `GET http://localhost:8080/ready`
+- Operator UI: http://localhost:8080/operator/
+- API: `/api/v1/...`
+
+### Linux / macOS
 
 ```bash
 export ALLOW_INSECURE_DEFAULTS=true   # local/dev only — never in production
@@ -24,11 +32,39 @@ export CDN_BASE_URL=http://localhost:8080/cdn
 go run ./cmd/marketplace
 ```
 
-Production requires strong `JWT_SECRET` and `STORAGE_SIGNING_SECRET` (≥32 chars). Set `TRUSTED_PROXY_HOPS` only when behind a trusted reverse proxy.
+### Windows (PowerShell)
 
-- Health: `GET /health`, `GET /ready`
-- Operator UI: http://localhost:8080/operator/
-- API: `/api/v1/...`
+From the repository root (`service-marketplace`):
+
+```powershell
+$env:ALLOW_INSECURE_DEFAULTS = "true"   # local/dev only — never in production
+$env:STORAGE_TYPE = "local"
+$env:STORAGE_LOCAL_ROOT = ".\data"
+$env:CDN_BASE_URL = "http://localhost:8080/cdn"
+$env:HTTP_ADDR = ":8080"
+
+# Optional when ALLOW_INSECURE_DEFAULTS=true — otherwise set strong secrets (≥32 chars):
+# $env:JWT_SECRET = "local-dev-jwt-secret-at-least-32-chars!!"
+# $env:STORAGE_SIGNING_SECRET = "local-dev-signing-secret-32chars!"
+
+# Optional admin login (bcrypt hash). Generate one, then set:
+#   go run golang.org/x/crypto/bcrypt@latest
+# $env:ADMIN_LOGIN_ENABLED = "true"
+# $env:ADMIN_USERNAME = "admin"
+# $env:ADMIN_PASSWORD_HASH = '$2a$10$...'
+
+go run .\cmd\marketplace
+```
+
+Stop with `Ctrl+C`. Data is written under `.\data`.
+
+Verify in another PowerShell window:
+
+```powershell
+curl.exe -s http://localhost:8080/health
+curl.exe -s http://localhost:8080/api/v1/plugins
+curl.exe -s http://localhost:8080/api/v1/auth/config
+```
 
 ## Configuration
 
