@@ -97,7 +97,7 @@ func (g *GitHubOAuth) VerifyMembership(ctx context.Context, accessToken string) 
 	if client == nil {
 		client = http.DefaultClient
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/orgs/%s/memberships/@me", g.Org), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("https://api.github.com/user/memberships/orgs/%s", g.Org), nil)
 	if err != nil {
 		return "", err
 	}

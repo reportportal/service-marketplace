@@ -13,7 +13,7 @@ Production requires strong `JWT_SECRET` and `STORAGE_SIGNING_SECRET` (≥32 char
 After start:
 
 - Health: `GET http://localhost:8080/health`, `GET http://localhost:8080/ready`
-- Operator UI: http://localhost:8080/operator/
+- Operator UI: <http://localhost:8080/operator/>
 - API: `/api/v1/...`
 
 ### Linux / macOS
@@ -69,7 +69,7 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 ## Configuration
 
 | Variable | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | `STORAGE_TYPE` | `local` or `gcs` |
 | `STORAGE_LOCAL_ROOT` | Local filesystem root (default `./data`) |
 | `STORAGE_SIGNING_SECRET` | HMAC secret for local signed URLs |
@@ -92,7 +92,7 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 
 ## Layout
 
-```
+```txt
 cmd/marketplace/          Entrypoint
 internal/config/          Environment config
 internal/domain/          Index, plugin, manifest, license types
@@ -122,6 +122,49 @@ docker run -p 8080:8080 -e ADMIN_PASSWORD_HASH='...' -e JWT_SECRET='...' -v mp-d
 ```bash
 go test ./...
 ```
+
+## GitHub Oauth App
+
+GitHub login for the Operator UI is enabled when these three env vars are set: `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, and `GITHUB_OAUTH_ORG`.
+
+### 1. Create a GitHub OAuth App
+
+1. GitHub → **Settings** → **Developer settings** → **OAuth Apps** → **New OAuth App**
+2. Set:
+   - **Homepage URL:** `http://localhost:8080/operator/`
+   - **Authorization callback URL:** `http://localhost:8080/api/v1/auth/github/callback`
+3. Create the app and generate a **Client secret**.
+
+For non-local hosts, use your real base URL in both fields (and in `GITHUB_OAUTH_REDIRECT_URL`).
+
+### 2. Set env vars and start
+
+PowerShell example:
+
+```powershell
+$env:ALLOW_INSECURE_DEFAULTS = "true"
+$env:STORAGE_TYPE = "local"
+$env:STORAGE_LOCAL_ROOT = ".\data"
+$env:CDN_BASE_URL = "http://localhost:8080/cdn"
+
+$env:GITHUB_OAUTH_CLIENT_ID = "<from OAuth App>"
+$env:GITHUB_OAUTH_CLIENT_SECRET = "<from OAuth App>"
+$env:GITHUB_OAUTH_ORG = "reportportal"   # org the user must belong to
+# restrict to a team (slug)
+$env:GITHUB_OAUTH_ALLOWED_TEAM = "marketplace-operators"
+# Optional override (defaults to localhost callback above)
+# $env:GITHUB_OAUTH_REDIRECT_URL = "http://localhost:8080/api/v1/auth/github/callback"
+
+go run .\cmd\marketplace
+```
+
+### 3. Verify config:
+
+```powershell
+curl.exe -s http://localhost:8080/api/v1/auth/config
+```
+
+You should see `"githubEnabled": true`.
 
 ## API
 
