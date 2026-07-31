@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReportPortal Marketplace Operator</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header>
+    <h1>Plugin Marketplace Operator</h1>
+    <div id="auth-status"></div>
+  </header>
+
+  <section id="login-section" class="card hidden">
+    <h2>Sign in</h2>
+    <div id="login-options"></div>
+    <form id="admin-login-form" class="hidden">
+      <label>Username <input type="text" id="username" autocomplete="username"></label>
+      <label>Password <input type="password" id="password" autocomplete="current-password"></label>
+      <button type="submit">Sign in</button>
+    </form>
+    <p id="login-error" class="error"></p>
+  </section>
+
+  <section id="console-section" class="hidden">
+    <nav>
+      <button data-tab="plugins" class="active">Plugins</button>
+      <button data-tab="licenses">Licenses</button>
+      <button id="logout-btn">Log out</button>
+    </nav>
+
+    <div id="tab-plugins" class="tab">
+      <h2>Catalogue</h2>
+      <div class="filters">
+        <input type="search" id="search" placeholder="Search plugins">
+        <select id="category">
+          <option value="">All categories</option>
+          <option value="bug-tracking">Bug tracking</option>
+          <option value="notifications">Notifications</option>
+          <option value="authorization">Authorization</option>
+          <option value="import">Import</option>
+          <option value="other">Other</option>
+        </select>
+        <button id="refresh-plugins">Refresh</button>
+      </div>
+      <ul id="plugin-list"></ul>
+    </div>
+
+    <div id="tab-licenses" class="tab hidden">
+      <h2>License entitlements</h2>
+      <form id="create-license-form">
+        <label>Customer ID <input type="text" id="customer-id" required pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]"></label>
+        <label>Expires (optional) <input type="date" id="expires-at"></label>
+        <button type="submit">Create entitlement</button>
+      </form>
+      <pre id="license-result" class="mono hidden"></pre>
+      <ul id="license-list"></ul>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

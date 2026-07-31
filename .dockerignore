@@ -1,0 +1,12 @@
+.git
+.github
+data/
+storage/
+*.md
+!README.md
+bin/
+dist/
+.env
+.env.local
+.idea
+.vscode

@@ -1,0 +1,32 @@
+name: 'ReportPortal Marketplace Publish'
+description: 'Publish a plugin version to the ReportPortal marketplace registry'
+inputs:
+  registry-url:
+    description: 'Marketplace registry base URL'
+    required: true
+  plugin-id:
+    description: 'Expected plugin id (must match manifest and OIDC allow-list)'
+    required: false
+  jar-path:
+    description: 'Path to the plugin jar artifact'
+    required: true
+    default: 'build/libs/*.jar'
+  changelog-path:
+    description: 'Optional CHANGELOG.md path'
+    required: false
+  first-version:
+    description: 'Publish as first version (POST /plugins) when true'
+    required: false
+    default: 'false'
+runs:
+  using: 'composite'
+  steps:
+    - name: Publish plugin
+      shell: bash
+      env:
+        REGISTRY_URL: ${{ inputs.registry-url }}
+        PLUGIN_ID: ${{ inputs.plugin-id }}
+        JAR_PATH: ${{ inputs.jar-path }}
+        CHANGELOG_PATH: ${{ inputs.changelog-path }}
+        FIRST_VERSION: ${{ inputs.first-version }}
+      run: ${{ github.action_path }}/publish.sh

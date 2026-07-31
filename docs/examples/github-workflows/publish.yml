@@ -1,0 +1,26 @@
+﻿name: Publish to Marketplace
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build plugin
+        run: ./gradlew build
+      - name: Publish
+        uses: reportportal/marketplace-publish-action@v1
+        with:
+          registry-url: https://marketplace.reportportal.io
+          jar-path: build/libs/plugin-example.jar
+          plugin-id: plugin-example
+          changelog-path: CHANGELOG.md

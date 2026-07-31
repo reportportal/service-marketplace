@@ -1,0 +1,1836 @@
+﻿openapi: 3.0.3
+info:
+  title: ReportPortal Plugin Marketplace Registry
+  description: |
+    REST API for the ReportPortal Plugin Marketplace registry (`service-marketplace`).
+
+    Public read endpoints are unauthenticated and CDN-cacheable (except artifact download,
+    which hits the registry origin). Operator endpoints accept a registry session (ADR-010) as
+    either an `Authorization: Bearer` token or the `mp_operator_session` cookie the Operator UI
+    uses; the two publish operations additionally accept a GitHub Actions OIDC token (CI/CD,
+    ADR-014). A cookie-authenticated unsafe method must carry the CSRF double submit described
+    on `operatorSessionCookie`.
+
+    API path versioning follows ADR-006. This document describes `/api/v1/`.
+
+    Deprecation signalling (NFR-15, AMD-28), stated once here rather than on every response.
+    WHEN `/api/v1/` enters a deprecation window, every response carries a `Deprecation` header and
+    a `Sunset` header giving the RFC 8594 retirement date; the two header components are retained
+    for that purpose. WHILE it is not deprecated — which is the case today — neither header is
+    present on any response, and their absence is the signal that the version is current. A client
+    reads the headers if they arrive and must not require them.
+  contact:
+    name: Support
+    email: support@reportportal.io
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  version: 1.0.0
+
+servers:
+  - url: https://marketplace.reportportal.io
+    description: ReportPortal-operated registry (default)
+  - url: '{protocol}://{host}'
+    description: Self-hosted registry instance (ADR-004)
+    variables:
+      protocol:
+        default: https
+        enum:
+          - http
+          - https
+      host:
+        default: localhost:8080
+        description: Registry host name and optional port
+
+tags:
+  - name: Public — Plugins
+    description: Unauthenticated plugin catalogue reads (CDN-cacheable)
+  - name: Public — Artifacts
+    description: Artifact download — registry origin (not CDN-cached)
+  - name: Operator — Auth
+    description: Operator authentication (ADR-010)
+  - name: Operator — Plugins
+    description: Plugin lifecycle management (publish, block, remove, tier)
+  - name: Operator — Licenses
+    description: Premium license entitlement management (FR-OP-13..15)
+  - name: Operator — Advisories
+    description: Security advisory management (Phase 2, FR-OP-06)
+
+paths:
+  /api/v1/plugins:
+    get:
+      tags:
+        - Public — Plugins
+      summary: List plugins
+      description: |
+        Returns all plugins from the precomputed registry index. Supports filtering by
+        category and free-text search (FR-U-01). Removed plugins are excluded from the listing.
+
+        Pagination is not supported in v1; the full catalogue is returned. Future additive
+        pagination will not require a new API version (ADR-006).
+      operationId: listPlugins
+      parameters:
+        - $ref: '#/components/parameters/CategoryQuery'
+        - $ref: '#/components/parameters/SearchQuery'
+      responses:
+        '200':
+          description: Plugin catalogue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginListResponse'
+              examples:
+                catalogue:
+                  $ref: '#/components/examples/PluginListExample'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security: []
+
+    post:
+      tags:
+        - Operator — Plugins
+      summary: Publish first version of a new plugin
+      description: |
+        Creates a new plugin entry by publishing its first version (FR-OP-01). The plugin ID
+        and version are extracted from the in-jar `marketplace-manifest.json`. The manifest
+        `id` must match the intended plugin entry. Initial trust tier is set to `official`
+        in Phase 1/2 (ADR-003).
+
+        Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
+        screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
+
+        Archive limits (rejected with `422 VALIDATION_ERROR`): at most 10 000 entries scanned
+        while locating the manifest, `marketplace-manifest.json` at most 1 MB, and at most
+        256 MB of decompressed data across the scan.
+      operationId: publishFirstVersion
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PublishBundleMultipart'
+      responses:
+        '201':
+          description: Plugin published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishResponse'
+              examples:
+                published:
+                  $ref: '#/components/examples/PublishResponseExample'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+        - githubOidcJwt: []
+
+  /api/v1/plugins/{pluginId}:
+    get:
+      tags:
+        - Public — Plugins
+      summary: Get plugin detail
+      description: |
+        Returns plugin detail composed from operator state and the latest version manifest (§6.4).
+        Returns `410 Gone` with a tombstone payload when the plugin has been removed (FR-OP-04).
+      operationId: getPlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      responses:
+        '200':
+          description: Plugin detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginDetail'
+              examples:
+                detail:
+                  $ref: '#/components/examples/PluginDetailExample'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Plugin removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginTombstone'
+              examples:
+                removed:
+                  $ref: '#/components/examples/PluginTombstoneExample'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security: []
+
+    patch:
+      tags:
+        - Operator — Plugins
+      summary: Update operator-managed plugin fields
+      description: |
+        Updates operator-managed fields only (FR-OP-05). In-jar manifest fields cannot be
+        edited on the registry side (ADR-002). In Phase 1/2 only `tier=official` is accepted;
+        `partner` is schema-reserved until Phase 3 (ADR-003).
+      operationId: updatePlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetTierRequest'
+      responses:
+        '200':
+          description: Plugin updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginOperatorState'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+    delete:
+      tags:
+        - Operator — Plugins
+      summary: Remove a plugin entirely
+      description: |
+        Irreversible removal (FR-OP-04). Requires `removalReason` in the request body.
+        Operator identity from the auth token is recorded as `removedBy`. Hard-deletes all
+        version artifacts from storage and writes a tombstone for subsequent `410` responses.
+      operationId: removePlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RemovePluginRequest'
+      responses:
+        '200':
+          description: >-
+            Plugin removed. The only success this operation has: the plugin is tombstoned, its
+            artifacts are deleted, the catalogue index is regenerated and the tombstone is returned
+            as the body. There is no bodyless variant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginTombstone'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/plugins/{pluginId}/versions:
+    get:
+      tags:
+        - Public — Plugins
+      summary: List plugin versions
+      description: |
+        Returns version history with block state per version. Returns `410 Gone` when the
+        plugin has been removed.
+      operationId: listPluginVersions
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginVersionListResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Plugin removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginTombstone'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security: []
+
+    post:
+      tags:
+        - Operator — Plugins
+      summary: Publish a new version
+      description: |
+        Publishes a new immutable version for an existing plugin (FR-OP-02). The in-jar
+        manifest `id` and `version` must match the URL path. Idempotent retry is supported
+        when publish is interrupted before index commit (§6.4).
+
+        Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
+        screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
+
+        Archive limits (rejected with `422 VALIDATION_ERROR`): at most 10 000 entries scanned
+        while locating the manifest, `marketplace-manifest.json` at most 1 MB, and at most
+        256 MB of decompressed data across the scan.
+      operationId: publishVersion
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PublishBundleMultipart'
+      responses:
+        '201':
+          description: Version published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+        - githubOidcJwt: []
+
+  /api/v1/plugins/{pluginId}/versions/{version}:
+    get:
+      tags:
+        - Public — Plugins
+      summary: Get version detail
+      description: |
+        Returns composed version metadata: manifest fields, trust tier, block flag, optional
+        security advisory (Phase 2), absolute CDN URLs for changelog and screenshots, and
+        the SHA-256 checksum of the `.jar` artifact (used by `MarketplaceClient` before install).
+      operationId: getPluginVersion
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - $ref: '#/components/parameters/Version'
+      responses:
+        '200':
+          description: Version detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginVersionDetail'
+              examples:
+                versionDetail:
+                  $ref: '#/components/examples/PluginVersionDetailExample'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Plugin removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginTombstone'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security: []
+
+  /api/v1/plugins/{pluginId}/versions/{version}/artifact:
+    get:
+      tags:
+        - Public — Artifacts
+      summary: Download plugin artifact
+      description: |
+        Serves or authorizes download of the `.jar` artifact. Evaluation order:
+        1. Removed plugin → `410 Gone` with tombstone
+        2. Blocked version → `403 Forbidden` with block payload (FR-OP-03)
+        3. Public plugin → `302` redirect to CloudFront CDN URL
+        4. Premium plugin → requires valid license JWT; returns JSON with S3 pre-signed URL (60s)
+
+        Optional `X-RP-Instance-Id` header (FR-L-06) is used for analytics and is never
+        forwarded to CDN or pre-signed URLs.
+
+        Emits a `plugin_artifact_request` GA event asynchronously (FR-R-08, Phase 4).
+      operationId: getPluginArtifact
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - $ref: '#/components/parameters/Version'
+        - $ref: '#/components/parameters/RpInstanceId'
+      responses:
+        '200':
+          description: Premium artifact pre-signed URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PremiumArtifactResponse'
+              examples:
+                premium:
+                  $ref: '#/components/examples/PremiumArtifactExample'
+        '302':
+          description: Public artifact redirect to CDN
+          headers:
+            Location:
+              description: CloudFront URL of the `.jar` artifact
+              schema:
+                type: string
+                format: uri
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Blocked version or invalid license
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/BlockedArtifactError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                blocked:
+                  $ref: '#/components/examples/BlockedArtifactExample'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: Plugin removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginTombstone'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security:
+        - {}
+        - licenseJwt: []
+
+  /api/v1/plugins/{pluginId}/versions/{version}/block:
+    post:
+      tags:
+        - Operator — Plugins
+      summary: Block a version
+      description: |
+        Marks a version as unsafe without deleting it (FR-OP-03). Blocked versions remain
+        visible in version history but cannot be newly installed.
+      operationId: blockVersion
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - $ref: '#/components/parameters/Version'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockVersionRequest'
+      responses:
+        '200':
+          description: Version blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockedVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/plugins/{pluginId}/versions/{version}/advisory:
+    post:
+      tags:
+        - Operator — Advisories
+      summary: Attach a security advisory
+      description: |
+        Attaches or updates a security advisory for a plugin version (FR-OP-06, Phase 2).
+        Advisory is included in the version detail response and surfaced in RP consumer UI.
+      operationId: attachAdvisory
+      x-marketplace-phase: 2
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - $ref: '#/components/parameters/Version'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AttachAdvisoryRequest'
+      responses:
+        '200':
+          description: >-
+            Advisory attached. The only success this operation has: the advisory replaces whatever
+            was previously attached to the version, so attaching the first advisory and replacing an
+            existing one are the same outcome and return the same body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAdvisory'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/auth/config:
+    get:
+      tags:
+        - Operator — Auth
+      summary: Which sign-in controls the console may render
+      description: |
+        Reports whether each sign-in method can actually complete on this deployment, so the
+        operator console renders a control only when following it leads somewhere.
+
+        Unauthenticated by necessity: it is read before anybody holds a credential. It reads
+        configuration and performs no I/O — a capability document that calls out to a store or to
+        GitHub is a health check anybody on the internet can schedule.
+
+        Carries capability booleans and nothing else. A client id, the organisation whose members
+        are admitted, or the admin user name would each hand an attacker part of the picture, and
+        the console never needs to know why a control is unavailable.
+      operationId: getAuthConfig
+      responses:
+        '200':
+          description: Sign-in capabilities of this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthConfigResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security: []
+
+  /api/v1/auth/github/login:
+    get:
+      tags:
+        - Operator — Auth
+      summary: Start GitHub OAuth login
+      description: |
+        Redirects the browser to GitHub for OAuth authorization (ADR-010). Intended for
+        Operator UI browser flows only. Issues a signed, short-lived OAuth `state` as an
+        HttpOnly `mp_oauth_state` cookie (default TTL 600s) and the same value in the GitHub
+        authorize URL. Unavailable when GitHub OAuth credentials are not configured — the
+        registry never falls back to a local stand-in identity.
+      operationId: githubLogin
+      responses:
+        '302':
+          description: Redirect to GitHub authorization page
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_oauth_state=<jwt>; Path=/api/v1/auth/github; HttpOnly; SameSite=Lax; Max-Age=600
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      security: []
+
+  /api/v1/auth/github/callback:
+    get:
+      tags:
+        - Operator — Auth
+      summary: GitHub OAuth callback
+      description: |
+        OAuth callback handler. Validates that the query `state` matches the `mp_oauth_state`
+        cookie and is a signed, unexpired OAuth-state JWT, then verifies GitHub org membership
+        and — when `GITHUB_OAUTH_ALLOWED_TEAM` is set — active team membership. On success,
+        issues a short-lived registry session JWT as an HttpOnly `mp_operator_session` cookie
+        and redirects the browser to the Operator UI. The JWT is never placed in the Location
+        query string. Unavailable when GitHub OAuth credentials are not configured.
+      operationId: githubCallback
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to Operator UI with session cookie set
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+                example: /operator/
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_operator_session=<jwt>; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+      security: []
+
+  /api/v1/auth/login:
+    post:
+      tags:
+        - Operator — Auth
+      summary: Admin credential login
+      description: |
+        Fallback login with predefined admin username/password (ADR-010). Password is
+        verified against a bcrypt hash configured at deploy time (`ADMIN_PASSWORD_HASH` only;
+        plaintext password config is not supported). Sets the HttpOnly `mp_operator_session`
+        cookie for browser Operator UI use, and also returns the JWT in the response body for
+        non-browser clients. Lockout is keyed on client address + username and returns `429`
+        after repeated failures; IP throttling is expected at the edge (Cloud Armor).
+      operationId: adminLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminLoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_operator_session=<jwt>; Path=/; HttpOnly; SameSite=Lax; Max-Age=3600
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          description: Too many login attempts for this username
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security: []
+
+  /api/v1/auth/logout:
+    post:
+      tags:
+        - Operator — Auth
+      summary: Log out
+      description: |
+        Revokes the presented session and clears the HttpOnly `mp_operator_session` cookie.
+
+        Revocation is server-side and by `jti`: the identifier of the session that authenticated
+        this request is recorded as revoked, so a bearer copy of the same session — a token the
+        operator pasted elsewhere, or one an attacker captured — stops working too. Clearing the
+        cookie alone would only sign out this browser.
+
+        The route is authenticated for that reason: an anonymous call carries no session to
+        revoke, and answering it `204` would report success for revoking nothing.
+      operationId: logout
+      responses:
+        '204':
+          description: Logged out; session cookie cleared
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: mp_operator_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/licenses:
+    get:
+      tags:
+        - Operator — Licenses
+      summary: List license entitlements
+      description: |
+        Lists premium license entitlements stored in `authorized_keys.json` (ADR-011/012).
+        Private signing keys are never returned.
+      operationId: listLicenses
+      responses:
+        '200':
+          description: License entitlements
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseEntitlementListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+    post:
+      tags:
+        - Operator — Licenses
+      summary: Create license entitlement
+      description: |
+        Generates an Ed25519 key pair and creates a new customer entitlement (FR-OP-13).
+        The response includes the private signing key **once** for secure delivery to the customer.
+      operationId: createLicense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLicenseRequest'
+      responses:
+        '201':
+          description: Entitlement created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateLicenseResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/licenses/{customerId}:
+    delete:
+      tags:
+        - Operator — Licenses
+      summary: Revoke license entitlement
+      description: |
+        Revokes a customer entitlement immediately (FR-OP-14). Next premium download attempt fails.
+      operationId: revokeLicense
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+      responses:
+        '204':
+          description: Entitlement revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/licenses/{customerId}/keys:
+    post:
+      tags:
+        - Operator — Licenses
+      summary: Rotate license key
+      description: |
+        Adds a new public verification key alongside the existing one (FR-OP-15) to support
+        zero-downtime license key rotation. Returns the new private signing key once.
+      operationId: rotateLicenseKey
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+      responses:
+        '201':
+          description: New key pair generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotateLicenseKeyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+components:
+  securitySchemes:
+    operatorSessionJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Registry operator session token issued on login (ADR-010). Preferred by non-browser
+        clients. Browser Operator UI uses `operatorSessionCookie` instead so the JWT never
+        appears in URLs or JavaScript-accessible storage.
+
+        A request carrying `Authorization: Bearer` is EXEMPT from the CSRF double submit that
+        `operatorSessionCookie` requires. An `Authorization` header cannot be attached by a
+        cross-site form post, so the ambient authority CSRF defends against is not present; a
+        programmatic client therefore needs no token exchange.
+    operatorSessionCookie:
+      type: apiKey
+      in: cookie
+      name: mp_operator_session
+      description: |
+        HttpOnly session cookie carrying the same JWT as `operatorSessionJwt`. Set by
+        `/api/v1/auth/login` and `/api/v1/auth/github/callback`; cleared by logout.
+        Attributes: `Path=/`, `HttpOnly`, `SameSite=Lax`, `Secure` when the request is HTTPS.
+
+        CSRF double submit, required on EVERY unsafe method (POST, PATCH, DELETE) authenticated
+        this way: read the `XSRF-TOKEN` cookie the registry sets on any safe request and echo its
+        value in the `X-XSRF-TOKEN` header. A request that omits it, or sends a value that does
+        not match the cookie, is answered `403` with the code `CSRF_TOKEN_INVALID` — the
+        authentication succeeded and the write was refused.
+
+        `POST /api/v1/auth/login` is the one exemption: no session exists yet, so there is no
+        ambient authority to abuse.
+    githubOidcJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        GitHub Actions OIDC token for CI/CD publish (ADR-014). Distinguished from session
+        JWTs by the `iss` claim (`token.actions.githubusercontent.com`).
+
+        Accepted on the publish operations only — `publishFirstVersion` and `publishVersion`.
+        Every other operator operation requires an operator session; a workflow token presented
+        there is authenticated and then refused with `403`.
+    licenseJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Ed25519-signed license JWT for premium artifact download (ADR-012). Payload:
+        `{ customerId, pluginId, iat, exp }` with 60 second expiry.
+
+  parameters:
+    PluginId:
+      name: pluginId
+      in: path
+      required: true
+      description: Plugin identifier from manifest (e.g. `plugin-jira-cloud`)
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        example: plugin-jira-cloud
+
+    Version:
+      name: version
+      in: path
+      required: true
+      description: |
+        Semantic version (semver). Must also be a single storage-key segment (no `/`, `\`, or `..`).
+        The `..` half of that rule is in the pattern as well as in this sentence: a generated client
+        and a schema validator read only the pattern.
+      schema:
+        type: string
+        pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?!.*\.\.)[\w.-]+)?(?:\+(?!.*\.\.)[\w.-]+)?$'
+        example: '1.4.2'
+
+    CustomerId:
+      name: customerId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+        minLength: 2
+        maxLength: 64
+        example: acme-corp
+
+    CategoryQuery:
+      name: category
+      in: query
+      required: false
+      description: Filter by plugin category
+      schema:
+        $ref: '#/components/schemas/PluginCategory'
+
+    SearchQuery:
+      name: q
+      in: query
+      required: false
+      description: Free-text search across plugin name and description
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+
+    RpInstanceId:
+      name: X-RP-Instance-Id
+      in: header
+      required: false
+      description: |
+        Stable per-instance UUID sent by `service-api` on artifact requests only (FR-L-06).
+        Used as GA `client_id`; never forwarded to CDN or pre-signed URLs.
+      schema:
+        type: string
+        format: uuid
+
+  headers:
+    RetryAfter:
+      description: |
+        Seconds to wait before retrying. Emitted on the two storage failures that are transient by
+        construction: a lost compare-and-swap race and an unavailable store.
+      schema:
+        type: integer
+        example: 1
+
+    Deprecation:
+      description: |
+        Present when API version `/api/v1/` is in deprecation window (NFR-15, ADR-006).
+      schema:
+        type: string
+        example: 'true'
+    Sunset:
+      description: RFC 8594 sunset date for deprecated API version
+      schema:
+        type: string
+        format: date-time
+
+  responses:
+    Unauthorized:
+      description: Authentication required or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: UNAUTHORIZED
+            message: Invalid or missing bearer token
+
+    Forbidden:
+      description: Authenticated but not permitted
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: FORBIDDEN
+            message: Operator access denied
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: NOT_FOUND
+            message: Plugin not found
+
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+          example:
+            code: VALIDATION_ERROR
+            message: Publish bundle validation failed
+            errors:
+              - field: manifest.id
+                message: Manifest id does not match URL pluginId
+
+    PayloadTooLarge:
+      description: |
+        Publish bundle exceeds the maximum upload size accepted by the registry. The enforced
+        limits are 128 MB for any single part and 160 MB for the whole multipart request — the jar
+        plus an optional changelog and up to five screenshots.
+
+        These are the numbers the deployment enforces, which is what a client needs; they are not
+        the numbers NFR-16 states, and reconciling the two is a configuration decision rather than
+        a documentation one.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: PAYLOAD_TOO_LARGE
+            message: Publish bundle exceeds the maximum upload size accepted by the registry
+
+    BadRequest:
+      description: |
+        Request body could not be read, or a required parameter is missing or malformed. Distinct
+        from `422`, which means the body parsed and its content was rejected.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: BAD_REQUEST
+            message: Request is malformed or is missing a required parameter
+
+    UnsupportedMediaType:
+      description: Request `Content-Type` is not one this operation accepts
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: UNSUPPORTED_MEDIA_TYPE
+            message: Request media type is not supported
+
+    Conflict:
+      description: |
+        The stored document changed while this request was being applied and the retry budget was
+        exhausted. Transient: retry after the interval in `Retry-After`.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: STORAGE_CONFLICT
+            message: The stored object changed while this request was being applied; retry
+
+    StorageUnavailable:
+      description: |
+        Registry storage is temporarily unavailable. Distinct from `ServiceUnavailable`, which
+        means a capability is not configured on this deployment and which retrying cannot fix.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: STORAGE_UNAVAILABLE
+            message: Registry storage is temporarily unavailable
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: INTERNAL_ERROR
+            message: Unexpected registry error
+
+    ServiceUnavailable:
+      description: Capability is not configured on this deployment
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: SERVICE_UNAVAILABLE
+            message: GitHub OAuth is not configured
+
+  schemas:
+    PluginCategory:
+      type: string
+      enum:
+        - bug-tracking
+        - notifications
+        - authorization
+        - import
+      description: RP-defined controlled vocabulary (§6.2)
+
+    TrustTier:
+      type: string
+      enum:
+        - official
+        - partner
+      description: |
+        Operator-managed trust tier. Phase 1/2 accepts `official` only; `partner` is
+        schema-reserved until Phase 3 (ADR-003).
+
+    AccessTier:
+      type: string
+      enum:
+        - public
+        - premium
+      default: public
+      description: Author-declared access level from in-jar manifest (ADR-011)
+
+    AdvisorySeverity:
+      type: string
+      enum:
+        - low
+        - medium
+        - high
+        - critical
+
+    Author:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: ReportPortal Team
+        email:
+          type: string
+          format: email
+          example: support@reportportal.io
+        url:
+          type: string
+          format: uri
+          example: https://reportportal.io
+
+    Compatibility:
+      type: object
+      required:
+        - reportportal
+      properties:
+        reportportal:
+          type: string
+          description: Semver-style range against ReportPortal release version
+          example: '>=25.1'
+
+    PluginManifestFields:
+      type: object
+      required:
+        - id
+        - name
+        - version
+        - description
+        - author
+        - license
+        - category
+        - compatibility
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+          example: plugin-jira-cloud
+        name:
+          type: string
+          example: Jira Cloud Integration
+        version:
+          type: string
+          pattern: '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?!.*\.\.)[\w.-]+)?(?:\+(?!.*\.\.)[\w.-]+)?$'
+          description: |
+            Semantic version. Must also be a single storage-key segment (no `/`, `\`, or `..`).
+          example: '1.4.2'
+        description:
+          type: string
+          example: Post and link Jira Cloud issues from ReportPortal
+        author:
+          $ref: '#/components/schemas/Author'
+        license:
+          type: string
+          example: Apache-2.0
+        category:
+          $ref: '#/components/schemas/PluginCategory'
+        compatibility:
+          $ref: '#/components/schemas/Compatibility'
+        homepage:
+          type: string
+          format: uri
+          example: https://reportportal.io/docs/plugins/jira-cloud
+        access:
+          $ref: '#/components/schemas/AccessTier'
+        contactUrl:
+          type: string
+          format: uri
+          description: Required when access is premium
+          example: https://reportportal.io/pricing/service-packages/
+
+    PluginListItem:
+      type: object
+      required:
+        - id
+        - name
+        - latestVersion
+        - category
+        - access
+        - tier
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        latestVersion:
+          type: string
+        description:
+          type: string
+        category:
+          $ref: '#/components/schemas/PluginCategory'
+        access:
+          $ref: '#/components/schemas/AccessTier'
+        tier:
+          $ref: '#/components/schemas/TrustTier'
+
+    PluginListResponse:
+      type: object
+      required:
+        - plugins
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginListItem'
+
+    PluginDetail:
+      allOf:
+        - $ref: '#/components/schemas/PluginManifestFields'
+        - type: object
+          required:
+            - tier
+            - latestVersion
+          properties:
+            tier:
+              $ref: '#/components/schemas/TrustTier'
+            latestVersion:
+              type: string
+
+    PluginVersionSummary:
+      type: object
+      required:
+        - version
+        - blocked
+      properties:
+        version:
+          type: string
+        publishedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the version was first published
+        blocked:
+          type: boolean
+        blockedAt:
+          type: string
+          format: date-time
+          nullable: true
+        blockReason:
+          type: string
+          nullable: true
+
+    PluginVersionListResponse:
+      type: object
+      required:
+        - pluginId
+        - versions
+      properties:
+        pluginId:
+          type: string
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PluginVersionSummary'
+
+    SecurityAdvisory:
+      type: object
+      required:
+        - severity
+        - text
+        - attachedAt
+      properties:
+        severity:
+          $ref: '#/components/schemas/AdvisorySeverity'
+        text:
+          type: string
+          example: CVE-2026-1234 — vulnerable jackson-databind. Upgrade to 1.4.3.
+        attachedAt:
+          type: string
+          format: date-time
+
+    PluginVersionDetail:
+      allOf:
+        - $ref: '#/components/schemas/PluginManifestFields'
+        - type: object
+          required:
+            - tier
+            - blocked
+            - sha256
+            - screenshotUrls
+          properties:
+            tier:
+              $ref: '#/components/schemas/TrustTier'
+            blocked:
+              type: boolean
+            blockedAt:
+              type: string
+              format: date-time
+              nullable: true
+            blockReason:
+              type: string
+              nullable: true
+            advisory:
+              $ref: '#/components/schemas/SecurityAdvisory'
+            sha256:
+              type: string
+              pattern: '^[a-f0-9]{64}$'
+              description: SHA-256 checksum of the `.jar` artifact (hex lowercase)
+              example: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+            changelogUrl:
+              type: string
+              format: uri
+              nullable: true
+              description: Absolute CDN URL when CHANGELOG.md was uploaded; null otherwise
+            screenshotUrls:
+              type: array
+              items:
+                type: string
+                format: uri
+              description: Ordered absolute CDN URLs (alphabetical by filename)
+
+    PluginTombstone:
+      type: object
+      required:
+        - removed
+        - removalReason
+        - removedBy
+      properties:
+        removed:
+          type: string
+          format: date-time
+        removalReason:
+          type: string
+        removedBy:
+          type: string
+          description: Operator identity from session JWT subject or OIDC subject
+
+    BlockedVersion:
+      type: object
+      required:
+        - version
+        - blockedAt
+        - reason
+      properties:
+        version:
+          type: string
+        blockedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+
+    BlockedArtifactError:
+      type: object
+      required:
+        - blocked
+        - blockedAt
+        - reason
+      properties:
+        blocked:
+          type: boolean
+          enum:
+            - true
+        blockedAt:
+          type: string
+          format: date-time
+        reason:
+          type: string
+
+    PremiumArtifactResponse:
+      type: object
+      required:
+        - downloadUrl
+        - expiresAt
+      properties:
+        downloadUrl:
+          type: string
+          format: uri
+          description: S3 pre-signed URL valid for 60 seconds (ADR-012, NFR-12)
+        expiresAt:
+          type: string
+          format: date-time
+
+    PluginOperatorState:
+      type: object
+      required:
+        - id
+        - tier
+        - latestVersion
+      properties:
+        id:
+          type: string
+        tier:
+          $ref: '#/components/schemas/TrustTier'
+        latestVersion:
+          type: string
+        blockedVersions:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlockedVersion'
+
+    PublishResponse:
+      type: object
+      required:
+        - pluginId
+        - version
+        - sha256
+      properties:
+        pluginId:
+          type: string
+        version:
+          type: string
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+
+    PublishBundleMultipart:
+      type: object
+      required:
+        - jar
+      properties:
+        jar:
+          type: string
+          format: binary
+          description: |
+            Plugin `.jar` containing `marketplace-manifest.json`. At most 128 MB; the whole
+            multipart request at most 160 MB. The archive is scanned under entry-count,
+            manifest-size, and decompressed-byte limits; archives that exceed them are rejected as
+            invalid.
+        changelog:
+          type: string
+          format: binary
+          description: Optional CHANGELOG.md (markdown)
+        screenshots:
+          type: array
+          items:
+            type: string
+            format: binary
+          maxItems: 5
+          description: Optional PNG/JPEG screenshots (max 2 MB each, NFR-08)
+
+    BlockVersionRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 2000
+
+    RemovePluginRequest:
+      type: object
+      required:
+        - removalReason
+      properties:
+        removalReason:
+          type: string
+          minLength: 1
+          maxLength: 2000
+
+    SetTierRequest:
+      type: object
+      required:
+        - tier
+      properties:
+        tier:
+          $ref: '#/components/schemas/TrustTier'
+
+    AttachAdvisoryRequest:
+      type: object
+      required:
+        - severity
+        - text
+      properties:
+        severity:
+          $ref: '#/components/schemas/AdvisorySeverity'
+        text:
+          type: string
+          minLength: 1
+          maxLength: 5000
+
+    AdminLoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 64
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 128
+
+    AuthConfigResponse:
+      type: object
+      required:
+        - githubEnabled
+        - adminLoginEnabled
+      properties:
+        githubEnabled:
+          type: boolean
+          description: |
+            A GitHub sign-in started now can finish: credentials are configured AND an
+            organisation is set to verify membership against.
+        adminLoginEnabled:
+          type: boolean
+          description: |
+            The local admin form is offered and a password hash exists for it to check against.
+
+    AuthTokenResponse:
+      type: object
+      required:
+        - accessToken
+        - tokenType
+        - expiresIn
+      properties:
+        accessToken:
+          type: string
+          description: Registry session JWT
+        tokenType:
+          type: string
+          enum:
+            - Bearer
+        expiresIn:
+          type: integer
+          description: |
+            Token lifetime in seconds. Bounded above by one hour: the registry refuses to ACCEPT a
+            session token claiming a longer span whatever the deployment's configured TTL says, so
+            a client must not treat a larger value as usable.
+          maximum: 3600
+          example: 3600
+
+    LicensePublicKey:
+      type: object
+      required:
+        - publicKey
+        - issuedAt
+      properties:
+        publicKey:
+          type: string
+          description: Ed25519 public key (base64)
+        issuedAt:
+          type: string
+          format: date
+
+    LicenseEntitlement:
+      type: object
+      required:
+        - customerId
+        - tier
+        - publicKeys
+      properties:
+        customerId:
+          type: string
+        tier:
+          type: string
+          enum:
+            - premium
+        issuedAt:
+          type: string
+          format: date
+        expiresAt:
+          type: string
+          format: date
+          nullable: true
+          description: Null for perpetual licenses
+        publicKeys:
+          type: array
+          items:
+            $ref: '#/components/schemas/LicensePublicKey'
+
+    LicenseEntitlementListResponse:
+      type: object
+      required:
+        - entitlements
+      properties:
+        entitlements:
+          type: array
+          items:
+            $ref: '#/components/schemas/LicenseEntitlement'
+
+    CreateLicenseRequest:
+      type: object
+      required:
+        - customerId
+      properties:
+        customerId:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$'
+          minLength: 2
+          maxLength: 64
+        expiresAt:
+          type: string
+          format: date
+          nullable: true
+          description: Omit or null for perpetual license
+
+    CreateLicenseResponse:
+      allOf:
+        - $ref: '#/components/schemas/LicenseEntitlement'
+        - type: object
+          required:
+            - privateKey
+          properties:
+            privateKey:
+              type: string
+              description: |
+                Ed25519 private signing key (base64). Returned once at creation for
+                secure customer delivery; never stored or returned again.
+
+    RotateLicenseKeyResponse:
+      type: object
+      required:
+        - customerId
+        - privateKey
+        - publicKey
+      properties:
+        customerId:
+          type: string
+        privateKey:
+          type: string
+          description: New Ed25519 private signing key (returned once)
+        publicKey:
+          type: string
+          description: New Ed25519 public verification key (base64)
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: |
+            The registry's error vocabulary. Every value the service can put on the wire is listed
+            here and every value listed here is one the service registers, so a client may switch
+            on it exhaustively.
+          enum:
+            - NOT_FOUND
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - CONFLICT
+            - GONE
+            - VALIDATION_ERROR
+            - SERVICE_UNAVAILABLE
+            - TOO_MANY_REQUESTS
+            - PAYLOAD_TOO_LARGE
+            - BAD_REQUEST
+            - METHOD_NOT_ALLOWED
+            - UNSUPPORTED_MEDIA_TYPE
+            - NOT_ACCEPTABLE
+            - INTERNAL_ERROR
+            - STORED_DOCUMENT_UNREADABLE
+            - SIGNING_UNAVAILABLE
+            - STORAGE_CONFLICT
+            - STORAGE_UNAVAILABLE
+            - CSRF_TOKEN_INVALID
+        message:
+          type: string
+
+    ValidationErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required:
+                  - field
+                  - message
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+
+  examples:
+    PluginListExample:
+      value:
+        plugins:
+          - id: plugin-jira-cloud
+            name: Jira Cloud Integration
+            latestVersion: '1.4.2'
+            description: Post and link Jira Cloud issues from ReportPortal
+            category: bug-tracking
+            access: public
+            tier: official
+          - id: plugin-quality-gate
+            name: Quality Gate
+            latestVersion: '2.0.0'
+            description: Advanced quality gate rules
+            category: import
+            access: premium
+            tier: official
+
+    PluginDetailExample:
+      value:
+        id: plugin-jira-cloud
+        name: Jira Cloud Integration
+        version: '1.4.2'
+        description: Post and link Jira Cloud issues from ReportPortal
+        author:
+          name: ReportPortal Team
+          email: support@reportportal.io
+          url: https://reportportal.io
+        license: Apache-2.0
+        category: bug-tracking
+        compatibility:
+          reportportal: '>=25.1'
+        homepage: https://reportportal.io/docs/plugins/jira-cloud
+        access: public
+        tier: official
+        latestVersion: '1.4.2'
+
+    PluginVersionDetailExample:
+      value:
+        id: plugin-jira-cloud
+        name: Jira Cloud Integration
+        version: '1.4.2'
+        description: Post and link Jira Cloud issues from ReportPortal
+        author:
+          name: ReportPortal Team
+          email: support@reportportal.io
+        license: Apache-2.0
+        category: bug-tracking
+        compatibility:
+          reportportal: '>=25.1'
+        homepage: https://reportportal.io/docs/plugins/jira-cloud
+        access: public
+        tier: official
+        blocked: false
+        sha256: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
+        changelogUrl: https://cdn.marketplace.reportportal.io/plugins/plugin-jira-cloud/versions/1.4.2/CHANGELOG.md
+        screenshotUrls:
+          - https://cdn.marketplace.reportportal.io/plugins/plugin-jira-cloud/versions/1.4.2/screenshots/01-main-view.png
+
+    PluginTombstoneExample:
+      value:
+        removed: '2026-03-01T10:00:00Z'
+        removalReason: Legal request — plugin withdrawn from catalogue
+        removedBy: operator@reportportal.io
+
+    BlockedArtifactExample:
+      value:
+        blocked: true
+        blockedAt: '2026-02-15T10:00:00Z'
+        reason: CVE-2026-1234 in jackson-databind
+
+    PremiumArtifactExample:
+      value:
+        downloadUrl: https://reportportal-marketplace.s3.amazonaws.com/plugins/plugin-quality-gate/versions/2.0.0/plugin-quality-gate-2.0.0.jar?X-Amz-Expires=60
+        expiresAt: '2026-03-15T12:01:00Z'
+
+    PublishResponseExample:
+      value:
+        pluginId: plugin-jira-cloud
+        version: '1.4.2'
+        sha256: a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456

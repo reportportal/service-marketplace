@@ -1,0 +1,40 @@
+replicaCount: 1
+
+image:
+  repository: reportportal/service-marketplace
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  hosts:
+    - host: marketplace.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+env:
+  HTTP_ADDR: ":8080"
+  STORAGE_TYPE: local
+  STORAGE_LOCAL_ROOT: /data
+  CDN_BASE_URL: "http://marketplace.local/cdn"
+  CDN_URL_MAP: ""
+  GCP_PROJECT: ""
+  ADMIN_LOGIN_ENABLED: "true"
+  JWT_ISSUER: service-marketplace
+  PUBLISH_OIDC_AUDIENCE: "marketplace.reportportal.io"
+  PUBLISH_OIDC_ALLOWED_SOURCES: "{}"
+  GA4_MEASUREMENT_ID: ""
+  GA4_API_SECRET: ""
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""
+
+resources: {}

@@ -1,0 +1,269 @@
+package storage
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+type LocalStore struct {
+	root           string
+	cdnBase        string
+	signingSecret  string
+	mu             sync.RWMutex
+	generations    map[string]int64
+}
+
+func NewLocalStore(root, cdnBase, signingSecret string) (*LocalStore, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+	s := &LocalStore{
+		root:          root,
+		cdnBase:       strings.TrimRight(cdnBase, "/"),
+		signingSecret: signingSecret,
+		generations:   map[string]int64{},
+	}
+	if err := s.loadGenerations(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *LocalStore) Type() string { return "local" }
+
+func (s *LocalStore) abs(objectPath string) string {
+	clean := filepath.FromSlash(objectPath)
+	return filepath.Join(s.root, filepath.Clean("/"+clean))
+}
+
+func (s *LocalStore) genPath(objectPath string) string {
+	return s.abs(objectPath) + ".gen"
+}
+
+func (s *LocalStore) loadGenerations() error {
+	return filepath.Walk(s.root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !strings.HasSuffix(path, ".gen") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		gen, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(s.root, strings.TrimSuffix(path, ".gen"))
+		if err != nil {
+			return err
+		}
+		key := filepath.ToSlash(rel)
+		s.generations[key] = gen
+		return nil
+	})
+}
+
+func (s *LocalStore) getGeneration(objectPath string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if g, ok := s.generations[objectPath]; ok {
+		return g
+	}
+	return 0
+}
+
+func (s *LocalStore) setGeneration(objectPath string, gen int64) error {
+	s.mu.Lock()
+	s.generations[objectPath] = gen
+	s.mu.Unlock()
+	return os.WriteFile(s.genPath(objectPath), []byte(strconv.FormatInt(gen, 10)), 0o644)
+}
+
+func (s *LocalStore) Read(ctx context.Context, objectPath string) (*Object, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	p := s.abs(objectPath)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &Object{Path: objectPath, Data: data, Generation: s.getGeneration(objectPath)}, nil
+}
+
+func (s *LocalStore) Write(ctx context.Context, objectPath string, data []byte, expectedGen int64) (int64, error) {
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	default:
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current := s.generations[objectPath]
+	if expectedGen != current {
+		return 0, ErrConflict
+	}
+
+	p := s.abs(objectPath)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return 0, err
+	}
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return 0, err
+	}
+
+	next := current + 1
+	s.generations[objectPath] = next
+	if err := os.WriteFile(s.genPath(objectPath), []byte(strconv.FormatInt(next, 10)), 0o644); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func (s *LocalStore) Delete(ctx context.Context, objectPath string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	p := s.abs(objectPath)
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(s.genPath(objectPath))
+	s.mu.Lock()
+	delete(s.generations, objectPath)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *LocalStore) Exists(ctx context.Context, objectPath string) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	default:
+	}
+	_, err := os.Stat(s.abs(objectPath))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (s *LocalStore) ListPrefix(ctx context.Context, prefix string) ([]string, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	base := s.abs(prefix)
+	var out []string
+	err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.IsDir() || strings.HasSuffix(path, ".gen") || strings.HasSuffix(path, ".tmp") {
+			return nil
+		}
+		rel, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return err
+		}
+		out = append(out, filepath.ToSlash(rel))
+		return nil
+	})
+	return out, err
+}
+
+func (s *LocalStore) PublicURL(objectPath string) string {
+	return s.cdnBase + "/" + CDNPath(objectPath)
+}
+
+func (s *LocalStore) SignedURL(ctx context.Context, objectPath string, ttl time.Duration) (string, time.Time, error) {
+	expiresAt := time.Now().UTC().Add(ttl)
+	exp := strconv.FormatInt(expiresAt.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(s.signingSecret))
+	_, _ = mac.Write([]byte(objectPath + "|" + exp))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	url := fmt.Sprintf("%s/%s?exp=%s&sig=%s", s.cdnBase, CDNPath(objectPath), exp, sig)
+	return url, expiresAt, nil
+}
+
+func (s *LocalStore) Ready(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	info, err := os.Stat(s.root)
+	if err != nil {
+		return ErrUnavailable
+	}
+	if !info.IsDir() {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+func (s *LocalStore) VerifySignedURL(objectPath, exp, sig string) bool {
+	expUnix, err := strconv.ParseInt(exp, 10, 64)
+	if err != nil || time.Now().UTC().Unix() > expUnix {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(s.signingSecret))
+	_, _ = mac.Write([]byte(objectPath + "|" + exp))
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(sig))
+}
+
+func (s *LocalStore) ServeFile(objectPath string, w io.Writer) error {
+	data, err := os.ReadFile(s.abs(objectPath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	_, err = w.Write(data)
+	return err
+}
+
+func HashSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func DecodeBase64Key(s string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(s)
+}
