@@ -82,3 +82,30 @@ func TestLocalStoreConcurrentWrite(t *testing.T) {
 	}
 	_ = genPath
 }
+
+func TestLocalStoreRejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalStore(root, "http://localhost/cdn", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, p := range []string{"../etc/passwd", "..\\windows", "/etc/passwd", "plugins/../../outside"} {
+		if _, err := store.Read(ctx, p); err != ErrNotFound {
+			t.Fatalf("expected ErrNotFound for %q, got %v", p, err)
+		}
+	}
+}
+
+func TestSanitizeScreenshotFilename(t *testing.T) {
+	if _, err := SanitizeScreenshotFilename("../../authorized_keys.json"); err == nil {
+		t.Fatal("expected error")
+	}
+	safe, err := SanitizeScreenshotFilename("Shot.PNG")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if safe != "shot.png" {
+		t.Fatalf("got %s", safe)
+	}
+}

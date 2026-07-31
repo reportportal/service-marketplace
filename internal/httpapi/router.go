@@ -221,3 +221,8 @@ func operatorIdentity(ctx context.Context) string {
 	}
 	return "github-actions"
 }
+
+func oidcPluginFrom(ctx context.Context) string {
+	v, _ := ctx.Value(ctxOIDCPlugin).(string)
+	return v
+}

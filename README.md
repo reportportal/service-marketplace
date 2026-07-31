@@ -11,18 +11,20 @@ HTTP registry for ReportPortal plugin catalogue, publish, lifecycle, licensing, 
 ## Quick start (local)
 
 ```bash
-# Generate admin password hash (example password: admin)
-go run golang.org/x/crypto/bcrypt@latest
-# or: htpasswd -bnBC 10 "" admin | tr -d ':\n'
-
+export ALLOW_INSECURE_DEFAULTS=true   # local/dev only — never in production
 export ADMIN_PASSWORD_HASH='$2a$10$...'
-export JWT_SECRET='dev-secret'
+export JWT_SECRET='local-dev-jwt-secret-at-least-32-chars!!'
+export STORAGE_SIGNING_SECRET='local-dev-signing-secret-32chars!'
+# Or omit the two secrets above when ALLOW_INSECURE_DEFAULTS=true
+
 export STORAGE_TYPE=local
 export STORAGE_LOCAL_ROOT=./data
 export CDN_BASE_URL=http://localhost:8080/cdn
 
 go run ./cmd/marketplace
 ```
+
+Production requires strong `JWT_SECRET` and `STORAGE_SIGNING_SECRET` (≥32 chars). Set `TRUSTED_PROXY_HOPS` only when behind a trusted reverse proxy.
 
 - Health: `GET /health`, `GET /ready`
 - Operator UI: http://localhost:8080/operator/
@@ -40,9 +42,12 @@ go run ./cmd/marketplace
 | `CDN_URL_MAP` | GCP URL map name for invalidation |
 | `ADMIN_LOGIN_ENABLED` | Enable admin form login |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` | Bcrypt admin credentials |
-| `JWT_SECRET` / `JWT_ISSUER` / `JWT_TTL_SECONDS` | Operator session JWT |
+| `JWT_SECRET` / `JWT_ISSUER` / `JWT_TTL_SECONDS` | Operator session JWT (≥32 chars; required unless `ALLOW_INSECURE_DEFAULTS`) |
+| `STORAGE_SIGNING_SECRET` | HMAC for signed CDN URLs (≥32 chars; required unless insecure defaults) |
+| `ALLOW_INSECURE_DEFAULTS` | `true` only for local/dev — enables weak default secrets |
+| `TRUSTED_PROXY_HOPS` | Honor `X-Forwarded-For` only when >0 (login rate-limit keying) |
 | `GITHUB_OAUTH_*` | GitHub OAuth for operator login |
-| `PUBLISH_OIDC_AUDIENCE` | GitHub Actions OIDC audience |
+| `PUBLISH_OIDC_AUDIENCE` | Required when OIDC allow-list is non-empty |
 | `PUBLISH_OIDC_ALLOWED_SOURCES` | JSON map `repo→pluginId` |
 | `GA4_MEASUREMENT_ID` / `GA4_API_SECRET` | Analytics (optional) |
 | `GCP_PROJECT` | GCP project for Cloud CDN invalidation |

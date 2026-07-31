@@ -181,7 +181,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Version not found"})
 		return
 	}
-	artPath := storage.VersionArtifactPath(pluginID, version)
+	artPath := storage.VersionArtifactPath(pluginID, version, string(detail.Manifest.Access))
 	access := string(detail.Manifest.Access)
 	if detail.Manifest.Access == domain.AccessPremium {
 		token := bearerToken(r)
@@ -229,6 +229,17 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if oidcPlugin := oidcPluginFrom(r.Context()); oidcPlugin != "" {
+		m, err := publish.ExtractManifest(bundle.JAR)
+		if err != nil {
+			writeError(w, mapPublishErr(err))
+			return
+		}
+		if m.ID != oidcPlugin {
+			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allowed to publish this pluginId"})
+			return
+		}
+	}
 	res, err := s.deps.Publish.PublishFirst(r.Context(), bundle, operatorIdentity(r.Context()))
 	if err != nil {
 		writeError(w, mapPublishErr(err))
@@ -239,6 +250,10 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	pluginID := chiParam(r, "pluginId")
+	if oidcPlugin := oidcPluginFrom(r.Context()); oidcPlugin != "" && oidcPlugin != pluginID {
+		writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allowed to publish this pluginId"})
+		return
+	}
 	bundle, err := s.parsePublishBundle(r)
 	if err != nil {
 		writeError(w, err)

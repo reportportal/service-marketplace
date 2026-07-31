@@ -42,13 +42,26 @@ func NewLocalStore(root, cdnBase, signingSecret string) (*LocalStore, error) {
 
 func (s *LocalStore) Type() string { return "local" }
 
-func (s *LocalStore) abs(objectPath string) string {
-	clean := filepath.FromSlash(objectPath)
-	return filepath.Join(s.root, filepath.Clean("/"+clean))
+func (s *LocalStore) abs(objectPath string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(objectPath))
+	clean = strings.TrimPrefix(clean, string(filepath.Separator))
+	if clean == "." || clean == "" || strings.HasPrefix(clean, "..") {
+		return "", ErrNotFound
+	}
+	full := filepath.Join(s.root, clean)
+	rel, err := filepath.Rel(s.root, full)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", ErrNotFound
+	}
+	return full, nil
 }
 
-func (s *LocalStore) genPath(objectPath string) string {
-	return s.abs(objectPath) + ".gen"
+func (s *LocalStore) genPath(objectPath string) (string, error) {
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return "", err
+	}
+	return p + ".gen", nil
 }
 
 func (s *LocalStore) loadGenerations() error {
@@ -71,6 +84,9 @@ func (s *LocalStore) loadGenerations() error {
 		if err != nil {
 			return err
 		}
+		if strings.HasPrefix(rel, "..") {
+			return nil
+		}
 		key := filepath.ToSlash(rel)
 		s.generations[key] = gen
 		return nil
@@ -90,7 +106,11 @@ func (s *LocalStore) setGeneration(objectPath string, gen int64) error {
 	s.mu.Lock()
 	s.generations[objectPath] = gen
 	s.mu.Unlock()
-	return os.WriteFile(s.genPath(objectPath), []byte(strconv.FormatInt(gen, 10)), 0o644)
+	gp, err := s.genPath(objectPath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(gp, []byte(strconv.FormatInt(gen, 10)), 0o644)
 }
 
 func (s *LocalStore) Read(ctx context.Context, objectPath string) (*Object, error) {
@@ -99,7 +119,10 @@ func (s *LocalStore) Read(ctx context.Context, objectPath string) (*Object, erro
 		return nil, ctx.Err()
 	default:
 	}
-	p := s.abs(objectPath)
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -117,6 +140,11 @@ func (s *LocalStore) Write(ctx context.Context, objectPath string, data []byte, 
 	default:
 	}
 
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return 0, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -125,7 +153,6 @@ func (s *LocalStore) Write(ctx context.Context, objectPath string, data []byte, 
 		return 0, ErrConflict
 	}
 
-	p := s.abs(objectPath)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return 0, err
 	}
@@ -139,7 +166,8 @@ func (s *LocalStore) Write(ctx context.Context, objectPath string, data []byte, 
 
 	next := current + 1
 	s.generations[objectPath] = next
-	if err := os.WriteFile(s.genPath(objectPath), []byte(strconv.FormatInt(next, 10)), 0o644); err != nil {
+	gp := p + ".gen"
+	if err := os.WriteFile(gp, []byte(strconv.FormatInt(next, 10)), 0o644); err != nil {
 		return 0, err
 	}
 	return next, nil
@@ -151,11 +179,14 @@ func (s *LocalStore) Delete(ctx context.Context, objectPath string) error {
 		return ctx.Err()
 	default:
 	}
-	p := s.abs(objectPath)
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	_ = os.Remove(s.genPath(objectPath))
+	_ = os.Remove(p + ".gen")
 	s.mu.Lock()
 	delete(s.generations, objectPath)
 	s.mu.Unlock()
@@ -168,7 +199,11 @@ func (s *LocalStore) Exists(ctx context.Context, objectPath string) (bool, error
 		return false, ctx.Err()
 	default:
 	}
-	_, err := os.Stat(s.abs(objectPath))
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(p)
 	if err == nil {
 		return true, nil
 	}
@@ -184,9 +219,17 @@ func (s *LocalStore) ListPrefix(ctx context.Context, prefix string) ([]string, e
 		return nil, ctx.Err()
 	default:
 	}
-	base := s.abs(prefix)
+	base, err := s.abs(prefix)
+	if err != nil {
+		// empty prefix listing: use root
+		if prefix == "" || prefix == "/" {
+			base = s.root
+		} else {
+			return nil, err
+		}
+	}
 	var out []string
-	err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -197,7 +240,7 @@ func (s *LocalStore) ListPrefix(ctx context.Context, prefix string) ([]string, e
 			return nil
 		}
 		rel, err := filepath.Rel(s.root, path)
-		if err != nil {
+		if err != nil || strings.HasPrefix(rel, "..") {
 			return err
 		}
 		out = append(out, filepath.ToSlash(rel))
@@ -248,7 +291,11 @@ func (s *LocalStore) VerifySignedURL(objectPath, exp, sig string) bool {
 }
 
 func (s *LocalStore) ServeFile(objectPath string, w io.Writer) error {
-	data, err := os.ReadFile(s.abs(objectPath))
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ErrNotFound

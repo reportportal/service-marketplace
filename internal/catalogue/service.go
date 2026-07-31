@@ -160,9 +160,16 @@ func (s *Service) GetVersion(ctx context.Context, pluginID, version string) (*Ve
 			detail.Advisory = vs.Advisory
 		}
 	}
-	artPath := storage.VersionArtifactPath(pluginID, version)
+	artPath := storage.VersionArtifactPath(pluginID, version, string(detail.Manifest.Access))
 	if obj, err := s.Store.Read(ctx, artPath); err == nil {
 		detail.SHA256 = storage.HashSHA256(obj.Data)
+	} else {
+		for _, v := range st.Versions {
+			if v.Version == version && v.SHA256 != "" {
+				detail.SHA256 = v.SHA256
+				break
+			}
+		}
 	}
 	if ok, _ := s.Store.Exists(ctx, storage.VersionChangelogPath(pluginID, version)); ok {
 		u := s.Store.PublicURL(storage.VersionChangelogPath(pluginID, version))

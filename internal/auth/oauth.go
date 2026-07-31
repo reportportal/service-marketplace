@@ -29,6 +29,7 @@ type GitHubOAuth struct {
 	RedirectURL  string
 	HTTPClient   *http.Client
 	Sessions     *SessionManager
+	States       *OAuthStateStore
 }
 
 func (g *GitHubOAuth) Enabled() bool {
@@ -45,13 +46,17 @@ func (g *GitHubOAuth) AuthorizeURL(state string) string {
 }
 
 func (g *GitHubOAuth) IssueState(ctx context.Context) (string, error) {
-	token, _, err := g.Sessions.Issue(ctx, "oauth-state")
-	return token, err
+	if g.States == nil {
+		g.States = NewOAuthStateStore()
+	}
+	return g.States.Issue()
 }
 
-func (g *GitHubOAuth) VerifyState(ctx context.Context, state string) error {
-	_, err := g.Sessions.Verify(ctx, state)
-	return err
+func (g *GitHubOAuth) ConsumeState(state string) bool {
+	if g.States == nil {
+		return false
+	}
+	return g.States.Consume(state)
 }
 
 func (g *GitHubOAuth) Exchange(ctx context.Context, code string) (string, error) {
@@ -177,7 +182,7 @@ func (g *GitHubOAuth) Callback(ctx context.Context, code, state string) (string,
 	if !g.Enabled() {
 		return "", time.Time{}, ErrGitHubUnavailable
 	}
-	if err := g.VerifyState(ctx, state); err != nil {
+	if !g.ConsumeState(state) {
 		return "", time.Time{}, ErrUnauthorized
 	}
 	token, err := g.Exchange(ctx, code)
@@ -232,18 +237,19 @@ func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject
 	if iss != "https://token.actions.githubusercontent.com" {
 		return "", "", ErrUnauthorized
 	}
-	if v.Audience != "" {
-		aud := parsed.Audience()
-		ok := false
-		for _, a := range aud {
-			if a == v.Audience {
-				ok = true
-				break
-			}
+	if v.Audience == "" {
+		return "", "", ErrUnauthorized
+	}
+	aud := parsed.Audience()
+	okAud := false
+	for _, a := range aud {
+		if a == v.Audience {
+			okAud = true
+			break
 		}
-		if !ok {
-			return "", "", ErrUnauthorized
-		}
+	}
+	if !okAud {
+		return "", "", ErrUnauthorized
 	}
 	sub := parsed.Subject()
 	repoClaim, _ := parsed.Get("repository")

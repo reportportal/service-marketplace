@@ -3,7 +3,9 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
 )
 
 type ErrorCode string
@@ -79,11 +81,29 @@ func writeError(w http.ResponseWriter, err error) {
 	writeJSON(w, http.StatusInternalServerError, ErrorResponse{Code: CodeInternal, Message: "Unexpected registry error"})
 }
 
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
+func clientIP(r *http.Request, trustedProxyHops int) string {
+	// Only honor X-Forwarded-For when explicitly behind a trusted proxy.
+	if trustedProxyHops > 0 {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			// Take the client IP as seen by the last trusted hop.
+			idx := len(parts) - trustedProxyHops
+			if idx < 0 {
+				idx = 0
+			}
+			if parts[idx] != "" {
+				return parts[idx]
+			}
+		}
 	}
-	return r.RemoteAddr
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	return host
 }
 
 func isHTTPS(r *http.Request) bool {

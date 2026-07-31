@@ -60,7 +60,8 @@ func main() {
 	lic := &license.Service{Store: store}
 	ga := &analytics.GA4Client{MeasurementID: cfg.GA4MeasurementID, APISecret: cfg.GA4APISecret, Logger: log.Default()}
 
-	sessions := auth.NewSessionManager(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTTTLSeconds)
+	denylist := auth.NewDenylist(store)
+	sessions := auth.NewSessionManager(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTTTLSeconds, denylist)
 	admin := auth.NewAdminAuthenticator(cfg.AdminLoginEnabled, cfg.AdminUsername, cfg.AdminPasswordHash)
 	gh := &auth.GitHubOAuth{
 		ClientID:     cfg.GitHubOAuthClientID,
@@ -69,6 +70,7 @@ func main() {
 		AllowedTeam:  cfg.GitHubOAuthAllowedTeam,
 		RedirectURL:  cfg.GitHubOAuthRedirectURL,
 		Sessions:     sessions,
+		States:       auth.NewOAuthStateStore(),
 	}
 	oidc := &auth.PublishOIDCVerifier{
 		Audience:       cfg.PublishOIDCAudience,

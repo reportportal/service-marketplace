@@ -20,11 +20,10 @@ import (
 )
 
 const (
-	maxEntries          = 10000
-	maxManifestBytes    = 1 << 20
-	maxDecompressed     = 256 << 20
-	maxScreenshotBytes  = 2 << 20
-	maxScreenshots      = 5
+	maxEntries         = 10000
+	maxManifestBytes   = 1 << 20
+	maxScreenshotBytes = 2 << 20
+	maxScreenshots     = 5
 )
 
 var (
@@ -86,23 +85,14 @@ func (s *Service) ParseMultipart(r *multipart.Reader) (*Bundle, error) {
 		case "changelog":
 			b.Changelog = data
 		case "screenshots":
-			if len(b.Screenshots) >= maxScreenshots {
-				return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: "at most 5 screenshots"}}}
+			if err := addScreenshot(b, filename, data); err != nil {
+				return nil, err
 			}
-			if len(data) > maxScreenshotBytes {
-				return nil, ErrPayloadLarge
-			}
-			ext := strings.ToLower(filepath.Ext(filename))
-			if ext != ".png" && ext != ".jpg" && ext != ".jpeg" {
-				return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: "PNG/JPEG only"}}}
-			}
-			b.Screenshots[filename] = data
 		default:
 			if strings.HasPrefix(name, "screenshots") {
-				if len(b.Screenshots) >= maxScreenshots {
-					return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: "at most 5 screenshots"}}}
+				if err := addScreenshot(b, filename, data); err != nil {
+					return nil, err
 				}
-				b.Screenshots[filename] = data
 			}
 		}
 	}
@@ -112,6 +102,25 @@ func (s *Service) ParseMultipart(r *multipart.Reader) (*Bundle, error) {
 	return b, nil
 }
 
+func addScreenshot(b *Bundle, filename string, data []byte) error {
+	if len(b.Screenshots) >= maxScreenshots {
+		return ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: "at most 5 screenshots"}}}
+	}
+	if len(data) > maxScreenshotBytes {
+		return ErrPayloadLarge
+	}
+	safe, err := storage.SanitizeScreenshotFilename(filename)
+	if err != nil {
+		return ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: "invalid screenshot filename"}}}
+	}
+	ext := strings.ToLower(filepath.Ext(safe))
+	if ext != ".png" && ext != ".jpg" && ext != ".jpeg" {
+		return ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: "PNG/JPEG only"}}}
+	}
+	b.Screenshots[safe] = data
+	return nil
+}
+
 func ExtractManifest(jarData []byte) (*domain.Manifest, error) {
 	zr, err := zip.NewReader(bytes.NewReader(jarData), int64(len(jarData)))
 	if err != nil {
@@ -119,32 +128,24 @@ func ExtractManifest(jarData []byte) (*domain.Manifest, error) {
 	}
 	var manifestData []byte
 	var entries int
-	var decompressed int64
 	for _, f := range zr.File {
 		entries++
 		if entries > maxEntries {
 			return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "jar", Message: "too many archive entries"}}}
 		}
-		if f.UncompressedSize64 > 0 {
-			decompressed += int64(f.UncompressedSize64)
-		} else {
-			decompressed += int64(f.UncompressedSize)
-		}
-		if decompressed > maxDecompressed {
-			return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "jar", Message: "decompressed size limit exceeded"}}}
-		}
 		if f.Name == "marketplace-manifest.json" || strings.HasSuffix(f.Name, "/marketplace-manifest.json") {
-			if f.UncompressedSize64 > maxManifestBytes || f.UncompressedSize > maxManifestBytes {
-				return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "manifest", Message: "manifest exceeds 1MB"}}}
-			}
 			rc, err := f.Open()
 			if err != nil {
 				return nil, err
 			}
-			manifestData, err = io.ReadAll(rc)
+			limited := io.LimitReader(rc, maxManifestBytes+1)
+			manifestData, err = io.ReadAll(limited)
 			rc.Close()
 			if err != nil {
 				return nil, err
+			}
+			if len(manifestData) > maxManifestBytes {
+				return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "manifest", Message: "manifest exceeds 1MB"}}}
 			}
 		}
 	}
@@ -201,7 +202,7 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 	}
 	for _, v := range st.Versions {
 		if v.Version == m.Version {
-			if ok, _ := s.Store.Exists(ctx, storage.VersionArtifactPath(pluginID, m.Version)); ok {
+			if ok, _ := s.Store.Exists(ctx, storage.VersionArtifactPath(pluginID, m.Version, string(m.Access))); ok {
 				return nil, ErrConflict
 			}
 		}
@@ -211,7 +212,7 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 
 func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundle, operator string, first bool) (*Result, error) {
 	sha := storage.HashSHA256(bundle.JAR)
-	artPath := storage.VersionArtifactPath(m.ID, m.Version)
+	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))
 	if _, err := s.Store.Write(ctx, artPath, bundle.JAR, 0); err != nil && !errors.Is(err, storage.ErrConflict) {
 		return nil, err
 	}
@@ -230,7 +231,10 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		path := storage.VersionScreenshotPath(m.ID, m.Version, name)
+		path, err := storage.VersionScreenshotPath(m.ID, m.Version, name)
+		if err != nil {
+			return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: err.Error()}}}
+		}
 		if _, err := s.Store.Write(ctx, path, bundle.Screenshots[name], 0); err != nil {
 			return nil, err
 		}

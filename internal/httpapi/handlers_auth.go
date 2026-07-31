@@ -40,7 +40,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "username", Message: "required"}}})
 		return
 	}
-	if err := s.deps.AdminAuth.Authenticate(clientIP(r), req.Username, req.Password); err != nil {
+	if err := s.deps.AdminAuth.Authenticate(clientIP(r, s.deps.Config.TrustedProxyHops), req.Username, req.Password); err != nil {
 		if errors.Is(err, auth.ErrTooManyAttempts) {
 			writeError(w, &APIError{Status: http.StatusTooManyRequests, Code: CodeTooManyRequests, Message: "Too many login attempts for this username"})
 			return
@@ -71,7 +71,7 @@ func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.Header().Add("Set-Cookie", auth.OAuthStateCookie+"="+state+"; Path=/api/v1/auth/github; HttpOnly; SameSite=Lax; Max-Age=600")
+	w.Header().Add("Set-Cookie", auth.BuildOAuthStateCookie(state, isHTTPS(r)))
 	http.Redirect(w, r, s.deps.GitHub.AuthorizeURL(state), http.StatusFound)
 }
 
@@ -83,10 +83,12 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	cookie, err := r.Cookie(auth.OAuthStateCookie)
-	if err != nil || cookie.Value != state {
+	if err != nil || cookie.Value == "" || cookie.Value != state {
 		writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid OAuth state"})
 		return
 	}
+	// Clear state cookie immediately.
+	w.Header().Add("Set-Cookie", auth.OAuthStateCookie+"=; Path=/api/v1/auth/github; HttpOnly; SameSite=Lax; Max-Age=0")
 	token, _, err := s.deps.GitHub.Callback(r.Context(), code, state)
 	if err != nil {
 		if errors.Is(err, auth.ErrForbidden) {
@@ -102,7 +104,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if claims := sessionFrom(r.Context()); claims != nil {
-		s.deps.Sessions.Revoke(claims.JTI)
+		s.deps.Sessions.Revoke(r.Context(), claims.JTI, claims.Exp)
 	}
 	w.Header().Add("Set-Cookie", auth.ClearSessionCookie(isHTTPS(r)))
 	w.WriteHeader(http.StatusNoContent)

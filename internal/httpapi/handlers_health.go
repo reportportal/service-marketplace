@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
@@ -19,31 +20,37 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCDNProxy(w http.ResponseWriter, r *http.Request) {
-	path := stringsTrimPrefix(r.URL.Path, "/cdn/")
-	if path == "" {
+	objectPath := strings.TrimPrefix(r.URL.Path, "/cdn/")
+	objectPath = strings.TrimPrefix(objectPath, "/")
+	if objectPath == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// Never expose entitlement / session denylist objects via CDN.
+	if storage.IsAuthObject(objectPath) {
+		writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Object is not publicly accessible"})
 		return
 	}
 	exp := r.URL.Query().Get("exp")
 	sig := r.URL.Query().Get("sig")
-	if exp != "" && sig != "" {
-		if !s.deps.LocalStore.VerifySignedURL(path, exp, sig) {
+	// Private (premium) objects always require a valid signed URL.
+	if storage.IsPrivateObject(objectPath) {
+		if exp == "" || sig == "" || !s.deps.LocalStore.VerifySignedURL(objectPath, exp, sig) {
+			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid signed URL"})
+			return
+		}
+	} else if exp != "" || sig != "" {
+		// If a signature is presented for a public object, it must be valid.
+		if exp == "" || sig == "" || !s.deps.LocalStore.VerifySignedURL(objectPath, exp, sig) {
 			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid signed URL"})
 			return
 		}
 	}
-	if err := s.deps.LocalStore.ServeFile(path, w); err != nil {
+	if err := s.deps.LocalStore.ServeFile(objectPath, w); err != nil {
 		if err == storage.ErrNotFound {
 			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Object not found"})
 			return
 		}
 		writeError(w, err)
 	}
-}
-
-func stringsTrimPrefix(s, prefix string) string {
-	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
-		return s[len(prefix):]
-	}
-	return s
 }

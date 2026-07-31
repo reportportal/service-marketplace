@@ -13,7 +13,7 @@ import (
 )
 
 func TestSessionManagerIssueVerify(t *testing.T) {
-	m := NewSessionManager("test-secret-key-32bytes-long!!", "issuer", 3600)
+	m := NewSessionManager("test-secret-key-32bytes-long!!", "issuer", 3600, NewDenylist(nil))
 	ctx := context.Background()
 	token, exp, err := m.Issue(ctx, "admin")
 	if err != nil {
@@ -29,7 +29,7 @@ func TestSessionManagerIssueVerify(t *testing.T) {
 	if claims.Subject != "admin" {
 		t.Fatalf("unexpected subject %s", claims.Subject)
 	}
-	m.Revoke(claims.JTI)
+	m.Revoke(ctx, claims.JTI, claims.Exp)
 	if _, err := m.Verify(ctx, token); err != ErrUnauthorized {
 		t.Fatalf("expected unauthorized after revoke, got %v", err)
 	}

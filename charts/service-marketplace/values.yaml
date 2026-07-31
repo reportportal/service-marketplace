@@ -27,10 +27,18 @@ env:
   GCP_PROJECT: ""
   ADMIN_LOGIN_ENABLED: "true"
   JWT_ISSUER: service-marketplace
+  TRUSTED_PROXY_HOPS: "1"
   PUBLISH_OIDC_AUDIENCE: "marketplace.reportportal.io"
   PUBLISH_OIDC_ALLOWED_SOURCES: "{}"
   GA4_MEASUREMENT_ID: ""
   GA4_API_SECRET: ""
+  # JWT_SECRET and STORAGE_SIGNING_SECRET must come from a Kubernetes Secret (see secrets below).
+  # Do not set ALLOW_INSECURE_DEFAULTS in production.
+
+secrets:
+  # Create a Secret named service-marketplace-secrets with keys:
+  #   JWT_SECRET, STORAGE_SIGNING_SECRET, ADMIN_PASSWORD_HASH (optional)
+  existingSecret: service-marketplace-secrets
 
 persistence:
   enabled: true

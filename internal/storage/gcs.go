@@ -40,7 +40,7 @@ func NewGCSStore(ctx context.Context, bucket, privateBucket, cdnBase, signingSec
 func (s *GCSStore) Type() string { return "gcs" }
 
 func (s *GCSStore) bucketFor(objectPath string) string {
-	if s.privateBucket != "" && strings.Contains(objectPath, "premium") {
+	if s.privateBucket != "" && IsPrivateObject(objectPath) {
 		return s.privateBucket
 	}
 	return s.bucket
@@ -107,7 +107,22 @@ func (s *GCSStore) Exists(ctx context.Context, objectPath string) (bool, error) 
 }
 
 func (s *GCSStore) ListPrefix(ctx context.Context, prefix string) ([]string, error) {
-	it := s.client.Bucket(s.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	out, err := s.listBucketPrefix(ctx, s.bucket, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if s.privateBucket != "" && s.privateBucket != s.bucket {
+		priv, err := s.listBucketPrefix(ctx, s.privateBucket, prefix)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, priv...)
+	}
+	return out, nil
+}
+
+func (s *GCSStore) listBucketPrefix(ctx context.Context, bucket, prefix string) ([]string, error) {
+	it := s.client.Bucket(bucket).Objects(ctx, &storage.Query{Prefix: prefix})
 	var out []string
 	for {
 		attrs, err := it.Next()
@@ -128,15 +143,15 @@ func (s *GCSStore) PublicURL(objectPath string) string {
 
 func (s *GCSStore) SignedURL(ctx context.Context, objectPath string, ttl time.Duration) (string, time.Time, error) {
 	expiresAt := time.Now().UTC().Add(ttl)
-	if s.signingSecret != "" {
-		exp := strconv.FormatInt(expiresAt.Unix(), 10)
-		mac := hmac.New(sha256.New, []byte(s.signingSecret))
-		_, _ = mac.Write([]byte(objectPath + "|" + exp))
-		sig := hex.EncodeToString(mac.Sum(nil))
-		fallback := fmt.Sprintf("%s/%s?exp=%s&sig=%s", s.cdnBase, CDNPath(objectPath), exp, sig)
-		return fallback, expiresAt, nil
+	if s.signingSecret == "" {
+		return "", time.Time{}, fmt.Errorf("STORAGE_SIGNING_SECRET is required for signed URLs")
 	}
-	return s.PublicURL(objectPath), expiresAt, nil
+	exp := strconv.FormatInt(expiresAt.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(s.signingSecret))
+	_, _ = mac.Write([]byte(objectPath + "|" + exp))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	url := fmt.Sprintf("%s/%s?exp=%s&sig=%s", s.cdnBase, CDNPath(objectPath), exp, sig)
+	return url, expiresAt, nil
 }
 
 func (s *GCSStore) Ready(ctx context.Context) error {
