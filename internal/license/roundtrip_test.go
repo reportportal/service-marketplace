@@ -137,6 +137,77 @@ func TestLoad_ReadsDocumentWrittenByPreviousRelease(t *testing.T) {
 	}
 }
 
+// TestCreate_PreservesExistingEntitlementKidOnRewrite seeds a document, in the
+// previous release's shape, containing an entitlement whose public key carries a "kid"
+// — exactly what every entitlement created or rotated before this branch wrote to
+// auth/authorized_keys.json. It then calls Service.Create for a *different* customer:
+// Create's WriteWithRetry callback unmarshals the whole document, appends the new
+// entitlement, and marshals the whole document back — so every existing entitlement's
+// bytes round-trip through whatever Go type Service uses, whether or not that
+// entitlement is the one being changed. If domain.LicensePublicKey has no field for
+// "kid", the unmarshal silently drops it and the marshal never writes it back: the
+// pre-existing entitlement's kid is gone from disk after this call, with no error.
+func TestCreate_PreservesExistingEntitlementKidOnRewrite(t *testing.T) {
+	store, root := newLocalStore(t)
+
+	issuedAt := time.Now().UTC().AddDate(-1, 0, 0).Truncate(time.Second)
+
+	seed := fmt.Sprintf(`{
+  "entitlements": [
+    {
+      "customerId": "acme-corp",
+      "tier": "premium",
+      "createdAt": %q,
+      "publicKeys": [
+        {
+          "kid": "S3JhZ2Vy",
+          "publicKey": "3q2+7w==",
+          "issuedAt": %q
+        }
+      ]
+    }
+  ]
+}`, issuedAt.Format(time.RFC3339), issuedAt.Format(time.RFC3339))
+
+	if err := os.MkdirAll(filepath.Dir(authorizedKeysPath(root)), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(authorizedKeysPath(root), []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed authorized_keys.json: %v", err)
+	}
+
+	svc := &Service{Store: store}
+
+	// Create a second, unrelated entitlement. This forces Service.Create to read,
+	// unmarshal, re-marshal and write the *whole* document, including acme-corp's
+	// untouched entitlement.
+	if _, err := svc.Create(context.Background(), "globex-corp", nil); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	raw, err := os.ReadFile(authorizedKeysPath(root))
+	if err != nil {
+		t.Fatalf("reading written document: %v", err)
+	}
+
+	var doc previousReleaseAuthorizedKeys
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parsing rewritten document: %v\nraw: %s", err, raw)
+	}
+	var acme *previousReleaseLicenseEntitlement
+	for i := range doc.Entitlements {
+		if doc.Entitlements[i].CustomerID == "acme-corp" {
+			acme = &doc.Entitlements[i]
+		}
+	}
+	if acme == nil {
+		t.Fatalf("acme-corp entitlement lost entirely on rewrite: %s", raw)
+	}
+	if len(acme.PublicKeys) != 1 || acme.PublicKeys[0].KID != "S3JhZ2Vy" {
+		t.Fatalf("acme-corp's public key kid was silently dropped on an unrelated Create's document rewrite: got %+v, want kid %q\nraw: %s", acme.PublicKeys, "S3JhZ2Vy", raw)
+	}
+}
+
 // TestSave_WritesDocumentThePreviousReleaseCanStillRead exercises Service.Create
 // against a real LocalStore, then parses the bytes it actually wrote using the
 // previous release's struct shape — the rollback direction: if the deployment is
