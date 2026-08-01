@@ -16,8 +16,12 @@ const (
 	// kind (including none) must reach the handler.
 	policyPublic routePolicy = iota
 	// policySessionOnly: s.requireSession — only a valid, non-expired,
-	// non-revoked operator session reaches the handler. An OIDC token must
-	// never reach these routes (AMD-02).
+	// non-revoked operator session reaches the handler. Used for the small
+	// set of operator routes AMD-02 does not name (currently only
+	// POST /api/v1/auth/logout): an OIDC token is just an unrecognized
+	// bearer value here and gets the generic 401, not the token-type-aware
+	// 403 — see policySessionOnlyRejectOIDC for the routes AMD-02 does
+	// govern.
 	policySessionOnly
 	// policyOIDCVersionScoped: s.requireSessionOrPublishOIDC on
 	// POST /api/v1/plugins/{pluginId}/versions — the one route the adopted
@@ -26,15 +30,20 @@ const (
 	// OIDC token whose repo claim has no allow-list entry at all is refused
 	// with 403 regardless of whether the target plugin exists (AMD-15).
 	policyOIDCVersionScoped
-	// policyFirstPublishSessionOnly: s.requireSessionRejectOIDC on
-	// POST /api/v1/plugins — per AMD-02/AMD-15 this route accepts operator
-	// session JWTs ONLY. A GitHub Actions OIDC bearer token is a recognized
-	// credential type, just not one this route accepts, so it is refused
-	// with 403 TOKEN_TYPE_NOT_PERMITTED (not the generic 401 an absent or
-	// garbage credential gets) — regardless of whether the token's repo
-	// claim is allow-listed for some other plugin (AMD-02's "regardless of
-	// allow-list membership").
-	policyFirstPublishSessionOnly
+	// policySessionOnlyRejectOIDC: s.requireSessionRejectOIDC — every
+	// operator route AMD-02-oidc-token-scope names as scoped OUT of GitHub
+	// OIDC tokens: POST /api/v1/plugins, PATCH /api/v1/plugins/{pluginId},
+	// DELETE /api/v1/plugins/{pluginId},
+	// POST .../versions/{version}/block,
+	// POST .../versions/{version}/advisory, and every /api/v1/licenses/*
+	// operation. These routes accept operator session JWTs ONLY. A GitHub
+	// Actions OIDC bearer token is a recognized credential type, just not
+	// one these routes accept, so it is refused with 403
+	// TOKEN_TYPE_NOT_PERMITTED (not the generic 401 an absent or garbage
+	// credential gets) — regardless of whether the token's repo claim is
+	// allow-listed for some plugin (AMD-02's "regardless of allow-list
+	// membership").
+	policySessionOnlyRejectOIDC
 )
 
 // routeCase is one row of the authorization matrix: a route the router
@@ -59,22 +68,22 @@ var authzMatrix = []routeCase{
 	{http.MethodPost, "/api/v1/auth/login", "/api/v1/auth/login", policyPublic},
 	{http.MethodPost, "/api/v1/auth/logout", "/api/v1/auth/logout", policySessionOnly},
 
-	{http.MethodGet, "/api/v1/licenses", "/api/v1/licenses", policySessionOnly},
-	{http.MethodPost, "/api/v1/licenses", "/api/v1/licenses", policySessionOnly},
-	{http.MethodDelete, "/api/v1/licenses/{customerId}", "/api/v1/licenses/cust-1", policySessionOnly},
-	{http.MethodPost, "/api/v1/licenses/{customerId}/keys", "/api/v1/licenses/cust-1/keys", policySessionOnly},
+	{http.MethodGet, "/api/v1/licenses", "/api/v1/licenses", policySessionOnlyRejectOIDC},
+	{http.MethodPost, "/api/v1/licenses", "/api/v1/licenses", policySessionOnlyRejectOIDC},
+	{http.MethodDelete, "/api/v1/licenses/{customerId}", "/api/v1/licenses/cust-1", policySessionOnlyRejectOIDC},
+	{http.MethodPost, "/api/v1/licenses/{customerId}/keys", "/api/v1/licenses/cust-1/keys", policySessionOnlyRejectOIDC},
 
 	{http.MethodGet, "/api/v1/plugins", "/api/v1/plugins", policyPublic},
-	{http.MethodPost, "/api/v1/plugins", "/api/v1/plugins", policyFirstPublishSessionOnly},
+	{http.MethodPost, "/api/v1/plugins", "/api/v1/plugins", policySessionOnlyRejectOIDC},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policyPublic},
-	{http.MethodPatch, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnly},
-	{http.MethodDelete, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnly},
+	{http.MethodPatch, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnlyRejectOIDC},
+	{http.MethodDelete, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnlyRejectOIDC},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions", "/api/v1/plugins/" + testOIDCPluginID + "/versions", policyPublic},
 	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions", "/api/v1/plugins/" + testOIDCPluginID + "/versions", policyOIDCVersionScoped},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0", policyPublic},
-	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/advisory", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/advisory", policySessionOnly},
+	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/advisory", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/advisory", policySessionOnlyRejectOIDC},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}/artifact", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/artifact", policyPublic},
-	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/block", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/block", policySessionOnly},
+	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/block", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/block", policySessionOnlyRejectOIDC},
 }
 
 // routePrefixesOutsideAPI lists every non-/api/v1 route surface the router
@@ -150,8 +159,8 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 				assertSessionOnlyRoute(t, env, rc)
 			case policyOIDCVersionScoped:
 				assertOIDCVersionScopedRoute(t, env, rc)
-			case policyFirstPublishSessionOnly:
-				assertFirstPublishSessionOnlyRoute(t, env, rc)
+			case policySessionOnlyRejectOIDC:
+				assertSessionOnlyRejectOIDCRoute(t, env, rc)
 			default:
 				t.Fatalf("unhandled routePolicy %v", rc.policy)
 			}
@@ -185,6 +194,13 @@ func assertPublicRoute(t *testing.T, env *testEnv, rc routeCase) {
 	}
 }
 
+// assertSessionOnlyRoute covers the small set of operator routes AMD-02
+// does not name (currently only POST /api/v1/auth/logout): an OIDC bearer
+// token is simply not a valid session credential here and gets the same
+// generic 401 as any other unrecognized bearer value. Contrast
+// assertSessionOnlyRejectOIDCRoute below, which asserts the
+// AMD-02-specific 403 TOKEN_TYPE_NOT_PERMITTED behavior for the routes the
+// amendment actually governs.
 func assertSessionOnlyRoute(t *testing.T, env *testEnv, rc routeCase) {
 	t.Helper()
 	for _, cred := range []credential{credNone, credExpiredSession, credRevokedSession, credOIDCPublish, credOIDCOtherPlugin} {
@@ -257,24 +273,34 @@ func assertOIDCVersionScopedRoute(t *testing.T, env *testEnv, rc routeCase) {
 	}
 }
 
-// assertFirstPublishSessionOnlyRoute covers POST /api/v1/plugins. Per the
-// adopted product decision, "OIDC tokens are accepted ONLY on the
-// version-publish route" (AMD-02), and POST /api/v1/plugins accepts operator
-// session JWTs only (AMD-15, D-05): a GitHub-issuer bearer token here must
-// get 403 TOKEN_TYPE_NOT_PERMITTED, regardless of allow-list membership —
-// distinct from the generic 401 an absent, expired, or garbage credential
-// gets, because the OIDC token itself is a recognized, valid credential; it
-// is simply the wrong type for this route.
+// assertSessionOnlyRejectOIDCRoute covers every route policySessionOnlyRejectOIDC
+// names: POST /api/v1/plugins, PATCH /api/v1/plugins/{pluginId},
+// DELETE /api/v1/plugins/{pluginId}, POST .../versions/{version}/block,
+// POST .../versions/{version}/advisory, and every /api/v1/licenses/* route.
+// Per the adopted product decision, "OIDC tokens are accepted ONLY on the
+// version-publish route" (AMD-02): a GitHub-issuer bearer token on any of
+// these routes must get 403 TOKEN_TYPE_NOT_PERMITTED, regardless of
+// allow-list membership — distinct from the generic 401 an absent, expired,
+// or garbage credential gets, because the OIDC token itself is a
+// recognized, valid credential; it is simply the wrong type for these
+// routes.
 //
-// This closes finding F1 (go-assessment.json): router.go used to wire
-// api.With(s.requireSessionOrOIDC(true)).Post("/plugins", ...) with a
-// `publishOnly bool` parameter that was never read in the function body, so
-// an allow-listed OIDC token reached handlePublishFirst here exactly as it
-// did on the version-publish route, and could create a brand-new plugin at
-// TierOfficial with no operator involved. POST /api/v1/plugins is now gated
-// by s.requireSessionRejectOIDC, a single-purpose middleware with no boolean
-// to silently ignore.
-func assertFirstPublishSessionOnlyRoute(t *testing.T, env *testEnv, rc routeCase) {
+// This closes finding F1 (go-assessment.json) for POST /api/v1/plugins:
+// router.go used to wire api.With(s.requireSessionOrOIDC(true)).Post(
+// "/plugins", ...) with a `publishOnly bool` parameter that was never read
+// in the function body, so an allow-listed OIDC token reached
+// handlePublishFirst here exactly as it did on the version-publish route,
+// and could create a brand-new plugin at TierOfficial with no operator
+// involved.
+//
+// It also closes the second half of AMD-02 for the remaining lifecycle and
+// license routes: those previously used plain s.requireSession, under which
+// a GitHub-issuer token was indistinguishable from a garbage credential
+// (generic 401) instead of being refused as a recognized-but-wrong-type
+// credential (403 TOKEN_TYPE_NOT_PERMITTED). Every route in this policy is
+// now gated by s.requireSessionRejectOIDC, a single-purpose middleware with
+// no boolean to silently ignore.
+func assertSessionOnlyRejectOIDCRoute(t *testing.T, env *testEnv, rc routeCase) {
 	t.Helper()
 	for _, cred := range []credential{credNone, credExpiredSession, credRevokedSession} {
 		req := env.newRequest(rc.method, rc.target, cred, nil, "")
