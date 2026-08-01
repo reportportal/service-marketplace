@@ -78,16 +78,16 @@ func (s *Server) routes() chi.Router {
 		api.With(s.requireSession).Post("/auth/logout", s.handleLogout)
 
 		api.With(s.requireSessionRejectOIDC).Post("/plugins", s.handlePublishFirst)
-		api.With(s.requireSession).Patch("/plugins/{pluginId}", s.handleUpdatePlugin)
-		api.With(s.requireSession).Delete("/plugins/{pluginId}", s.handleRemovePlugin)
+		api.With(s.requireSessionRejectOIDC).Patch("/plugins/{pluginId}", s.handleUpdatePlugin)
+		api.With(s.requireSessionRejectOIDC).Delete("/plugins/{pluginId}", s.handleRemovePlugin)
 		api.With(s.requireSessionOrPublishOIDC).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
-		api.With(s.requireSession).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
-		api.With(s.requireSession).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
+		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
+		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
 
-		api.With(s.requireSession).Get("/licenses", s.handleListLicenses)
-		api.With(s.requireSession).Post("/licenses", s.handleCreateLicense)
-		api.With(s.requireSession).Delete("/licenses/{customerId}", s.handleRevokeLicense)
-		api.With(s.requireSession).Post("/licenses/{customerId}/keys", s.handleRotateLicenseKey)
+		api.With(s.requireSessionRejectOIDC).Get("/licenses", s.handleListLicenses)
+		api.With(s.requireSessionRejectOIDC).Post("/licenses", s.handleCreateLicense)
+		api.With(s.requireSessionRejectOIDC).Delete("/licenses/{customerId}", s.handleRevokeLicense)
+		api.With(s.requireSessionRejectOIDC).Post("/licenses/{customerId}/keys", s.handleRotateLicenseKey)
 	})
 
 	fileServer := http.StripPrefix("/operator/", operatorFileServer())
@@ -204,15 +204,18 @@ func (s *Server) requireSessionOrPublishOIDC(next http.Handler) http.Handler {
 }
 
 // requireSessionRejectOIDC is the credential gate for every operator route
-// AMD-02 scopes GitHub Actions OIDC tokens OUT of — currently
-// POST /api/v1/plugins, the first-publish route AMD-15/D-05 reserves for
-// operator sessions only (first publish via CI auto-creates through
-// POST .../versions instead; see requireSessionOrPublishOIDC).
+// AMD-02 scopes GitHub Actions OIDC tokens OUT of: POST /api/v1/plugins
+// (the first-publish route AMD-15/D-05 reserves for operator sessions only
+// — first publish via CI auto-creates through POST .../versions instead;
+// see requireSessionOrPublishOIDC), PATCH /api/v1/plugins/{pluginId},
+// DELETE /api/v1/plugins/{pluginId}, POST .../versions/{version}/block,
+// POST .../versions/{version}/advisory, and every /api/v1/licenses/*
+// route.
 //
 // A bearer token that verifies as a well-formed, correctly-signed GitHub
 // Actions OIDC token — whether or not its repo claim is allow-listed for
-// some other plugin — is a recognized credential, just the wrong type for
-// this route, so it is refused with 403 TOKEN_TYPE_NOT_PERMITTED
+// some plugin — is a recognized credential, just the wrong type for these
+// routes, so it is refused with 403 TOKEN_TYPE_NOT_PERMITTED
 // (AMD-02-oidc-token-scope: "... regardless of allow-list membership").
 // Anything else (no credential, garbage bearer value, expired/revoked
 // session) falls through to the ordinary requireSession 401 handling.
