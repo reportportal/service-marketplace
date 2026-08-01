@@ -27,11 +27,39 @@ const (
 )
 
 var (
-	ErrValidation   = errors.New("validation error")
-	ErrConflict     = errors.New("conflict")
-	ErrNotFound     = errors.New("not found")
+	ErrValidation = errors.New("validation error")
+	ErrNotFound   = errors.New("not found")
+	// ErrPluginExists is returned by PublishFirst when plugins/{id}/plugin.json
+	// already exists with removed == nil (AMD-04-duplicate-publish-contract):
+	// "POST /api/v1/plugins for an id whose plugin.json exists with
+	// removed == null -> 409 Conflict, code PLUGIN_ALREADY_EXISTS, directing
+	// the caller to POST /plugins/{id}/versions."
+	ErrPluginExists = errors.New("plugin already exists")
+	// ErrVersionConflict is returned by PublishVersion for AMD-04 branch 3: a
+	// committed version republished with a different SHA-256.
+	ErrVersionConflict = errors.New("version already published with different content")
+	// ErrRemoved is the sentinel errors.Is(err, ErrRemoved) matches against;
+	// callers that need the tombstone payload use errors.As with *RemovedError.
+	ErrRemoved      = errors.New("plugin removed")
 	ErrPayloadLarge = errors.New("payload too large")
 )
+
+// RemovedError carries the tombstone of a plugin that is removed, for every
+// write that AMD-06-removal-lifecycle gates behind 410: "Writes against a
+// tombstoned plugin: POST .../versions, block/unblock, PATCH tier, and
+// advisory operations return 410 with the tombstone payload." The one
+// exception is POST /api/v1/plugins itself, which never returns this error —
+// it is the resurrection path (see PublishFirst).
+type RemovedError struct {
+	Tombstone domain.PluginTombstone
+}
+
+func (e *RemovedError) Error() string { return "plugin is removed" }
+
+// Is lets callers write errors.Is(err, ErrRemoved) without importing
+// *RemovedError, mirroring the sentinel-first convention used elsewhere in
+// this package (ErrNotFound, ErrPluginExists, ...).
+func (e *RemovedError) Is(target error) bool { return target == ErrRemoved }
 
 type ValidationErrors struct {
 	Errors []domain.ValidationError
@@ -42,10 +70,10 @@ func (e ValidationErrors) Error() string {
 }
 
 type Bundle struct {
-	JAR          []byte
-	JARFilename  string
-	Changelog    []byte
-	Screenshots  map[string][]byte
+	JAR         []byte
+	JARFilename string
+	Changelog   []byte
+	Screenshots map[string][]byte
 }
 
 type Result struct {
@@ -170,11 +198,29 @@ func (s *Service) PublishFirst(ctx context.Context, bundle *Bundle, operator str
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.Store.Read(ctx, storage.PluginStatePath(m.ID)); err == nil {
-		return nil, ErrConflict
-	} else if !errors.Is(err, storage.ErrNotFound) {
+	obj, err := s.Store.Read(ctx, storage.PluginStatePath(m.ID))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return s.publish(ctx, m, bundle, operator, false)
+		}
 		return nil, err
 	}
+	var st domain.PluginState
+	if err := json.Unmarshal(obj.Data, &st); err != nil {
+		return nil, err
+	}
+	if st.Removed == nil {
+		return nil, ErrPluginExists
+	}
+	// AMD-06-removal-lifecycle / D-06 (adopted): "POST /api/v1/plugins
+	// (operator session JWT only) is the explicit resurrection path: it
+	// resets removed/removalReason/removedBy to null, publishes the
+	// uploaded version per the §6.4 write order, and regenerates
+	// index.json." This route is gated by requireSessionRejectOIDC
+	// (router.go, AMD-02/AMD-15), so a GitHub OIDC token never reaches this
+	// branch — a compromised CI token cannot resurrect a plugin an operator
+	// deliberately removed. PublishVersion (the OIDC-reachable auto-create
+	// path) deliberately never resurrects; see its own Removed handling.
 	return s.publish(ctx, m, bundle, operator, true)
 }
 
@@ -190,13 +236,24 @@ func (s *Service) PublishFirst(ctx context.Context, bundle *Bundle, operator str
 // pluginID; an operator-session call always passes false, so a session
 // publishing to a not-yet-existing plugin still 404s — first publish via the
 // Operator UI goes through PublishFirst instead.
-func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *Bundle, operator string, autoCreate bool) (*Result, error) {
+//
+// The bool return is true iff this call resolved AMD-04-duplicate-publish-
+// contract's idempotent branch (a committed version republished with
+// byte-identical content) — the caller maps that to 200 instead of 201, and
+// no storage object is written on that path.
+//
+// AMD-06-removal-lifecycle: a tombstoned plugin is never auto-created into
+// and never resurrected by this route — resurrection is exclusively
+// PublishFirst's job (D-06: "explicitly NOT through the CI auto-create
+// path"). A tombstoned plugin.json returns *RemovedError (410) here
+// regardless of autoCreate/caller type.
+func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *Bundle, operator string, autoCreate bool) (*Result, bool, error) {
 	m, err := ExtractManifest(bundle.JAR)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if m.ID != pluginID {
-		return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "manifest.id", Message: "Manifest id does not match URL pluginId"}}}
+		return nil, false, ValidationErrors{Errors: []domain.ValidationError{{Field: "manifest.id", Message: "Manifest id does not match URL pluginId"}}}
 	}
 	stObj, err := s.Store.Read(ctx, storage.PluginStatePath(pluginID))
 	if err != nil {
@@ -206,41 +263,83 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 				// fresh domain.PluginState{Tier: TierOfficial} when no prior
 				// plugin.json exists (see below), so auto-create needs no
 				// separate creation step here — just skip the 404.
-				return s.publish(ctx, m, bundle, operator, true)
+				res, err := s.publish(ctx, m, bundle, operator, false)
+				return res, false, err
 			}
-			return nil, ErrNotFound
+			return nil, false, ErrNotFound
 		}
-		return nil, err
+		return nil, false, err
 	}
 	var st domain.PluginState
 	if err := json.Unmarshal(stObj.Data, &st); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if st.Removed != nil {
-		return nil, ErrNotFound
+		return nil, false, &RemovedError{Tombstone: domain.PluginTombstone{
+			Removed: *st.Removed, RemovalReason: st.RemovalReason, RemovedBy: st.RemovedBy,
+		}}
 	}
+
+	// AMD-04-duplicate-publish-contract three-branch rule. The amendment
+	// defines "committed" as "referenced by index.json", but index.json
+	// (domain.IndexPlugin) only ever carries a plugin's single latestVersion
+	// pointer — it cannot answer "is version 1.4.3 committed" once a later
+	// version is latest, since it never lists more than one version per
+	// plugin. This codebase instead persists the full per-version history in
+	// plugin.json (domain.PluginState.Versions), which index.json is
+	// regenerated from immediately after on every publish; that field is the
+	// durable, always-consultable record a version was fully written, so it
+	// is what "committed" is checked against here.
+	sha := storage.HashSHA256(bundle.JAR)
 	for _, v := range st.Versions {
-		if v.Version == m.Version {
-			if ok, _ := s.Store.Exists(ctx, storage.VersionArtifactPath(pluginID, m.Version, string(m.Access))); ok {
-				return nil, ErrConflict
-			}
+		if v.Version != m.Version {
+			continue
 		}
+		if v.SHA256 == sha {
+			// Branch 2: committed + identical content -> idempotent 200,
+			// no objects written.
+			return &Result{PluginID: pluginID, Version: m.Version, SHA256: sha}, true, nil
+		}
+		// Branch 3: committed + different content -> 409.
+		return nil, false, ErrVersionConflict
 	}
-	return s.publish(ctx, m, bundle, operator, false)
+	// Branch 1: not committed — proceed and overwrite any orphaned
+	// per-version objects left by an interrupted earlier attempt.
+	res, err := s.publish(ctx, m, bundle, operator, false)
+	return res, false, err
 }
 
-func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundle, operator string, first bool) (*Result, error) {
+// publish performs the write-order in §6.4 "Publish atomicity": per-version
+// artifacts, then plugin.json, then index.json regeneration. It is only ever
+// invoked once the caller has already established the target version is NOT
+// committed — PublishFirst for a brand-new or tombstoned id, PublishVersion
+// for auto-create or its own branch-1 (not-committed) case — so every write
+// below is an unconditional upsert: AMD-04-duplicate-publish-contract branch
+// 1 requires overwriting any orphaned per-version objects left by an earlier
+// interrupted attempt, "regardless of byte-equality with the partial state".
+//
+// resurrect, when true, clears an existing tombstone (Removed/RemovalReason/
+// RemovedBy) as part of the same plugin.json compare-and-swap that records
+// the new version — AMD-06-removal-lifecycle's resurrection path
+// (PublishFirst only). When false, the compare-and-swap re-checks Removed on
+// every attempt and aborts with *RemovedError instead of writing if it
+// observes the plugin was tombstoned after PublishVersion's own top-level
+// check but before this compare-and-swap committed (the TOCTOU the
+// go-assessment flagged: "PublishVersion checks the removed flag once at
+// the top of the flow, but its own plugin.json compare-and-swap callback
+// never re-checks it").
+func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundle, operator string, resurrect bool) (*Result, error) {
 	sha := storage.HashSHA256(bundle.JAR)
 	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))
-	if _, err := s.Store.Write(ctx, artPath, bundle.JAR, 0); err != nil && !errors.Is(err, storage.ErrConflict) {
+	if err := upsertObject(ctx, s.Store, artPath, bundle.JAR); err != nil {
 		return nil, err
 	}
 	manifestBytes, _ := json.MarshalIndent(m, "", "  ")
-	if _, err := s.Store.Write(ctx, storage.VersionManifestPath(m.ID, m.Version), manifestBytes, 0); err != nil {
+	if err := upsertObject(ctx, s.Store, storage.VersionManifestPath(m.ID, m.Version), manifestBytes); err != nil {
 		return nil, err
 	}
 	if len(bundle.Changelog) > 0 {
-		if _, err := s.Store.Write(ctx, storage.VersionChangelogPath(m.ID, m.Version), bundle.Changelog, 0); err != nil {
+		if err := upsertObject(ctx, s.Store, storage.VersionChangelogPath(m.ID, m.Version), bundle.Changelog); err != nil {
 			return nil, err
 		}
 	}
@@ -254,7 +353,7 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		if err != nil {
 			return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: err.Error()}}}
 		}
-		if _, err := s.Store.Write(ctx, path, bundle.Screenshots[name], 0); err != nil {
+		if err := upsertObject(ctx, s.Store, path, bundle.Screenshots[name]); err != nil {
 			return nil, err
 		}
 	}
@@ -268,6 +367,16 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			}
 		} else {
 			st = domain.PluginState{ID: m.ID, Tier: domain.TierOfficial, Versions: []domain.VersionMeta{}}
+		}
+		if st.Removed != nil {
+			if !resurrect {
+				return nil, &RemovedError{Tombstone: domain.PluginTombstone{
+					Removed: *st.Removed, RemovalReason: st.RemovalReason, RemovedBy: st.RemovedBy,
+				}}
+			}
+			st.Removed = nil
+			st.RemovalReason = ""
+			st.RemovedBy = ""
 		}
 		found := false
 		for i, v := range st.Versions {
@@ -297,6 +406,21 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 	_ = s.Invalidator.Invalidate(ctx, paths)
 
 	return &Result{PluginID: m.ID, Version: m.Version, SHA256: sha}, nil
+}
+
+// upsertObject overwrites path with data unconditionally, whatever
+// generation currently exists there (including none). Every caller in this
+// file has already established the target version is not committed, so an
+// existing object at path is by definition an orphan from an interrupted
+// earlier attempt — AMD-04-duplicate-publish-contract branch 1 requires it
+// be overwritten, not silently kept (the old create-only Write(..., 0) here
+// swallowed storage.ErrConflict for the jar only, which kept stale/possibly
+// truncated bytes on a retry while the manifest write below it had no such
+// swallow and just failed outright).
+func upsertObject(ctx context.Context, store storage.ObjectStore, path string, data []byte) error {
+	return storage.WriteWithRetry(ctx, store, path, func([]byte, int64) ([]byte, error) {
+		return data, nil
+	}, 5)
 }
 
 func (s *Service) RebuildIndex(ctx context.Context) error {

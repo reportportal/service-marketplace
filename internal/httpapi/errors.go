@@ -11,20 +11,20 @@ import (
 type ErrorCode string
 
 const (
-	CodeNotFound              ErrorCode = "NOT_FOUND"
-	CodeUnauthorized          ErrorCode = "UNAUTHORIZED"
-	CodeForbidden             ErrorCode = "FORBIDDEN"
-	CodeConflict              ErrorCode = "CONFLICT"
-	CodeValidation            ErrorCode = "VALIDATION_ERROR"
-	CodeInternal              ErrorCode = "INTERNAL_ERROR"
-	CodeStorageConflict       ErrorCode = "STORAGE_CONFLICT"
-	CodeStorageUnavailable    ErrorCode = "STORAGE_UNAVAILABLE"
-	CodeServiceUnavailable    ErrorCode = "SERVICE_UNAVAILABLE"
-	CodePayloadTooLarge       ErrorCode = "PAYLOAD_TOO_LARGE"
-	CodeBadRequest            ErrorCode = "BAD_REQUEST"
-	CodeUnsupportedMediaType  ErrorCode = "UNSUPPORTED_MEDIA_TYPE"
-	CodeTooManyRequests       ErrorCode = "TOO_MANY_REQUESTS"
-	CodeCSRFInvalid           ErrorCode = "CSRF_TOKEN_INVALID"
+	CodeNotFound             ErrorCode = "NOT_FOUND"
+	CodeUnauthorized         ErrorCode = "UNAUTHORIZED"
+	CodeForbidden            ErrorCode = "FORBIDDEN"
+	CodeConflict             ErrorCode = "CONFLICT"
+	CodeValidation           ErrorCode = "VALIDATION_ERROR"
+	CodeInternal             ErrorCode = "INTERNAL_ERROR"
+	CodeStorageConflict      ErrorCode = "STORAGE_CONFLICT"
+	CodeStorageUnavailable   ErrorCode = "STORAGE_UNAVAILABLE"
+	CodeServiceUnavailable   ErrorCode = "SERVICE_UNAVAILABLE"
+	CodePayloadTooLarge      ErrorCode = "PAYLOAD_TOO_LARGE"
+	CodeBadRequest           ErrorCode = "BAD_REQUEST"
+	CodeUnsupportedMediaType ErrorCode = "UNSUPPORTED_MEDIA_TYPE"
+	CodeTooManyRequests      ErrorCode = "TOO_MANY_REQUESTS"
+	CodeCSRFInvalid          ErrorCode = "CSRF_TOKEN_INVALID"
 	// CodeTokenTypeNotPermitted is returned when a GitHub Actions OIDC bearer
 	// token — a recognized credential type, just not one this route accepts —
 	// is presented on an operator-session-only route. AMD-02-oidc-token-scope
@@ -32,6 +32,14 @@ const (
 	// and returns 403 with ErrorResponse.code = TOKEN_TYPE_NOT_PERMITTED for
 	// any GitHub-issuer bearer token, regardless of allow-list membership."
 	CodeTokenTypeNotPermitted ErrorCode = "TOKEN_TYPE_NOT_PERMITTED"
+	// CodePluginAlreadyExists and CodeVersionAlreadyPublished are the two
+	// distinguishable 409 codes AMD-04-duplicate-publish-contract requires:
+	// "POST /api/v1/plugins for an id whose plugin.json exists with
+	// removed == null -> 409 Conflict, code PLUGIN_ALREADY_EXISTS" and
+	// "Version committed AND the SHA-256 differs -> 409 Conflict,
+	// ErrorResponse.code = VERSION_ALREADY_PUBLISHED".
+	CodePluginAlreadyExists     ErrorCode = "PLUGIN_ALREADY_EXISTS"
+	CodeVersionAlreadyPublished ErrorCode = "VERSION_ALREADY_PUBLISHED"
 )
 
 type ErrorResponse struct {

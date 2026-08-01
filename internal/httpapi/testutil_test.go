@@ -206,7 +206,7 @@ func (e *testEnv) expiredSessionToken() string {
 		Issuer(testIssuer).
 		Subject("operator@example.com").
 		JwtID("expired-test-jti").
-		IssuedAt(time.Now().Add(-2 * time.Hour)).
+		IssuedAt(time.Now().Add(-2*time.Hour)).
 		Expiration(time.Now().Add(-time.Hour)).
 		Claim("typ", "session").
 		Build()
@@ -230,7 +230,7 @@ func (e *testEnv) oidcToken(repo string) string {
 		Audience([]string{testOIDCAudience}).
 		Claim("repository", repo).
 		IssuedAt(time.Now()).
-		Expiration(time.Now().Add(10*time.Minute)).
+		Expiration(time.Now().Add(10 * time.Minute)).
 		Build()
 	if err != nil {
 		e.t.Fatalf("build oidc token: %v", err)
@@ -340,7 +340,7 @@ var openAPIErrorCodes = map[ErrorCode]bool{
 	"METHOD_NOT_ALLOWED": true, "UNSUPPORTED_MEDIA_TYPE": true, "NOT_ACCEPTABLE": true,
 	"INTERNAL_ERROR": true, "STORED_DOCUMENT_UNREADABLE": true, "SIGNING_UNAVAILABLE": true,
 	"STORAGE_CONFLICT": true, "STORAGE_UNAVAILABLE": true, "CSRF_TOKEN_INVALID": true,
-	"TOKEN_TYPE_NOT_PERMITTED": true,
+	"TOKEN_TYPE_NOT_PERMITTED": true, "PLUGIN_ALREADY_EXISTS": true, "VERSION_ALREADY_PUBLISHED": true,
 }
 
 // decodeErrorEnvelope decodes rec's body as an ErrorResponse and checks it

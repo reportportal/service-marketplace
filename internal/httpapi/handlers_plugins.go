@@ -259,6 +259,14 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 // instead of 404ing — AMD-15-ci-first-publish / D-05 ("auto-create"). An
 // operator-session call never auto-creates: first publish via the Operator
 // UI goes through POST /api/v1/plugins (handlePublishFirst) instead.
+//
+// AMD-04-duplicate-publish-contract: idempotent is true when this call
+// resolved a byte-identical republish of an already-committed version,
+// which maps to 200 instead of 201 with no objects written.
+//
+// AMD-06-removal-lifecycle: a tombstoned plugin.json makes PublishVersion
+// return *publish.RemovedError regardless of autoCreate — this route never
+// resurrects (D-06 explicitly reserves that to POST /api/v1/plugins).
 func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	pluginID := chiParam(r, "pluginId")
 	oidcPlugin := oidcPluginFrom(r.Context())
@@ -272,12 +280,21 @@ func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	autoCreate := oidcPlugin != ""
-	res, err := s.deps.Publish.PublishVersion(r.Context(), pluginID, bundle, operatorIdentity(r.Context()), autoCreate)
+	res, idempotent, err := s.deps.Publish.PublishVersion(r.Context(), pluginID, bundle, operatorIdentity(r.Context()), autoCreate)
 	if err != nil {
+		var removed *publish.RemovedError
+		if errors.As(err, &removed) {
+			writeJSON(w, http.StatusGone, removed.Tombstone)
+			return
+		}
 		writeError(w, mapPublishErr(err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, res)
+	status := http.StatusCreated
+	if idempotent {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, res)
 }
 
 func (s *Server) parsePublishBundle(r *http.Request) (*publish.Bundle, error) {
@@ -308,8 +325,11 @@ func (s *Server) parsePublishBundle(r *http.Request) (*publish.Bundle, error) {
 }
 
 func mapPublishErr(err error) error {
-	if errors.Is(err, publish.ErrConflict) {
-		return &APIError{Status: http.StatusConflict, Code: CodeConflict, Message: "Plugin or version already exists"}
+	if errors.Is(err, publish.ErrPluginExists) {
+		return &APIError{Status: http.StatusConflict, Code: CodePluginAlreadyExists, Message: "A plugin with this id already exists; publish a new version via POST /api/v1/plugins/{id}/versions instead"}
+	}
+	if errors.Is(err, publish.ErrVersionConflict) {
+		return &APIError{Status: http.StatusConflict, Code: CodeVersionAlreadyPublished, Message: "This version has already been published with different content"}
 	}
 	if errors.Is(err, publish.ErrNotFound) {
 		return &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"}

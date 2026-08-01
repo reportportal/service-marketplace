@@ -96,6 +96,15 @@ paths:
         `id` must match the intended plugin entry. Initial trust tier is set to `official`
         in Phase 1/2 (ADR-003).
 
+        AMD-06-removal-lifecycle / D-06 (adopted): against a *tombstoned* id (`plugin.json`
+        exists with `removed != null`) this is the explicit, operator-session-only
+        resurrection path — it clears `removed`/`removalReason`/`removedBy`, publishes the
+        uploaded version per the §6.4 write order, and regenerates `index.json`. Against a
+        *live* id (`plugin.json` exists with `removed == null`) it always returns `409`
+        `PLUGIN_ALREADY_EXISTS`, directing the caller to `POST /plugins/{id}/versions`
+        (AMD-04-duplicate-publish-contract) — never through the OIDC auto-create path on the
+        versions route, which cannot reach a tombstoned id at all (see `publishVersion`).
+
         Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
         screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
 
@@ -111,7 +120,7 @@ paths:
               $ref: '#/components/schemas/PublishBundleMultipart'
       responses:
         '201':
-          description: Plugin published
+          description: Plugin published (first publish, or resurrection of a tombstoned id)
           content:
             application/json:
               schema:
@@ -124,7 +133,11 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: A live (non-tombstoned) plugin already exists at this id (`code = PLUGIN_ALREADY_EXISTS`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
@@ -304,16 +317,28 @@ paths:
       summary: Publish a new version
       description: |
         Publishes a new immutable version for an existing plugin (FR-OP-02). The in-jar
-        manifest `id` and `version` must match the URL path. Idempotent retry is supported
-        when publish is interrupted before index commit (§6.4).
+        manifest `id` and `version` must match the URL path.
+
+        AMD-04-duplicate-publish-contract: a version not yet committed to `plugin.json`
+        proceeds and overwrites any orphaned per-version objects from an interrupted earlier
+        attempt (idempotent retry, regardless of byte-equality with the partial state). A
+        committed version republished with a byte-identical `.jar` (matching SHA-256) answers
+        `200` with the original `PublishResponse` and writes nothing — this is the safe outcome
+        for a CI retry after a lost response. A committed version republished with a different
+        `.jar` is rejected with `409` `VERSION_ALREADY_PUBLISHED`.
+
+        AMD-06-removal-lifecycle / D-06: against a tombstoned plugin (`removed != null`) this
+        endpoint always returns `410` with the tombstone payload, regardless of caller —
+        including an allow-listed OIDC token. Resurrection is deliberately reachable only
+        through `POST /api/v1/plugins` (operator session only); this route never resurrects.
 
         AMD-15-ci-first-publish (D-05, adopted "auto-create"): when the caller is an
         allow-listed GitHub Actions OIDC token (the `repository` claim maps to this URL's
         `pluginId` in `publishOidcTrust.allowedSources`) and `plugins/{pluginId}/plugin.json`
-        does not yet exist, this call creates the plugin entry at `tier: official` (equivalent
-        to `POST /api/v1/plugins`) before writing the version, instead of `404`ing. An operator
-        session on a not-yet-existing pluginId still gets `404` — first publish via the Operator
-        UI goes through `POST /api/v1/plugins`.
+        does not exist at all yet, this call creates the plugin entry at `tier: official`
+        (equivalent to `POST /api/v1/plugins`) before writing the version, instead of
+        `404`ing. An operator session on a not-yet-existing pluginId still gets `404` — first
+        publish via the Operator UI goes through `POST /api/v1/plugins`.
 
         Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
         screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
@@ -331,6 +356,12 @@ paths:
             schema:
               $ref: '#/components/schemas/PublishBundleMultipart'
       responses:
+        '200':
+          description: Idempotent retry of an already-committed, byte-identical version (AMD-04 branch 2); no objects written
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishResponse'
         '201':
           description: Version published
           content:
@@ -344,7 +375,17 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: A committed version already exists with different content (`code = VERSION_ALREADY_PUBLISHED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '410':
+          description: Plugin removed — writes against a tombstone are refused (AMD-06); resurrect via POST /api/v1/plugins
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginTombstone'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
@@ -1739,6 +1780,8 @@ components:
             - STORAGE_UNAVAILABLE
             - CSRF_TOKEN_INVALID
             - TOKEN_TYPE_NOT_PERMITTED
+            - PLUGIN_ALREADY_EXISTS
+            - VERSION_ALREADY_PUBLISHED
         message:
           type: string
 
