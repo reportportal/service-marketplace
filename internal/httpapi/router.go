@@ -195,6 +195,15 @@ func (s *Server) authenticateSession(r *http.Request) (*auth.SessionClaims, erro
 		// token. writeError's fallback for anything that isn't an *APIError
 		// is 500 INTERNAL_ERROR, which would otherwise report a rejected
 		// credential as a server fault instead of 401.
+		//
+		// Finding F2-invalid-session-returns-500-not-401 (RECURS). Governed
+		// by AMD-13-session-jwt-lifetime (requirements/AMENDMENTS-v1.md:
+		// "any operator request with an expired token returns 401") and the
+		// 401 Unauthorized response declared on every operator-session
+		// route in docs/openapi/service-marketplace-v1.yaml. See
+		// TestAuthenticateSessionRejectedCredentialReturns401 for the
+		// regression test. WS-AUTHZ: this mapping already ships — do not
+		// re-implement it.
 		return nil, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"}
 	}
 	return claims, nil

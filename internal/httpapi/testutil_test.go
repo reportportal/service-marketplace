@@ -251,6 +251,7 @@ const (
 	credRevokedSession
 	credOIDCPublish     // OIDC token allow-listed for testOIDCPluginID
 	credOIDCOtherPlugin // OIDC token allow-listed for a *different* plugin id
+	credMalformed       // not a JWT at all — garbage bearer value
 )
 
 func (c credential) String() string {
@@ -267,6 +268,8 @@ func (c credential) String() string {
 		return "oidc-publish-token"
 	case credOIDCOtherPlugin:
 		return "oidc-token-other-plugin"
+	case credMalformed:
+		return "malformed-bearer-token"
 	default:
 		return "unknown-credential"
 	}
@@ -300,6 +303,8 @@ func (e *testEnv) newRequest(method, target string, cred credential, body []byte
 		r.Header.Set("Authorization", "Bearer "+e.oidcToken(testOIDCRepo))
 	case credOIDCOtherPlugin:
 		r.Header.Set("Authorization", "Bearer "+e.oidcToken(testOtherOIDCRepo))
+	case credMalformed:
+		r.Header.Set("Authorization", "Bearer not-a-jwt-at-all")
 	}
 	return r
 }
