@@ -229,22 +229,15 @@ func (s *Server) publicKeysForLicense(r *http.Request, token string) ([]string, 
 	return s.deps.License.PublicKeysForCustomer(r.Context(), claims.CustomerID)
 }
 
+// handlePublishFirst backs POST /api/v1/plugins (FR-OP-01). It is gated by
+// requireSessionRejectOIDC (AMD-02/AMD-15: this route is operator-session
+// only), so r.Context() never carries an OIDC plugin id here — unlike the
+// old code, there is no OIDC branch to keep in sync with that guarantee.
 func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 	bundle, err := s.parsePublishBundle(r)
 	if err != nil {
 		writeError(w, err)
 		return
-	}
-	if oidcPlugin := oidcPluginFrom(r.Context()); oidcPlugin != "" {
-		m, err := publish.ExtractManifest(bundle.JAR)
-		if err != nil {
-			writeError(w, mapPublishErr(err))
-			return
-		}
-		if m.ID != oidcPlugin {
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allowed to publish this pluginId"})
-			return
-		}
 	}
 	res, err := s.deps.Publish.PublishFirst(r.Context(), bundle, operatorIdentity(r.Context()))
 	if err != nil {
@@ -254,9 +247,18 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
+// handlePublishVersion backs POST /api/v1/plugins/{pluginId}/versions
+// (FR-OP-02), gated by requireSessionOrPublishOIDC. An OIDC-authenticated
+// call (oidcPlugin != "") has already been confirmed allow-listed for this
+// exact URL pluginId by the check below, so PublishVersion is told to
+// auto-create the plugin entry (tier: official) when it doesn't exist yet
+// instead of 404ing — AMD-15-ci-first-publish / D-05 ("auto-create"). An
+// operator-session call never auto-creates: first publish via the Operator
+// UI goes through POST /api/v1/plugins (handlePublishFirst) instead.
 func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	pluginID := chiParam(r, "pluginId")
-	if oidcPlugin := oidcPluginFrom(r.Context()); oidcPlugin != "" && oidcPlugin != pluginID {
+	oidcPlugin := oidcPluginFrom(r.Context())
+	if oidcPlugin != "" && oidcPlugin != pluginID {
 		writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allowed to publish this pluginId"})
 		return
 	}
@@ -265,7 +267,8 @@ func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	res, err := s.deps.Publish.PublishVersion(r.Context(), pluginID, bundle, operatorIdentity(r.Context()))
+	autoCreate := oidcPlugin != ""
+	res, err := s.deps.Publish.PublishVersion(r.Context(), pluginID, bundle, operatorIdentity(r.Context()), autoCreate)
 	if err != nil {
 		writeError(w, mapPublishErr(err))
 		return
