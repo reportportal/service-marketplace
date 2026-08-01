@@ -128,9 +128,9 @@ func (s *Service) Revoke(ctx context.Context, customerID string) error {
 }
 
 type RotateResult struct {
-	CustomerID string
-	PrivateKey string
-	PublicKey  string
+	CustomerID string `json:"customerId"`
+	PrivateKey string `json:"privateKey"`
+	PublicKey  string `json:"publicKey"`
 }
 
 func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResult, error) {

@@ -49,9 +49,9 @@ type Bundle struct {
 }
 
 type Result struct {
-	PluginID string
-	Version  string
-	SHA256   string
+	PluginID string `json:"pluginId"`
+	Version  string `json:"version"`
+	SHA256   string `json:"sha256"`
 }
 
 type Service struct {
