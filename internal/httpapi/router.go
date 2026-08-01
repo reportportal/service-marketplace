@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -76,17 +77,17 @@ func (s *Server) routes() chi.Router {
 		api.Get("/auth/github/callback", s.handleGitHubCallback)
 		api.With(s.requireSession).Post("/auth/logout", s.handleLogout)
 
-		api.With(s.requireSessionOrOIDC(true)).Post("/plugins", s.handlePublishFirst)
-		api.With(s.requireSession).Patch("/plugins/{pluginId}", s.handleUpdatePlugin)
-		api.With(s.requireSession).Delete("/plugins/{pluginId}", s.handleRemovePlugin)
-		api.With(s.requireSessionOrOIDC(true)).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
-		api.With(s.requireSession).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
-		api.With(s.requireSession).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
+		api.With(s.requireSessionRejectOIDC).Post("/plugins", s.handlePublishFirst)
+		api.With(s.requireSessionRejectOIDC).Patch("/plugins/{pluginId}", s.handleUpdatePlugin)
+		api.With(s.requireSessionRejectOIDC).Delete("/plugins/{pluginId}", s.handleRemovePlugin)
+		api.With(s.requireSessionOrPublishOIDC).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
+		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
+		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
 
-		api.With(s.requireSession).Get("/licenses", s.handleListLicenses)
-		api.With(s.requireSession).Post("/licenses", s.handleCreateLicense)
-		api.With(s.requireSession).Delete("/licenses/{customerId}", s.handleRevokeLicense)
-		api.With(s.requireSession).Post("/licenses/{customerId}/keys", s.handleRotateLicenseKey)
+		api.With(s.requireSessionRejectOIDC).Get("/licenses", s.handleListLicenses)
+		api.With(s.requireSessionRejectOIDC).Post("/licenses", s.handleCreateLicense)
+		api.With(s.requireSessionRejectOIDC).Delete("/licenses/{customerId}", s.handleRevokeLicense)
+		api.With(s.requireSessionRejectOIDC).Post("/licenses/{customerId}/keys", s.handleRotateLicenseKey)
 	})
 
 	fileServer := http.StripPrefix("/operator/", operatorFileServer())
@@ -114,6 +115,7 @@ type ctxKey int
 const (
 	ctxSession ctxKey = iota
 	ctxOIDCPlugin
+	ctxOIDCSubject
 )
 
 func (s *Server) requireSession(next http.Handler) http.Handler {
@@ -140,42 +142,93 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) requireSessionOrOIDC(publishOnly bool) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if bearer := bearerToken(r); bearer != "" {
-				if claims, err := s.deps.Sessions.Verify(r.Context(), bearer); err == nil {
-					if isUnsafe(r.Method) && hasSessionCookie(r) {
-						xsrfCookie, _ := r.Cookie(auth.XSRFCookieName)
-						xsrfHeader := r.Header.Get("X-XSRF-TOKEN")
-						cookieVal := ""
-						if xsrfCookie != nil {
-							cookieVal = xsrfCookie.Value
-						}
-						if err := auth.ValidateCSRF(cookieVal, xsrfHeader); err != nil {
-							writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeCSRFInvalid, Message: "CSRF token invalid"})
-							return
-						}
+// requireSessionOrPublishOIDC is the credential gate for
+// POST /api/v1/plugins/{pluginId}/versions — the single route AMD-02 and
+// AMD-15 designate for GitHub Actions OIDC publish tokens. It accepts an
+// operator session (bearer or cookie) exactly like requireSession, or a
+// GitHub Actions OIDC bearer token verified against publishOidcTrust:
+// success carries both the token's allow-listed plugin id (ctxOIDCPlugin,
+// checked against the URL pluginId by handlePublishVersion) and its verified
+// subject (ctxOIDCSubject, so operatorIdentity can record who actually
+// published — see ADR-014 accountability) into the request context.
+//
+// An OIDC token whose repo claim has no entry in publishOidcTrust at all
+// (auth.ErrForbidden) is refused with 403, not the generic 401 an absent or
+// garbage credential gets — AMD-15: "non-allow-listed callers ... receive
+// 403 regardless of whether the plugin exists".
+//
+// There is deliberately no boolean parameter here (contrast the old
+// requireSessionOrOIDC(publishOnly bool), whose publishOnly was accepted and
+// never read — finding F1). This middleware has exactly one caller and does
+// exactly one thing; a route that should not accept OIDC uses
+// requireSessionRejectOIDC or plain requireSession instead, not this
+// function with an argument nobody checks.
+func (s *Server) requireSessionOrPublishOIDC(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bearer := bearerToken(r); bearer != "" {
+			if claims, err := s.deps.Sessions.Verify(r.Context(), bearer); err == nil {
+				if isUnsafe(r.Method) && hasSessionCookie(r) {
+					xsrfCookie, _ := r.Cookie(auth.XSRFCookieName)
+					xsrfHeader := r.Header.Get("X-XSRF-TOKEN")
+					cookieVal := ""
+					if xsrfCookie != nil {
+						cookieVal = xsrfCookie.Value
 					}
-					ctx := context.WithValue(r.Context(), ctxSession, claims)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
+					if err := auth.ValidateCSRF(cookieVal, xsrfHeader); err != nil {
+						writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeCSRFInvalid, Message: "CSRF token invalid"})
+						return
+					}
 				}
-				if _, pluginID, err := s.deps.OIDC.Verify(r.Context(), bearer); err == nil {
-					ctx := context.WithValue(r.Context(), ctxOIDCPlugin, pluginID)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
-				}
-				writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"})
+				ctx := context.WithValue(r.Context(), ctxSession, claims)
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			if c, err := r.Cookie(auth.SessionCookieName); err == nil && c.Value != "" {
-				s.requireSession(next).ServeHTTP(w, r)
+			if subject, pluginID, err := s.deps.OIDC.Verify(r.Context(), bearer); err == nil {
+				ctx := context.WithValue(r.Context(), ctxOIDCPlugin, pluginID)
+				ctx = context.WithValue(ctx, ctxOIDCSubject, subject)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			} else if errors.Is(err, auth.ErrForbidden) {
+				writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allow-listed to publish any plugin"})
 				return
 			}
 			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"})
-		})
-	}
+			return
+		}
+		if c, err := r.Cookie(auth.SessionCookieName); err == nil && c.Value != "" {
+			s.requireSession(next).ServeHTTP(w, r)
+			return
+		}
+		writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"})
+	})
+}
+
+// requireSessionRejectOIDC is the credential gate for every operator route
+// AMD-02 scopes GitHub Actions OIDC tokens OUT of: POST /api/v1/plugins
+// (the first-publish route AMD-15/D-05 reserves for operator sessions only
+// — first publish via CI auto-creates through POST .../versions instead;
+// see requireSessionOrPublishOIDC), PATCH /api/v1/plugins/{pluginId},
+// DELETE /api/v1/plugins/{pluginId}, POST .../versions/{version}/block,
+// POST .../versions/{version}/advisory, and every /api/v1/licenses/*
+// route.
+//
+// A bearer token that verifies as a well-formed, correctly-signed GitHub
+// Actions OIDC token — whether or not its repo claim is allow-listed for
+// some plugin — is a recognized credential, just the wrong type for these
+// routes, so it is refused with 403 TOKEN_TYPE_NOT_PERMITTED
+// (AMD-02-oidc-token-scope: "... regardless of allow-list membership").
+// Anything else (no credential, garbage bearer value, expired/revoked
+// session) falls through to the ordinary requireSession 401 handling.
+func (s *Server) requireSessionRejectOIDC(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bearer := bearerToken(r); bearer != "" {
+			if _, _, err := s.deps.OIDC.Verify(r.Context(), bearer); err == nil || errors.Is(err, auth.ErrForbidden) {
+				writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeTokenTypeNotPermitted, Message: "GitHub Actions OIDC tokens are not accepted on this route; use an operator session"})
+				return
+			}
+		}
+		s.requireSession(next).ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) authenticateSession(r *http.Request) (*auth.SessionClaims, error) {
@@ -236,14 +289,37 @@ func sessionFrom(ctx context.Context) *auth.SessionClaims {
 	return v
 }
 
+// operatorIdentity returns the identity of the authenticated caller for
+// whatever records the actor (currently domain.PluginTombstone.RemovedBy via
+// lifecycle.RemovePlugin). Finding F2-oidc-identity-not-recorded
+// (go-assessment.json, RECURS): this used to fall back to the fixed literal
+// "github-actions" for every OIDC-authenticated call because the verified
+// subject was read and discarded with `_` in the router (ADR-014 requires
+// accountability — a specific repo/workflow, not an unconditional constant).
+// It now returns the token's own `sub` claim (e.g.
+// "repo:org/plugin-jira:ref:refs/heads/main") via ctxOIDCSubject.
 func operatorIdentity(ctx context.Context) string {
 	if s := sessionFrom(ctx); s != nil {
 		return s.Subject
 	}
-	return "github-actions"
+	if sub := oidcSubjectFrom(ctx); sub != "" {
+		return sub
+	}
+	// Unreachable in practice: every route that calls operatorIdentity is
+	// gated by requireSession or requireSessionOrPublishOIDC, both of which
+	// populate ctxSession or ctxOIDCSubject before the handler runs. Kept as
+	// an explicit, greppable marker rather than silently returning "" so a
+	// future caller wired without one of those gates fails loudly instead of
+	// recording an empty actor.
+	return "unknown-caller"
 }
 
 func oidcPluginFrom(ctx context.Context) string {
 	v, _ := ctx.Value(ctxOIDCPlugin).(string)
+	return v
+}
+
+func oidcSubjectFrom(ctx context.Context) string {
+	v, _ := ctx.Value(ctxOIDCSubject).(string)
 	return v
 }

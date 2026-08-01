@@ -25,6 +25,13 @@ const (
 	CodeUnsupportedMediaType  ErrorCode = "UNSUPPORTED_MEDIA_TYPE"
 	CodeTooManyRequests       ErrorCode = "TOO_MANY_REQUESTS"
 	CodeCSRFInvalid           ErrorCode = "CSRF_TOKEN_INVALID"
+	// CodeTokenTypeNotPermitted is returned when a GitHub Actions OIDC bearer
+	// token — a recognized credential type, just not one this route accepts —
+	// is presented on an operator-session-only route. AMD-02-oidc-token-scope
+	// (requirements/AMENDMENTS-v1.md): "requires an operator session JWT ...
+	// and returns 403 with ErrorResponse.code = TOKEN_TYPE_NOT_PERMITTED for
+	// any GitHub-issuer bearer token, regardless of allow-list membership."
+	CodeTokenTypeNotPermitted ErrorCode = "TOKEN_TYPE_NOT_PERMITTED"
 )
 
 type ErrorResponse struct {

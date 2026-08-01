@@ -39,6 +39,10 @@ const (
 	testOIDCPluginID  = "plugin-x"
 	testOtherOIDCRepo = "reportportal/plugin-other-repo"
 	testOtherPluginID = "plugin-other"
+	// testUnmappedOIDCRepo has no entry in PublishOIDCVerifier.AllowedSources
+	// at all — a signature/issuer/audience-valid GitHub Actions token for a
+	// repo the operator never granted publish rights to.
+	testUnmappedOIDCRepo = "reportportal/unmapped-repo"
 )
 
 // testEnv bundles a fully-wired Server (the real router, the real
@@ -249,9 +253,10 @@ const (
 	credOperatorSession
 	credExpiredSession
 	credRevokedSession
-	credOIDCPublish     // OIDC token allow-listed for testOIDCPluginID
-	credOIDCOtherPlugin // OIDC token allow-listed for a *different* plugin id
-	credMalformed       // not a JWT at all — garbage bearer value
+	credOIDCPublish      // OIDC token allow-listed for testOIDCPluginID
+	credOIDCOtherPlugin  // OIDC token allow-listed for a *different* plugin id
+	credOIDCUnmappedRepo // otherwise-valid OIDC token whose repo claim has no allow-list entry at all
+	credMalformed        // not a JWT at all — garbage bearer value
 )
 
 func (c credential) String() string {
@@ -268,6 +273,8 @@ func (c credential) String() string {
 		return "oidc-publish-token"
 	case credOIDCOtherPlugin:
 		return "oidc-token-other-plugin"
+	case credOIDCUnmappedRepo:
+		return "oidc-token-unmapped-repo"
 	case credMalformed:
 		return "malformed-bearer-token"
 	default:
@@ -303,6 +310,8 @@ func (e *testEnv) newRequest(method, target string, cred credential, body []byte
 		r.Header.Set("Authorization", "Bearer "+e.oidcToken(testOIDCRepo))
 	case credOIDCOtherPlugin:
 		r.Header.Set("Authorization", "Bearer "+e.oidcToken(testOtherOIDCRepo))
+	case credOIDCUnmappedRepo:
+		r.Header.Set("Authorization", "Bearer "+e.oidcToken(testUnmappedOIDCRepo))
 	case credMalformed:
 		r.Header.Set("Authorization", "Bearer not-a-jwt-at-all")
 	}
@@ -331,6 +340,7 @@ var openAPIErrorCodes = map[ErrorCode]bool{
 	"METHOD_NOT_ALLOWED": true, "UNSUPPORTED_MEDIA_TYPE": true, "NOT_ACCEPTABLE": true,
 	"INTERNAL_ERROR": true, "STORED_DOCUMENT_UNREADABLE": true, "SIGNING_UNAVAILABLE": true,
 	"STORAGE_CONFLICT": true, "STORAGE_UNAVAILABLE": true, "CSRF_TOKEN_INVALID": true,
+	"TOKEN_TYPE_NOT_PERMITTED": true,
 }
 
 // decodeErrorEnvelope decodes rec's body as an ErrorResponse and checks it
