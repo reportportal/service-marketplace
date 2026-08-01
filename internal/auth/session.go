@@ -168,36 +168,87 @@ func (m *SessionManager) TTLSeconds() int {
 	return sec
 }
 
-// OAuthStateStore holds one-time opaque OAuth CSRF states (not session JWTs).
+// OAuthStateStore holds one-time opaque OAuth CSRF states (not session
+// JWTs), backed by the shared object store — the same pattern Denylist
+// uses above — so a login started on one replica can be consumed by the
+// callback landing on a different one behind a load balancer with no
+// sticky sessions. Before this, states lived only in a per-process map:
+// with N replicas, GET /auth/github/login on replica A stored the state
+// only in A's memory, and the callback landing on replica B always failed
+// with "Invalid OAuth state" (assessment finding
+// F4-inmemory-state-not-shared-across-replicas). Issue/Consume are called
+// once per login (human-interactive, low volume), so unlike Denylist this
+// deliberately has no local hot cache — every call round-trips the store
+// when one is configured, trading a small amount of latency for one code
+// path that is obviously correct across any number of replicas.
 type OAuthStateStore struct {
+	Store storage.ObjectStore
 	mu    sync.Mutex
-	items map[string]time.Time
+	local map[string]time.Time // used only when Store is nil (tests / no backing store)
 }
 
-func NewOAuthStateStore() *OAuthStateStore {
-	return &OAuthStateStore{items: map[string]time.Time{}}
+func NewOAuthStateStore(store storage.ObjectStore) *OAuthStateStore {
+	return &OAuthStateStore{Store: store, local: map[string]time.Time{}}
 }
 
-func (s *OAuthStateStore) Issue() (string, error) {
+type oauthStateRecord struct {
+	Exp string `json:"exp"`
+}
+
+func (s *OAuthStateStore) Issue(ctx context.Context) (string, error) {
 	id, err := randomID()
 	if err != nil {
 		return "", err
 	}
-	s.mu.Lock()
-	s.items[id] = time.Now().Add(10 * time.Minute)
-	s.mu.Unlock()
+	exp := time.Now().Add(10 * time.Minute)
+	if s.Store == nil {
+		s.mu.Lock()
+		s.local[id] = exp
+		s.mu.Unlock()
+		return id, nil
+	}
+	payload, err := json.Marshal(oauthStateRecord{Exp: exp.UTC().Format(time.RFC3339)})
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.Store.Write(ctx, storage.OAuthStatePath(id), payload, 0); err != nil {
+		return "", err
+	}
 	return id, nil
 }
 
-func (s *OAuthStateStore) Consume(state string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exp, ok := s.items[state]
-	if !ok {
+// Consume reports whether state was a validly issued, unexpired, not
+// previously consumed state, and consumes it (a state can never be reused
+// even if this returns true a second time from a racing caller — see the
+// commit message for the accepted race window).
+func (s *OAuthStateStore) Consume(ctx context.Context, state string) bool {
+	if state == "" {
 		return false
 	}
-	delete(s.items, state)
-	return time.Now().Before(exp)
+	if s.Store == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		exp, ok := s.local[state]
+		if !ok {
+			return false
+		}
+		delete(s.local, state)
+		return time.Now().Before(exp)
+	}
+	obj, err := s.Store.Read(ctx, storage.OAuthStatePath(state))
+	if err != nil {
+		return false
+	}
+	_ = s.Store.Delete(ctx, storage.OAuthStatePath(state))
+	var rec oauthStateRecord
+	if err := json.Unmarshal(obj.Data, &rec); err != nil {
+		return false
+	}
+	expAt, err := time.Parse(time.RFC3339, rec.Exp)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(expAt)
 }
 
 func randomID() (string, error) {

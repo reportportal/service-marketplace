@@ -40,7 +40,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "username", Message: "required"}}})
 		return
 	}
-	if err := s.deps.AdminAuth.Authenticate(clientIP(r, s.deps.Config.TrustedProxyHops), req.Username, req.Password); err != nil {
+	if err := s.deps.AdminAuth.Authenticate(r.Context(), clientIP(r, s.deps.Config.TrustedProxyHops), req.Username, req.Password); err != nil {
 		if errors.Is(err, auth.ErrTooManyAttempts) {
 			writeError(w, &APIError{Status: http.StatusTooManyRequests, Code: CodeTooManyRequests, Message: "Too many login attempts for this username"})
 			return

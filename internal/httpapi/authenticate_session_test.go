@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/reportportal/service-marketplace/internal/auth"
 )
 
 // TestAuthenticateSessionRejectedCredentialReturns401 is the dedicated
@@ -56,6 +59,49 @@ func TestAuthenticateSessionRejectedCredentialReturns401(t *testing.T) {
 
 			if rec.Code == http.StatusInternalServerError {
 				t.Fatalf("a rejected-but-present session credential produced 500 INTERNAL_ERROR (finding F2-invalid-session-returns-500-not-401 regression); body=%s", rec.Body.String())
+			}
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 per AMD-13 / the OpenAPI Unauthorized response, got %d body=%s", rec.Code, rec.Body.String())
+			}
+			body := decodeErrorEnvelope(t, rec)
+			if body.Code != CodeUnauthorized {
+				t.Fatalf("expected error code %q per AMD-13, got %q", CodeUnauthorized, body.Code)
+			}
+		})
+	}
+}
+
+// TestAuthenticateSessionRejectedCookieCredentialReturns401 is the
+// cookie-carried half of the F2/AMD-13 taxonomy that
+// TestAuthenticateSessionRejectedCredentialReturns401 above does not
+// exercise: testutil_test.go's newRequest/credential helpers only ever set
+// the credential as a bearer Authorization header (documented reason: the
+// cookie path additionally requires an XSRF double-submit token, a
+// separate concern from authorization). authenticateSession
+// (internal/httpapi/router.go) reads the bearer header first and falls
+// back to the mp_operator_session cookie when it's absent, mapping the
+// same three rejection modes through the same code path either way — but
+// nothing asserted that end to end until this test. Confirms WS-AUTHZ's
+// task instruction to "finish the taxonomy properly": both credential
+// carriers, not just bearer.
+func TestAuthenticateSessionRejectedCookieCredentialReturns401(t *testing.T) {
+	tests := []struct {
+		name  string
+		token func(e *testEnv) string
+	}{
+		{"expired session cookie: valid signature, exp in the past", func(e *testEnv) string { return e.expiredSessionToken() }},
+		{"revoked session cookie: valid signature, jti denylisted", func(e *testEnv) string { return e.revokedSessionToken() }},
+		{"malformed session cookie: not a JWT at all", func(e *testEnv) string { return "not-a-jwt-at-all" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
+			req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: tt.token(env)})
+			rec := env.do(req)
+
+			if rec.Code == http.StatusInternalServerError {
+				t.Fatalf("a rejected-but-present session cookie produced 500 INTERNAL_ERROR (finding F2-invalid-session-returns-500-not-401 regression); body=%s", rec.Body.String())
 			}
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("expected 401 per AMD-13 / the OpenAPI Unauthorized response, got %d body=%s", rec.Code, rec.Body.String())

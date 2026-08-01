@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"regexp"
@@ -11,6 +13,8 @@ const (
 	PathIndex          = "index.json"
 	PathAuthorizedKeys = "auth/authorized_keys.json"
 	PathSessionDeny    = "auth/session-denylist"
+	PathOAuthState     = "auth/oauth-state"
+	PathLoginLockout   = "auth/login-lockout"
 )
 
 var screenshotNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,126}\.(png|jpg|jpeg)$`)
@@ -59,6 +63,31 @@ func PluginPrefix(pluginID string) string {
 
 func SessionDenylistPath(jti string) string {
 	return path.Join(PathSessionDeny, jti+".json")
+}
+
+// OAuthStatePath returns the shared-storage object key backing one issued
+// OAuth CSRF state, so a login started on one replica can be consumed by
+// the callback landing on any other (assessment finding
+// F4-inmemory-state-not-shared-across-replicas). state is hashed rather
+// than used verbatim: although states are normally our own random IDs
+// (safe path segments), Consume also receives the caller-supplied "state"
+// query parameter on the callback path, and hashing removes any need to
+// separately reason about path-traversal or invalid-path-character input
+// from that untrusted value.
+func OAuthStatePath(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return path.Join(PathOAuthState, hex.EncodeToString(sum[:])+".json")
+}
+
+// LoginLockoutPath returns the shared-storage object key backing one admin
+// login lockout counter, keyed by clientIP+username, so the
+// five-attempts-per-fifteen-minutes lockout is enforced across all
+// replicas instead of per-process (assessment finding
+// F4-inmemory-state-not-shared-across-replicas). The key is hashed because
+// it embeds the attacker-supplied username from the login request body.
+func LoginLockoutPath(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return path.Join(PathLoginLockout, hex.EncodeToString(sum[:])+".json")
 }
 
 func CDNPath(objectPath string) string {
