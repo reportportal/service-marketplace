@@ -25,19 +25,63 @@ type AuthTokenResponse struct {
 	ExpiresIn   int    `json:"expiresIn"`
 }
 
+// LicensePublicKeyResponse and LicenseEntitlementResponse are the wire shapes for the
+// OpenAPI LicensePublicKey/LicenseEntitlement schemas, both of which declare
+// `issuedAt`/`expiresAt` as `format: date`. They are deliberately separate Go types
+// from domain.LicensePublicKey/LicenseEntitlement — those are the persisted document
+// at auth/authorized_keys.json (full RFC3339 timestamps, matching every existing
+// deployment's on-disk bytes) — so satisfying the wire's date-only format can never
+// silently change what gets read from or written to storage. Build these with
+// newLicenseEntitlementResponse; do not marshal the domain types directly onto the
+// wire.
+type LicensePublicKeyResponse struct {
+	PublicKey string      `json:"publicKey"`
+	IssuedAt  domain.Date `json:"issuedAt"`
+}
+
+type LicenseEntitlementResponse struct {
+	CustomerID string                     `json:"customerId"`
+	Tier       string                     `json:"tier"`
+	IssuedAt   domain.Date                `json:"issuedAt"`
+	ExpiresAt  *domain.Date               `json:"expiresAt,omitempty"`
+	PublicKeys []LicensePublicKeyResponse `json:"publicKeys"`
+}
+
+// newLicenseEntitlementResponse converts the persisted domain.LicenseEntitlement into
+// its wire representation. domain.LicenseEntitlement.CreatedAt is what storage calls
+// the entitlement's issue date; the OpenAPI schema calls it "issuedAt" — the rename
+// happens here, on the wire boundary, not on the persisted field.
+func newLicenseEntitlementResponse(e domain.LicenseEntitlement) LicenseEntitlementResponse {
+	keys := make([]LicensePublicKeyResponse, len(e.PublicKeys))
+	for i, k := range e.PublicKeys {
+		keys[i] = LicensePublicKeyResponse{PublicKey: k.PublicKey, IssuedAt: domain.Date{Time: k.IssuedAt}}
+	}
+	var expires *domain.Date
+	if e.ExpiresAt != nil {
+		expires = &domain.Date{Time: *e.ExpiresAt}
+	}
+	return LicenseEntitlementResponse{
+		CustomerID: e.CustomerID,
+		Tier:       e.Tier,
+		IssuedAt:   domain.Date{Time: e.CreatedAt},
+		ExpiresAt:  expires,
+		PublicKeys: keys,
+	}
+}
+
 // LicenseEntitlementListResponse — GET /api/v1/licenses
 type LicenseEntitlementListResponse struct {
-	Entitlements []domain.LicenseEntitlement `json:"entitlements"`
+	Entitlements []LicenseEntitlementResponse `json:"entitlements"`
 }
 
 // CreateLicenseResponse — POST /api/v1/licenses. allOf(LicenseEntitlement, {privateKey}).
 type CreateLicenseResponse struct {
-	CustomerID string                    `json:"customerId"`
-	Tier       string                    `json:"tier"`
-	IssuedAt   domain.Date               `json:"issuedAt"`
-	ExpiresAt  *domain.Date              `json:"expiresAt,omitempty"`
-	PublicKeys []domain.LicensePublicKey `json:"publicKeys"`
-	PrivateKey string                    `json:"privateKey"`
+	CustomerID string                     `json:"customerId"`
+	Tier       string                     `json:"tier"`
+	IssuedAt   domain.Date                `json:"issuedAt"`
+	ExpiresAt  *domain.Date               `json:"expiresAt,omitempty"`
+	PublicKeys []LicensePublicKeyResponse `json:"publicKeys"`
+	PrivateKey string                     `json:"privateKey"`
 }
 
 // PluginListResponse — GET /api/v1/plugins

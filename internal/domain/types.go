@@ -159,16 +159,26 @@ type PluginTombstone struct {
 	RemovedBy     string    `json:"removedBy"`
 }
 
+// LicensePublicKey and LicenseEntitlement are dual-purpose: they are marshalled both
+// as HTTP response bodies (see httpapi.LicensePublicKeyResponse/
+// LicenseEntitlementResponse, which convert from these) and, unmarshalled, ARE the
+// persisted document at auth/authorized_keys.json (see internal/license.Service.load/
+// save). They deliberately keep the storage-era shape — full time.Time/RFC3339
+// timestamps, matching every byte already on disk in any existing deployment — so a
+// wire-contract fix (e.g. satisfying the OpenAPI `format: date` declaration on the
+// response) never has to touch what gets read from or written to storage. Wire-only
+// concerns (the `Date` date-only formatting, the OpenAPI-declared "issuedAt" name for
+// what storage still calls CreatedAt) belong on the httpapi response types, not here.
 type LicensePublicKey struct {
-	PublicKey string `json:"publicKey"`
-	IssuedAt  Date   `json:"issuedAt"`
+	PublicKey string    `json:"publicKey"`
+	IssuedAt  time.Time `json:"issuedAt"`
 }
 
 type LicenseEntitlement struct {
 	CustomerID string             `json:"customerId"`
 	Tier       string             `json:"tier"`
-	IssuedAt   Date               `json:"issuedAt"`
-	ExpiresAt  *Date              `json:"expiresAt,omitempty"`
+	CreatedAt  time.Time          `json:"createdAt,omitempty"`
+	ExpiresAt  *time.Time         `json:"expiresAt,omitempty"`
 	PublicKeys []LicensePublicKey `json:"publicKeys"`
 }
 

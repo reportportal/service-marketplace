@@ -116,10 +116,11 @@ func (s *Server) handleListLicenses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	if items == nil {
-		items = []domain.LicenseEntitlement{}
+	entitlements := make([]LicenseEntitlementResponse, len(items))
+	for i, e := range items {
+		entitlements[i] = newLicenseEntitlementResponse(e)
 	}
-	writeJSON(w, http.StatusOK, LicenseEntitlementListResponse{Entitlements: items})
+	writeJSON(w, http.StatusOK, LicenseEntitlementListResponse{Entitlements: entitlements})
 }
 
 func (s *Server) handleCreateLicense(w http.ResponseWriter, r *http.Request) {
@@ -153,12 +154,13 @@ func (s *Server) handleCreateLicense(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
+	entitlement := newLicenseEntitlementResponse(res.Entitlement)
 	writeJSON(w, http.StatusCreated, CreateLicenseResponse{
-		CustomerID: res.Entitlement.CustomerID,
-		Tier:       res.Entitlement.Tier,
-		IssuedAt:   res.Entitlement.IssuedAt,
-		ExpiresAt:  res.Entitlement.ExpiresAt,
-		PublicKeys: res.Entitlement.PublicKeys,
+		CustomerID: entitlement.CustomerID,
+		Tier:       entitlement.Tier,
+		IssuedAt:   entitlement.IssuedAt,
+		ExpiresAt:  entitlement.ExpiresAt,
+		PublicKeys: entitlement.PublicKeys,
 		PrivateKey: res.PrivateKey,
 	})
 }
