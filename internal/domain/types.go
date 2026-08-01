@@ -176,7 +176,26 @@ type PluginTombstone struct {
 // response) never has to touch what gets read from or written to storage. Wire-only
 // concerns (the `Date` date-only formatting, the OpenAPI-declared "issuedAt" name for
 // what storage still calls CreatedAt) belong on the httpapi response types, not here.
+//
+// KID is likewise storage-only, for a different reason than the dates: it was never
+// part of the wire contract at all (LicensePublicKey's OpenAPI schema has no "kid"
+// property, and it never carried one). But every entitlement created or rotated by the
+// release before this branch wrote a "kid" value into authorized_keys.json, and
+// Service.load/save round-trips this type directly, so dropping the Go field — correct
+// as a wire decision, since nothing on the wire ever read it — silently erases every
+// existing "kid" from disk the next time *any* entitlement in the document is created,
+// rotated or revoked (the whole document is unmarshalled and re-marshalled on every
+// write, not just the changed entitlement). Keeping the field here preserves whatever
+// is already on disk without reviving it on the wire. New keys deliberately leave it
+// empty (see license.Service.Create/RotateKey) rather than resurrect the old
+// randomID()-based generator: AMD-11 defines a real keyId as a deterministic
+// `first 8 hex chars of SHA-256(publicKey)`, a different value under a different wire
+// name ("keyId", not "kid") than the old opaque random one this field preserves. Every
+// key issued between this fix and AMD-11 landing keeps kid empty, so AMD-11's
+// migration only has one case to handle (absent) instead of two (absent, or present but
+// wrong-scheme).
 type LicensePublicKey struct {
+	KID       string    `json:"kid,omitempty"`
 	PublicKey string    `json:"publicKey"`
 	IssuedAt  time.Time `json:"issuedAt"`
 }
