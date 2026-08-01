@@ -179,13 +179,25 @@ func (s *Server) requireSessionOrOIDC(publishOnly bool) func(http.Handler) http.
 }
 
 func (s *Server) authenticateSession(r *http.Request) (*auth.SessionClaims, error) {
-	if bearer := bearerToken(r); bearer != "" {
-		return s.deps.Sessions.Verify(r.Context(), bearer)
+	bearer := bearerToken(r)
+	if bearer == "" {
+		if c, err := r.Cookie(auth.SessionCookieName); err == nil {
+			bearer = c.Value
+		}
 	}
-	if c, err := r.Cookie(auth.SessionCookieName); err == nil {
-		return s.deps.Sessions.Verify(r.Context(), c.Value)
+	if bearer == "" {
+		return nil, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"}
 	}
-	return nil, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"}
+	claims, err := s.deps.Sessions.Verify(r.Context(), bearer)
+	if err != nil {
+		// Sessions.Verify returns unwrapped auth-package sentinel errors
+		// (auth.ErrUnauthorized) for an expired, revoked, or malformed
+		// token. writeError's fallback for anything that isn't an *APIError
+		// is 500 INTERNAL_ERROR, which would otherwise report a rejected
+		// credential as a server fault instead of 401.
+		return nil, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"}
+	}
+	return claims, nil
 }
 
 func bearerToken(r *http.Request) string {

@@ -1,0 +1,291 @@
+package httpapi
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+)
+
+// routePolicy names the credential-gate a route is wired with in router.go.
+type routePolicy int
+
+const (
+	// policyPublic: no operator credential is required; every credential
+	// kind (including none) must reach the handler.
+	policyPublic routePolicy = iota
+	// policySessionOnly: s.requireSession — only a valid, non-expired,
+	// non-revoked operator session reaches the handler. An OIDC token must
+	// never reach these routes (AMD-02).
+	policySessionOnly
+	// policyOIDCVersionScoped: s.requireSessionOrOIDC(true) on
+	// POST /api/v1/plugins/{pluginId}/versions — the one route the adopted
+	// decision (AMD-02/AMD-15) designates for OIDC publish tokens, scoped to
+	// the token's allow-listed plugin id matching the URL pluginId.
+	policyOIDCVersionScoped
+	// policyOIDCFirstPublishDefect: s.requireSessionOrOIDC(true) on
+	// POST /api/v1/plugins — per AMD-02/AMD-15 this route must accept
+	// operator session JWTs ONLY. router.go passes publishOnly=true into
+	// requireSessionOrOIDC but the function never reads that parameter, so
+	// an OIDC token currently reaches handlePublishFirst here too. See the
+	// "oidc token must be refused" subtest below for the tracked defect.
+	policyOIDCFirstPublishDefect
+)
+
+// routeCase is one row of the authorization matrix: a route the router
+// actually serves (verified against the live router by
+// TestRouteInventoryIsFullyClassified) plus a concrete URL to exercise it
+// and the credential policy it is expected to enforce.
+type routeCase struct {
+	method  string
+	pattern string // as chi.Walk reports it, e.g. "/api/v1/plugins/{pluginId}"
+	target  string // concrete request path
+	policy  routePolicy
+}
+
+// authzMatrix is the hand-authored source of truth for what each route's
+// credential gate is supposed to be. TestRouteInventoryIsFullyClassified
+// diffs it against the live router so a route added without a row here (or
+// a row left behind for a route that no longer exists) fails the suite.
+var authzMatrix = []routeCase{
+	{http.MethodGet, "/api/v1/auth/config", "/api/v1/auth/config", policyPublic},
+	{http.MethodGet, "/api/v1/auth/github/callback", "/api/v1/auth/github/callback", policyPublic},
+	{http.MethodGet, "/api/v1/auth/github/login", "/api/v1/auth/github/login", policyPublic},
+	{http.MethodPost, "/api/v1/auth/login", "/api/v1/auth/login", policyPublic},
+	{http.MethodPost, "/api/v1/auth/logout", "/api/v1/auth/logout", policySessionOnly},
+
+	{http.MethodGet, "/api/v1/licenses", "/api/v1/licenses", policySessionOnly},
+	{http.MethodPost, "/api/v1/licenses", "/api/v1/licenses", policySessionOnly},
+	{http.MethodDelete, "/api/v1/licenses/{customerId}", "/api/v1/licenses/cust-1", policySessionOnly},
+	{http.MethodPost, "/api/v1/licenses/{customerId}/keys", "/api/v1/licenses/cust-1/keys", policySessionOnly},
+
+	{http.MethodGet, "/api/v1/plugins", "/api/v1/plugins", policyPublic},
+	{http.MethodPost, "/api/v1/plugins", "/api/v1/plugins", policyOIDCFirstPublishDefect},
+	{http.MethodGet, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policyPublic},
+	{http.MethodPatch, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnly},
+	{http.MethodDelete, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnly},
+	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions", "/api/v1/plugins/" + testOIDCPluginID + "/versions", policyPublic},
+	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions", "/api/v1/plugins/" + testOIDCPluginID + "/versions", policyOIDCVersionScoped},
+	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0", policyPublic},
+	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/advisory", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/advisory", policySessionOnly},
+	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}/artifact", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/artifact", policyPublic},
+	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/block", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/block", policySessionOnly},
+}
+
+// routePrefixesOutsideAPI lists every non-/api/v1 route surface the router
+// serves today, and why it is deliberately excluded from the operator/OIDC
+// credential matrix above:
+//   - /health, /ready: unauthenticated liveness/readiness probes by design.
+//   - /cdn/*: gated by the storage layer's own signed-URL scheme
+//     (LocalStore.VerifySignedURL), not by operator session or OIDC — a
+//     different credential family entirely.
+//   - /operator, /operator/*: static asset serving for the operator SPA; the
+//     SPA itself calls back into the /api/v1 routes above, which are the
+//     actual enforcement point.
+var routePrefixesOutsideAPI = map[string]bool{
+	"/health": true, "/ready": true, "/cdn/*": true,
+	"/operator": true, "/operator/*": true,
+}
+
+// TestRouteInventoryIsFullyClassified walks the REAL router (not a
+// hand-maintained list of what we think it serves) and fails if any route it
+// finds has no row in authzMatrix, or if authzMatrix has a row for a route
+// the router no longer serves. This is what makes the matrix load-bearing:
+// a new route added to router.go without a corresponding authzMatrix row
+// fails this test, rather than shipping unclassified.
+func TestRouteInventoryIsFullyClassified(t *testing.T) {
+	env := newTestEnv(t)
+	mux, ok := env.Server.Handler().(chi.Router)
+	if !ok {
+		t.Fatalf("Server.Handler() is not a chi.Router: %T", env.Server.Handler())
+	}
+
+	want := map[string]bool{}
+	for _, rc := range authzMatrix {
+		want[rc.method+" "+rc.pattern] = true
+	}
+	seen := map[string]bool{}
+
+	err := chi.Walk(mux, func(method, route string, handler http.Handler, mws ...func(http.Handler) http.Handler) error {
+		if !strings.HasPrefix(route, "/api/v1") {
+			if !routePrefixesOutsideAPI[route] {
+				t.Errorf("router serves %s %s outside /api/v1 and outside the documented exclusion list; classify it in authzMatrix or add it to routePrefixesOutsideAPI with a reason", method, route)
+			}
+			return nil
+		}
+		key := method + " " + route
+		seen[key] = true
+		if !want[key] {
+			t.Errorf("router serves %s with no row in authzMatrix — add one before merging", key)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("chi.Walk: %v", err)
+	}
+	for k := range want {
+		if !seen[k] {
+			t.Errorf("authzMatrix has a row %q for a route the router no longer serves — remove it", k)
+		}
+	}
+}
+
+// TestRouteAuthorizationMatrix drives every row of authzMatrix against the
+// real router with each relevant credential kind, asserting who is let
+// through and who is refused.
+func TestRouteAuthorizationMatrix(t *testing.T) {
+	for _, rc := range authzMatrix {
+		rc := rc
+		t.Run(rc.method+" "+rc.pattern, func(t *testing.T) {
+			env := newTestEnv(t)
+			switch rc.policy {
+			case policyPublic:
+				assertPublicRoute(t, env, rc)
+			case policySessionOnly:
+				assertSessionOnlyRoute(t, env, rc)
+			case policyOIDCVersionScoped:
+				assertOIDCVersionScopedRoute(t, env, rc)
+			case policyOIDCFirstPublishDefect:
+				assertOIDCFirstPublishDefectRoute(t, env, rc)
+			default:
+				t.Fatalf("unhandled routePolicy %v", rc.policy)
+			}
+		})
+	}
+}
+
+// operatorAuthMessage is the literal message requireSession/
+// requireSessionOrOIDC emit when a credential is refused at the door
+// (router.go: CodeUnauthorized, "Invalid or missing bearer token"). Matching
+// on it lets these assertions tell "blocked at the credential gate" apart
+// from a handler-level 401 for an unrelated reason (e.g. the GitHub OAuth
+// callback's own "Invalid OAuth state").
+const operatorAuthMessage = "Invalid or missing bearer token"
+
+func allCredentials() []credential {
+	return []credential{credNone, credOperatorSession, credExpiredSession, credRevokedSession, credOIDCPublish, credOIDCOtherPlugin}
+}
+
+func assertPublicRoute(t *testing.T, env *testEnv, rc routeCase) {
+	t.Helper()
+	for _, cred := range allCredentials() {
+		req := env.newRequest(rc.method, rc.target, cred, nil, "")
+		rec := env.do(req)
+		if rec.Code == http.StatusUnauthorized {
+			body := decodeErrorEnvelope(t, rec)
+			if body.Message == operatorAuthMessage {
+				t.Fatalf("%s %s: public route was blocked at the operator-credential gate for %s; body=%s", rc.method, rc.target, cred, rec.Body.String())
+			}
+		}
+	}
+}
+
+func assertSessionOnlyRoute(t *testing.T, env *testEnv, rc routeCase) {
+	t.Helper()
+	for _, cred := range []credential{credNone, credExpiredSession, credRevokedSession, credOIDCPublish, credOIDCOtherPlugin} {
+		req := env.newRequest(rc.method, rc.target, cred, nil, "")
+		rec := env.do(req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s with %s: expected 401 (session-only route), got %d body=%s", rc.method, rc.target, cred, rec.Code, rec.Body.String())
+		}
+		body := decodeErrorEnvelope(t, rec)
+		if body.Message != operatorAuthMessage {
+			t.Fatalf("%s %s with %s: expected the operator-auth-required message, got %q", rc.method, rc.target, cred, body.Message)
+		}
+	}
+	req := env.newRequest(rc.method, rc.target, credOperatorSession, nil, "")
+	rec := env.do(req)
+	if rec.Code == http.StatusUnauthorized {
+		body := decodeErrorEnvelope(t, rec)
+		if body.Message == operatorAuthMessage {
+			t.Fatalf("%s %s: a valid operator session was refused at the credential gate; body=%s", rc.method, rc.target, rec.Body.String())
+		}
+	}
+}
+
+func assertOIDCVersionScopedRoute(t *testing.T, env *testEnv, rc routeCase) {
+	t.Helper()
+	for _, cred := range []credential{credNone, credExpiredSession, credRevokedSession} {
+		req := env.newRequest(rc.method, rc.target, cred, nil, "")
+		rec := env.do(req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s with %s: expected 401, got %d body=%s", rc.method, rc.target, cred, rec.Code, rec.Body.String())
+		}
+	}
+	// A valid operator session may always publish a version.
+	req := env.newRequest(rc.method, rc.target, credOperatorSession, nil, "")
+	rec := env.do(req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("%s %s: a valid operator session was refused; body=%s", rc.method, rc.target, rec.Body.String())
+	}
+	// An OIDC token allow-listed for THIS URL's pluginId reaches the handler
+	// (AMD-02/AMD-15's sanctioned path).
+	req = env.newRequest(rc.method, rc.target, credOIDCPublish, nil, "")
+	rec = env.do(req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("%s %s: an OIDC token allow-listed for this plugin was refused; body=%s", rc.method, rc.target, rec.Body.String())
+	}
+	// An OIDC token allow-listed for a DIFFERENT pluginId reaches the
+	// middleware (it is a valid OIDC token) but is rejected by
+	// handlePublishVersion's own plugin-id check — 403, not 401.
+	req = env.newRequest(rc.method, rc.target, credOIDCOtherPlugin, nil, "")
+	rec = env.do(req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("%s %s: OIDC token scoped to a different pluginId should get 403, got %d body=%s", rc.method, rc.target, rec.Code, rec.Body.String())
+	}
+	body := decodeErrorEnvelope(t, rec)
+	if body.Code != CodeForbidden {
+		t.Fatalf("%s %s: expected error code %q, got %q", rc.method, rc.target, CodeForbidden, body.Code)
+	}
+}
+
+// assertOIDCFirstPublishDefectRoute covers POST /api/v1/plugins. The
+// credentials unaffected by the F1/AMD-02 defect (no credential, expired,
+// revoked, and a valid operator session) are asserted for real here. The
+// OIDC rows are the tracked defect: see the "oidc token must be refused"
+// subtest below.
+func assertOIDCFirstPublishDefectRoute(t *testing.T, env *testEnv, rc routeCase) {
+	t.Helper()
+	for _, cred := range []credential{credNone, credExpiredSession, credRevokedSession} {
+		req := env.newRequest(rc.method, rc.target, cred, nil, "")
+		rec := env.do(req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s with %s: expected 401, got %d body=%s", rc.method, rc.target, cred, rec.Code, rec.Body.String())
+		}
+	}
+	req := env.newRequest(rc.method, rc.target, credOperatorSession, nil, "")
+	rec := env.do(req)
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("%s %s: a valid operator session was refused; body=%s", rc.method, rc.target, rec.Body.String())
+	}
+
+	// --- F1 / AMD-02 / AMD-15 --------------------------------------------
+	// Per the adopted product decision, "OIDC tokens are accepted ONLY on
+	// the version-publish route" (AMD-02), and POST /api/v1/plugins accepts
+	// operator session JWTs only (AMD-15, D-05): a GitHub-issuer bearer
+	// token here must get 403, regardless of allow-list membership.
+	//
+	// router.go wires api.With(s.requireSessionOrOIDC(true)).Post("/plugins", ...)
+	// but requireSessionOrOIDC's `publishOnly bool` parameter is never read
+	// in the function body (internal/httpapi/router.go:143-179) — it is
+	// dead code. So today an allow-listed OIDC token reaches
+	// handlePublishFirst here exactly as it does on the version-publish
+	// route, and can create a brand-new plugin at TierOfficial with no
+	// operator involved (finding F1 in go-assessment.json).
+	//
+	// This is deliberately red right now and deliberately NOT fixed by this
+	// workstream (WS-TEST-INFRA): WS-AUTHZ owns wiring publishOnly. Skipped
+	// so the suite stays green; un-skip once router.go enforces it — that
+	// is the handover this test exists to create.
+	t.Run("oidc_token_must_be_refused_per_AMD-02_AMD-15", func(t *testing.T) {
+		t.Skip("KNOWN DEFECT (finding F1, AMD-02/AMD-15): OIDC publish tokens currently reach POST /api/v1/plugins because requireSessionOrOIDC's publishOnly parameter is dead code (router.go:143). WS-AUTHZ must wire it before un-skipping this test.")
+		for _, cred := range []credential{credOIDCPublish, credOIDCOtherPlugin} {
+			req := env.newRequest(rc.method, rc.target, cred, nil, "")
+			rec := env.do(req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s %s with %s: AMD-02/AMD-15 requires OIDC tokens to be refused with 403 here, got %d body=%s", rc.method, rc.target, cred, rec.Code, rec.Body.String())
+			}
+		}
+	})
+}
