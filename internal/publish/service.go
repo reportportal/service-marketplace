@@ -339,6 +339,11 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 		if err := json.Unmarshal(mObj.Data, &m); err != nil {
 			continue
 		}
+		versions := make([]string, 0, len(st.Versions))
+		for _, v := range st.Versions {
+			versions = append(versions, v.Version)
+		}
+		sort.Strings(versions)
 		plugins = append(plugins, domain.IndexPlugin{
 			ID:            id,
 			Name:          m.Name,
@@ -347,6 +352,7 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			Category:      m.Category,
 			Access:        m.Access,
 			Tier:          st.Tier,
+			Versions:      versions,
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })

@@ -113,13 +113,25 @@ type Manifest struct {
 }
 
 type IndexPlugin struct {
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	LatestVersion  string     `json:"latestVersion"`
-	Description    string     `json:"description,omitempty"`
-	Category       Category   `json:"category"`
-	Access         AccessTier `json:"access"`
-	Tier           TrustTier  `json:"tier"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	LatestVersion string     `json:"latestVersion"`
+	Description   string     `json:"description,omitempty"`
+	Category      Category   `json:"category"`
+	Access        AccessTier `json:"access"`
+	Tier          TrustTier  `json:"tier"`
+	// Versions is the plugin's full committed version set (every published
+	// version, including blocked-but-not-removed ones -- blocking makes a
+	// version un-installable, not uncommitted). This is the AMD-27
+	// orphan-cleanup reference set: internal/lifecycle.OrphanCleanup treats a
+	// plugins/{id}/versions/{v}/ (or private/plugins/{id}/versions/{v}/)
+	// directory as a deletion candidate only if v is absent from here.
+	// index.json documents written before this field existed omit it
+	// entirely, decoding to a nil slice -- OrphanCleanup treats a
+	// non-empty index whose entries all decode to zero versions as
+	// reference data that "looks wrong" and refuses to run, rather than
+	// reading every version directory in the registry as unreferenced.
+	Versions []string `json:"versions,omitempty"`
 }
 
 type Index struct {
