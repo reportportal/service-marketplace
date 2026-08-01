@@ -19,18 +19,22 @@ const (
 	// non-revoked operator session reaches the handler. An OIDC token must
 	// never reach these routes (AMD-02).
 	policySessionOnly
-	// policyOIDCVersionScoped: s.requireSessionOrOIDC(true) on
+	// policyOIDCVersionScoped: s.requireSessionOrPublishOIDC on
 	// POST /api/v1/plugins/{pluginId}/versions — the one route the adopted
 	// decision (AMD-02/AMD-15) designates for OIDC publish tokens, scoped to
-	// the token's allow-listed plugin id matching the URL pluginId.
+	// the token's allow-listed plugin id matching the URL pluginId. A valid
+	// OIDC token whose repo claim has no allow-list entry at all is refused
+	// with 403 regardless of whether the target plugin exists (AMD-15).
 	policyOIDCVersionScoped
-	// policyOIDCFirstPublishDefect: s.requireSessionOrOIDC(true) on
-	// POST /api/v1/plugins — per AMD-02/AMD-15 this route must accept
-	// operator session JWTs ONLY. router.go passes publishOnly=true into
-	// requireSessionOrOIDC but the function never reads that parameter, so
-	// an OIDC token currently reaches handlePublishFirst here too. See the
-	// "oidc token must be refused" subtest below for the tracked defect.
-	policyOIDCFirstPublishDefect
+	// policyFirstPublishSessionOnly: s.requireSessionRejectOIDC on
+	// POST /api/v1/plugins — per AMD-02/AMD-15 this route accepts operator
+	// session JWTs ONLY. A GitHub Actions OIDC bearer token is a recognized
+	// credential type, just not one this route accepts, so it is refused
+	// with 403 TOKEN_TYPE_NOT_PERMITTED (not the generic 401 an absent or
+	// garbage credential gets) — regardless of whether the token's repo
+	// claim is allow-listed for some other plugin (AMD-02's "regardless of
+	// allow-list membership").
+	policyFirstPublishSessionOnly
 )
 
 // routeCase is one row of the authorization matrix: a route the router
@@ -61,7 +65,7 @@ var authzMatrix = []routeCase{
 	{http.MethodPost, "/api/v1/licenses/{customerId}/keys", "/api/v1/licenses/cust-1/keys", policySessionOnly},
 
 	{http.MethodGet, "/api/v1/plugins", "/api/v1/plugins", policyPublic},
-	{http.MethodPost, "/api/v1/plugins", "/api/v1/plugins", policyOIDCFirstPublishDefect},
+	{http.MethodPost, "/api/v1/plugins", "/api/v1/plugins", policyFirstPublishSessionOnly},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policyPublic},
 	{http.MethodPatch, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnly},
 	{http.MethodDelete, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnly},
@@ -146,8 +150,8 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 				assertSessionOnlyRoute(t, env, rc)
 			case policyOIDCVersionScoped:
 				assertOIDCVersionScopedRoute(t, env, rc)
-			case policyOIDCFirstPublishDefect:
-				assertOIDCFirstPublishDefectRoute(t, env, rc)
+			case policyFirstPublishSessionOnly:
+				assertFirstPublishSessionOnlyRoute(t, env, rc)
 			default:
 				t.Fatalf("unhandled routePolicy %v", rc.policy)
 			}
@@ -164,7 +168,7 @@ func TestRouteAuthorizationMatrix(t *testing.T) {
 const operatorAuthMessage = "Invalid or missing bearer token"
 
 func allCredentials() []credential {
-	return []credential{credNone, credOperatorSession, credExpiredSession, credRevokedSession, credOIDCPublish, credOIDCOtherPlugin}
+	return []credential{credNone, credOperatorSession, credExpiredSession, credRevokedSession, credOIDCPublish, credOIDCOtherPlugin, credOIDCUnmappedRepo}
 }
 
 func assertPublicRoute(t *testing.T, env *testEnv, rc routeCase) {
@@ -238,14 +242,39 @@ func assertOIDCVersionScopedRoute(t *testing.T, env *testEnv, rc routeCase) {
 	if body.Code != CodeForbidden {
 		t.Fatalf("%s %s: expected error code %q, got %q", rc.method, rc.target, CodeForbidden, body.Code)
 	}
+	// An otherwise-valid OIDC token whose repo claim has no allow-list entry
+	// at all is refused with 403 too — AMD-15's "non-allow-listed callers ...
+	// receive 403 regardless of whether the plugin exists", not the generic
+	// 401 a garbage or absent credential gets.
+	req = env.newRequest(rc.method, rc.target, credOIDCUnmappedRepo, nil, "")
+	rec = env.do(req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("%s %s: OIDC token with no allow-list entry should get 403, got %d body=%s", rc.method, rc.target, rec.Code, rec.Body.String())
+	}
+	body = decodeErrorEnvelope(t, rec)
+	if body.Code != CodeForbidden {
+		t.Fatalf("%s %s: expected error code %q, got %q", rc.method, rc.target, CodeForbidden, body.Code)
+	}
 }
 
-// assertOIDCFirstPublishDefectRoute covers POST /api/v1/plugins. The
-// credentials unaffected by the F1/AMD-02 defect (no credential, expired,
-// revoked, and a valid operator session) are asserted for real here. The
-// OIDC rows are the tracked defect: see the "oidc token must be refused"
-// subtest below.
-func assertOIDCFirstPublishDefectRoute(t *testing.T, env *testEnv, rc routeCase) {
+// assertFirstPublishSessionOnlyRoute covers POST /api/v1/plugins. Per the
+// adopted product decision, "OIDC tokens are accepted ONLY on the
+// version-publish route" (AMD-02), and POST /api/v1/plugins accepts operator
+// session JWTs only (AMD-15, D-05): a GitHub-issuer bearer token here must
+// get 403 TOKEN_TYPE_NOT_PERMITTED, regardless of allow-list membership —
+// distinct from the generic 401 an absent, expired, or garbage credential
+// gets, because the OIDC token itself is a recognized, valid credential; it
+// is simply the wrong type for this route.
+//
+// This closes finding F1 (go-assessment.json): router.go used to wire
+// api.With(s.requireSessionOrOIDC(true)).Post("/plugins", ...) with a
+// `publishOnly bool` parameter that was never read in the function body, so
+// an allow-listed OIDC token reached handlePublishFirst here exactly as it
+// did on the version-publish route, and could create a brand-new plugin at
+// TierOfficial with no operator involved. POST /api/v1/plugins is now gated
+// by s.requireSessionRejectOIDC, a single-purpose middleware with no boolean
+// to silently ignore.
+func assertFirstPublishSessionOnlyRoute(t *testing.T, env *testEnv, rc routeCase) {
 	t.Helper()
 	for _, cred := range []credential{credNone, credExpiredSession, credRevokedSession} {
 		req := env.newRequest(rc.method, rc.target, cred, nil, "")
@@ -260,31 +289,16 @@ func assertOIDCFirstPublishDefectRoute(t *testing.T, env *testEnv, rc routeCase)
 		t.Fatalf("%s %s: a valid operator session was refused; body=%s", rc.method, rc.target, rec.Body.String())
 	}
 
-	// --- F1 / AMD-02 / AMD-15 --------------------------------------------
-	// Per the adopted product decision, "OIDC tokens are accepted ONLY on
-	// the version-publish route" (AMD-02), and POST /api/v1/plugins accepts
-	// operator session JWTs only (AMD-15, D-05): a GitHub-issuer bearer
-	// token here must get 403, regardless of allow-list membership.
-	//
-	// router.go wires api.With(s.requireSessionOrOIDC(true)).Post("/plugins", ...)
-	// but requireSessionOrOIDC's `publishOnly bool` parameter is never read
-	// in the function body (internal/httpapi/router.go:143-179) — it is
-	// dead code. So today an allow-listed OIDC token reaches
-	// handlePublishFirst here exactly as it does on the version-publish
-	// route, and can create a brand-new plugin at TierOfficial with no
-	// operator involved (finding F1 in go-assessment.json).
-	//
-	// This is deliberately red right now and deliberately NOT fixed by this
-	// workstream (WS-TEST-INFRA): WS-AUTHZ owns wiring publishOnly. Skipped
-	// so the suite stays green; un-skip once router.go enforces it — that
-	// is the handover this test exists to create.
 	t.Run("oidc_token_must_be_refused_per_AMD-02_AMD-15", func(t *testing.T) {
-		t.Skip("KNOWN DEFECT (finding F1, AMD-02/AMD-15): OIDC publish tokens currently reach POST /api/v1/plugins because requireSessionOrOIDC's publishOnly parameter is dead code (router.go:143). WS-AUTHZ must wire it before un-skipping this test.")
-		for _, cred := range []credential{credOIDCPublish, credOIDCOtherPlugin} {
+		for _, cred := range []credential{credOIDCPublish, credOIDCOtherPlugin, credOIDCUnmappedRepo} {
 			req := env.newRequest(rc.method, rc.target, cred, nil, "")
 			rec := env.do(req)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("%s %s with %s: AMD-02/AMD-15 requires OIDC tokens to be refused with 403 here, got %d body=%s", rc.method, rc.target, cred, rec.Code, rec.Body.String())
+			}
+			body := decodeErrorEnvelope(t, rec)
+			if body.Code != CodeTokenTypeNotPermitted {
+				t.Fatalf("%s %s with %s: expected error code %q, got %q", rc.method, rc.target, cred, CodeTokenTypeNotPermitted, body.Code)
 			}
 		}
 	})

@@ -178,7 +178,19 @@ func (s *Service) PublishFirst(ctx context.Context, bundle *Bundle, operator str
 	return s.publish(ctx, m, bundle, operator, true)
 }
 
-func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *Bundle, operator string) (*Result, error) {
+// PublishVersion publishes a new version for pluginID (FR-OP-02). When
+// autoCreate is true and no plugin.json exists yet for pluginID, it creates
+// the plugin entry (tier: official) as part of writing this version instead
+// of returning ErrNotFound — AMD-15-ci-first-publish / D-05 (adopted
+// "auto-create"): an allow-listed GitHub Actions OIDC publish to a
+// not-yet-existing pluginId is the sanctioned first-CI-publish path, since
+// the publishOidcTrust allow-list is already an operator-curated grant. The
+// caller (handlePublishVersion) sets autoCreate only once it has confirmed
+// the request is OIDC-authenticated AND allow-listed for this exact
+// pluginID; an operator-session call always passes false, so a session
+// publishing to a not-yet-existing plugin still 404s — first publish via the
+// Operator UI goes through PublishFirst instead.
+func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *Bundle, operator string, autoCreate bool) (*Result, error) {
 	m, err := ExtractManifest(bundle.JAR)
 	if err != nil {
 		return nil, err
@@ -189,6 +201,13 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 	stObj, err := s.Store.Read(ctx, storage.PluginStatePath(pluginID))
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
+			if autoCreate {
+				// s.publish's WriteWithRetry mutator already initializes a
+				// fresh domain.PluginState{Tier: TierOfficial} when no prior
+				// plugin.json exists (see below), so auto-create needs no
+				// separate creation step here — just skip the 404.
+				return s.publish(ctx, m, bundle, operator, true)
+			}
 			return nil, ErrNotFound
 		}
 		return nil, err

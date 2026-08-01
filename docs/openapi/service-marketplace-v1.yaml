@@ -136,7 +136,6 @@ paths:
       security:
         - operatorSessionJwt: []
         - operatorSessionCookie: []
-        - githubOidcJwt: []
 
   /api/v1/plugins/{pluginId}:
     get:
@@ -307,6 +306,14 @@ paths:
         Publishes a new immutable version for an existing plugin (FR-OP-02). The in-jar
         manifest `id` and `version` must match the URL path. Idempotent retry is supported
         when publish is interrupted before index commit (§6.4).
+
+        AMD-15-ci-first-publish (D-05, adopted "auto-create"): when the caller is an
+        allow-listed GitHub Actions OIDC token (the `repository` claim maps to this URL's
+        `pluginId` in `publishOidcTrust.allowedSources`) and `plugins/{pluginId}/plugin.json`
+        does not yet exist, this call creates the plugin entry at `tier: official` (equivalent
+        to `POST /api/v1/plugins`) before writing the version, instead of `404`ing. An operator
+        session on a not-yet-existing pluginId still gets `404` — first publish via the Operator
+        UI goes through `POST /api/v1/plugins`.
 
         Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
         screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
@@ -1731,6 +1738,7 @@ components:
             - STORAGE_CONFLICT
             - STORAGE_UNAVAILABLE
             - CSRF_TOKEN_INVALID
+            - TOKEN_TYPE_NOT_PERMITTED
         message:
           type: string
 
