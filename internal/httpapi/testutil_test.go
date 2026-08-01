@@ -92,8 +92,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatalf("bcrypt: %v", err)
 	}
-	admin := auth.NewAdminAuthenticator(true, "admin", string(passwordHash))
-	gh := &auth.GitHubOAuth{Sessions: sessions, States: auth.NewOAuthStateStore()}
+	admin := auth.NewAdminAuthenticator(true, "admin", string(passwordHash), store)
+	gh := &auth.GitHubOAuth{Sessions: sessions, States: auth.NewOAuthStateStore(store)}
 	ga := &analytics.GA4Client{}
 	invalidator := cdn.NoopInvalidator{}
 

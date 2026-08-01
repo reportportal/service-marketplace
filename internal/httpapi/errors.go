@@ -113,9 +113,19 @@ func clientIP(r *http.Request, trustedProxyHops int) string {
 	return host
 }
 
-func isHTTPS(r *http.Request) bool {
+// isHTTPS reports whether r should be treated as an HTTPS request for the
+// purpose of setting the Secure attribute on outgoing cookies. Like
+// clientIP, it only honors the forwarded header (X-Forwarded-Proto) once
+// trustedProxyHops confirms a trusted proxy sits in front of this process —
+// otherwise an unauthenticated caller could assert a scheme the deployment
+// never actually terminated (assessment finding
+// F5-isHTTPS-trusts-unvalidated-header).
+func isHTTPS(r *http.Request, trustedProxyHops int) bool {
 	if r.TLS != nil {
 		return true
 	}
-	return r.Header.Get("X-Forwarded-Proto") == "https"
+	if trustedProxyHops > 0 && r.Header.Get("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	return false
 }

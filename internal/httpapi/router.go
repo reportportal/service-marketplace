@@ -103,7 +103,7 @@ func (s *Server) ensureXSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := r.Cookie(auth.XSRFCookieName); err != nil {
 			if tok, err := auth.NewXSRFToken(); err == nil {
-				w.Header().Add("Set-Cookie", auth.BuildXSRFCookie(tok, isHTTPS(r)))
+				w.Header().Add("Set-Cookie", auth.BuildXSRFCookie(tok, isHTTPS(r, s.deps.Config.TrustedProxyHops)))
 			}
 		}
 		next.ServeHTTP(w, r)

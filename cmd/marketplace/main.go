@@ -62,7 +62,7 @@ func main() {
 
 	denylist := auth.NewDenylist(store)
 	sessions := auth.NewSessionManager(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTTTLSeconds, denylist)
-	admin := auth.NewAdminAuthenticator(cfg.AdminLoginEnabled, cfg.AdminUsername, cfg.AdminPasswordHash)
+	admin := auth.NewAdminAuthenticator(cfg.AdminLoginEnabled, cfg.AdminUsername, cfg.AdminPasswordHash, store)
 	gh := &auth.GitHubOAuth{
 		ClientID:     cfg.GitHubOAuthClientID,
 		ClientSecret: cfg.GitHubOAuthClientSecret,
@@ -70,7 +70,7 @@ func main() {
 		AllowedTeam:  cfg.GitHubOAuthAllowedTeam,
 		RedirectURL:  cfg.GitHubOAuthRedirectURL,
 		Sessions:     sessions,
-		States:       auth.NewOAuthStateStore(),
+		States:       auth.NewOAuthStateStore(store),
 	}
 	oidc := &auth.PublishOIDCVerifier{
 		Audience:       cfg.PublishOIDCAudience,

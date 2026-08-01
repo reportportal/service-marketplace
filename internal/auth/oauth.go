@@ -47,16 +47,16 @@ func (g *GitHubOAuth) AuthorizeURL(state string) string {
 
 func (g *GitHubOAuth) IssueState(ctx context.Context) (string, error) {
 	if g.States == nil {
-		g.States = NewOAuthStateStore()
+		g.States = NewOAuthStateStore(nil)
 	}
-	return g.States.Issue()
+	return g.States.Issue(ctx)
 }
 
-func (g *GitHubOAuth) ConsumeState(state string) bool {
+func (g *GitHubOAuth) ConsumeState(ctx context.Context, state string) bool {
 	if g.States == nil {
 		return false
 	}
-	return g.States.Consume(state)
+	return g.States.Consume(ctx, state)
 }
 
 func (g *GitHubOAuth) Exchange(ctx context.Context, code string) (string, error) {
@@ -182,7 +182,7 @@ func (g *GitHubOAuth) Callback(ctx context.Context, code, state string) (string,
 	if !g.Enabled() {
 		return "", time.Time{}, ErrGitHubUnavailable
 	}
-	if !g.ConsumeState(state) {
+	if !g.ConsumeState(ctx, state) {
 		return "", time.Time{}, ErrUnauthorized
 	}
 	token, err := g.Exchange(ctx, code)
