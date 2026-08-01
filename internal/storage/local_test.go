@@ -193,6 +193,61 @@ func TestLocalStoreRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+// TestLocalStoreStat_ReturnsCreationTimeAndGenerationWithoutBody proves Stat
+// gives the AMD-27 orphan-cleanup age guard (internal/lifecycle.OrphanCleanup)
+// what it needs -- an object's creation time and current generation -- without
+// requiring a full Read() of a potentially large jar just to learn its age.
+// If Stat's CreatedAt is left zero-valued, or is a snapshot fixed at open time
+// instead of tracking the object's real mtime, the age guard would either hold
+// every orphan forever (a zero time reads as "just written" against
+// time.Now().Sub) or never re-observe a rewrite.
+func TestLocalStoreStat_ReturnsCreationTimeAndGenerationWithoutBody(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalStore(root, "http://localhost/cdn", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	path := "plugins/p/versions/1.0.0/p-1.0.0.jar"
+
+	before := time.Now().Add(-time.Second)
+	gen1, err := store.Write(ctx, path, []byte("jar-bytes"), 0)
+	if err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	after := time.Now().Add(time.Second)
+
+	meta, err := store.Stat(ctx, path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if meta.Generation != gen1 {
+		t.Fatalf("Generation = %d, want %d", meta.Generation, gen1)
+	}
+	if meta.CreatedAt.Before(before) || meta.CreatedAt.After(after) {
+		t.Fatalf("CreatedAt = %v, want between %v and %v", meta.CreatedAt, before, after)
+	}
+	if meta.Size != int64(len("jar-bytes")) {
+		t.Fatalf("Size = %d, want %d", meta.Size, len("jar-bytes"))
+	}
+
+	rewriteAfter := time.Now().Add(-time.Second)
+	if _, err := store.Write(ctx, path, []byte("jar-bytes-v2"), gen1); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+	meta2, err := store.Stat(ctx, path)
+	if err != nil {
+		t.Fatalf("Stat after rewrite: %v", err)
+	}
+	if !meta2.CreatedAt.After(rewriteAfter) {
+		t.Fatalf("CreatedAt did not advance on rewrite: got %v, want after %v", meta2.CreatedAt, rewriteAfter)
+	}
+
+	if _, err := store.Stat(ctx, "plugins/missing/versions/1.0.0/missing.jar"); err != ErrNotFound {
+		t.Fatalf("Stat on missing object: got %v, want ErrNotFound", err)
+	}
+}
+
 func TestSanitizeScreenshotFilename(t *testing.T) {
 	if _, err := SanitizeScreenshotFilename("../../authorized_keys.json"); err == nil {
 		t.Fatal("expected error")

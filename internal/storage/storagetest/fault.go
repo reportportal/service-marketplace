@@ -22,6 +22,7 @@ const (
 	OpDelete     Op = "delete"
 	OpExists     Op = "exists"
 	OpListPrefix Op = "list_prefix"
+	OpStat       Op = "stat"
 	OpSignedURL  Op = "signed_url"
 	OpReady      Op = "ready"
 )
@@ -146,6 +147,13 @@ func (f *FaultStore) ListPrefix(ctx context.Context, prefix string) ([]string, e
 		return nil, err
 	}
 	return f.ObjectStore.ListPrefix(ctx, prefix)
+}
+
+func (f *FaultStore) Stat(ctx context.Context, objectPath string) (*storage.ObjectMeta, error) {
+	if err := f.trigger(OpStat, objectPath); err != nil {
+		return nil, err
+	}
+	return f.ObjectStore.Stat(ctx, objectPath)
 }
 
 func (f *FaultStore) SignedURL(ctx context.Context, objectPath string, ttl time.Duration) (string, time.Time, error) {
