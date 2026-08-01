@@ -53,7 +53,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.Header().Add("Set-Cookie", auth.BuildSessionCookie(token, s.deps.Sessions.TTLSeconds(), isHTTPS(r)))
+	w.Header().Add("Set-Cookie", auth.BuildSessionCookie(token, s.deps.Sessions.TTLSeconds(), isHTTPS(r, s.deps.Config.TrustedProxyHops)))
 	writeJSON(w, http.StatusOK, AuthTokenResponse{
 		AccessToken: token,
 		TokenType:   "Bearer",
@@ -71,7 +71,7 @@ func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	w.Header().Add("Set-Cookie", auth.BuildOAuthStateCookie(state, isHTTPS(r)))
+	w.Header().Add("Set-Cookie", auth.BuildOAuthStateCookie(state, isHTTPS(r, s.deps.Config.TrustedProxyHops)))
 	http.Redirect(w, r, s.deps.GitHub.AuthorizeURL(state), http.StatusFound)
 }
 
@@ -98,7 +98,7 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "GitHub authentication failed"})
 		return
 	}
-	w.Header().Add("Set-Cookie", auth.BuildSessionCookie(token, s.deps.Sessions.TTLSeconds(), isHTTPS(r)))
+	w.Header().Add("Set-Cookie", auth.BuildSessionCookie(token, s.deps.Sessions.TTLSeconds(), isHTTPS(r, s.deps.Config.TrustedProxyHops)))
 	http.Redirect(w, r, "/operator/", http.StatusFound)
 }
 
@@ -106,7 +106,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if claims := sessionFrom(r.Context()); claims != nil {
 		s.deps.Sessions.Revoke(r.Context(), claims.JTI, claims.Exp)
 	}
-	w.Header().Add("Set-Cookie", auth.ClearSessionCookie(isHTTPS(r)))
+	w.Header().Add("Set-Cookie", auth.ClearSessionCookie(isHTTPS(r, s.deps.Config.TrustedProxyHops)))
 	w.WriteHeader(http.StatusNoContent)
 }
 

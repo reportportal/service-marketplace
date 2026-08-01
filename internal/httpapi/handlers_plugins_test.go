@@ -9,6 +9,7 @@ import (
 
 	"github.com/reportportal/service-marketplace/internal/catalogue"
 	"github.com/reportportal/service-marketplace/internal/cdn"
+	"github.com/reportportal/service-marketplace/internal/config"
 	"github.com/reportportal/service-marketplace/internal/domain"
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
@@ -23,7 +24,11 @@ func newTestServer(t *testing.T) (*Server, *catalogue.Service, *publish.Service)
 	}
 	pub := &publish.Service{Store: store, Invalidator: cdn.NoopInvalidator{}}
 	cat := &catalogue.Service{Store: store}
-	srv := NewServer(Deps{Store: store, Catalogue: cat, Publish: pub})
+	// Config must never be nil: every real Server is wired through
+	// cmd/marketplace/main.go's config.Load(), which always returns a
+	// non-nil *config.Config, and ensureXSRF/isHTTPS dereference
+	// s.deps.Config.TrustedProxyHops on every request.
+	srv := NewServer(Deps{Store: store, Catalogue: cat, Publish: pub, Config: &config.Config{}})
 	return srv, cat, pub
 }
 
