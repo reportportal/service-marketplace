@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/reportportal/service-marketplace/internal/domain"
@@ -69,17 +68,20 @@ func (s *Service) Create(ctx context.Context, customerID string, expiresAt *time
 	if err != nil {
 		return nil, err
 	}
-	kid, _ := randomID()
 	now := time.Now().UTC()
+	var expires *domain.Date
+	if expiresAt != nil {
+		d := domain.Date{Time: *expiresAt}
+		expires = &d
+	}
 	ent := domain.LicenseEntitlement{
 		CustomerID: customerID,
 		Tier:       "premium",
-		CreatedAt:  now,
-		ExpiresAt:  expiresAt,
+		IssuedAt:   domain.Date{Time: now},
+		ExpiresAt:  expires,
 		PublicKeys: []domain.LicensePublicKey{{
-			KID:       kid,
 			PublicKey: base64.StdEncoding.EncodeToString(pub),
-			IssuedAt:  now,
+			IssuedAt:  domain.Date{Time: now},
 		}},
 	}
 
@@ -138,7 +140,6 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 	if err != nil {
 		return nil, err
 	}
-	kid, _ := randomID()
 	now := time.Now().UTC()
 	var pubB64 string
 	err = storage.WriteWithRetry(ctx, s.Store, storage.PathAuthorizedKeys, func(data []byte, gen int64) ([]byte, error) {
@@ -152,9 +153,8 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 				found = true
 				pubB64 = base64.StdEncoding.EncodeToString(pub)
 				ak.Entitlements[i].PublicKeys = append(ak.Entitlements[i].PublicKeys, domain.LicensePublicKey{
-					KID:       kid,
 					PublicKey: pubB64,
-					IssuedAt:  now,
+					IssuedAt:  domain.Date{Time: now},
 				})
 				break
 			}
@@ -197,12 +197,4 @@ func (s *Service) PublicKeysForCustomer(ctx context.Context, customerID string) 
 
 func (s *Service) FindCustomerByPlugin(ctx context.Context, customerID, pluginID string) ([]string, error) {
 	return s.PublicKeysForCustomer(ctx, customerID)
-}
-
-func randomID() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("random: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }
