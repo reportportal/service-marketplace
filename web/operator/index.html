@@ -4,144 +4,235 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ReportPortal Marketplace Operator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@600;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
-  <header>
-    <h1>Plugin Marketplace Operator</h1>
-    <div id="auth-status"></div>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">ReportPortal</span>
+      <span class="brand-sub">Plugin Marketplace Operator</span>
+    </div>
+    <div id="auth-status" class="auth-chip">Not signed in</div>
   </header>
 
-  <section id="login-section" class="card hidden">
-    <h2>Sign in</h2>
-    <div id="login-options"></div>
-    <form id="admin-login-form" class="hidden">
-      <label>Username <input type="text" id="username" autocomplete="username"></label>
-      <label>Password <input type="password" id="password" autocomplete="current-password"></label>
-      <button type="submit">Sign in</button>
-    </form>
-    <p id="login-error" class="error"></p>
-  </section>
-
-  <section id="console-section" class="hidden">
-    <nav>
-      <button data-tab="plugins" class="active">Plugins</button>
-      <button data-tab="licenses">Licenses</button>
-      <button id="logout-btn">Log out</button>
-    </nav>
-
-    <div id="tab-plugins" class="tab">
-      <h2>Catalogue</h2>
-      <div class="filters">
-        <input type="search" id="search" placeholder="Search plugins">
-        <select id="category">
-          <option value="">All categories</option>
-          <option value="bug-tracking">Bug tracking</option>
-          <option value="notifications">Notifications</option>
-          <option value="authorization">Authorization</option>
-          <option value="import">Import</option>
-          <option value="other">Other</option>
-        </select>
-        <button id="refresh-plugins">Refresh</button>
-      </div>
-      <ul id="plugin-list"></ul>
-
-      <div id="plugin-detail" class="detail-panel hidden">
-        <div class="detail-header">
-          <div>
-            <h2 id="detail-title">Plugin</h2>
-            <p id="detail-sub" class="muted"></p>
-          </div>
-          <div class="detail-header-actions">
-            <button type="button" id="detail-new-version" class="linkish">New version</button>
-            <button type="button" id="detail-close" class="linkish">Close</button>
-          </div>
-        </div>
-
-        <h3>Versions</h3>
-        <ul id="version-list"></ul>
-        <p id="detail-error" class="error"></p>
-        <pre id="detail-result" class="mono hidden"></pre>
-
-        <div id="block-form-wrap" class="action-panel hidden">
-          <h3>Block version <span id="block-target"></span></h3>
-          <p class="muted">Blocked versions stay in history but cannot be newly installed.</p>
-          <form id="block-form">
-            <label>Reason <textarea id="block-reason" required maxlength="2000" rows="3"></textarea></label>
-            <div class="publish-actions">
-              <button type="submit">Block version</button>
-              <button type="button" id="block-cancel" class="linkish">Cancel</button>
-            </div>
-          </form>
-        </div>
-
-        <div id="advisory-form-wrap" class="action-panel hidden">
-          <h3>Attach advisory <span id="advisory-target"></span></h3>
-          <p class="muted">Replaces any existing advisory on this version.</p>
-          <form id="advisory-form">
-            <label>Severity
-              <select id="advisory-severity" required>
-                <option value="low">low</option>
-                <option value="medium" selected>medium</option>
-                <option value="high">high</option>
-                <option value="critical">critical</option>
-              </select>
-            </label>
-            <label>Text <textarea id="advisory-text" required maxlength="5000" rows="4" placeholder="CVE-… — upgrade guidance"></textarea></label>
-            <div class="publish-actions">
-              <button type="submit">Save advisory</button>
-              <button type="button" id="advisory-cancel" class="linkish">Cancel</button>
-            </div>
-          </form>
-        </div>
-
-        <div id="remove-form-wrap" class="action-panel danger-panel">
-          <h3>Remove plugin</h3>
-          <p class="muted">Irreversible: tombstones the plugin, hard-deletes artifacts, and returns 410 to clients.</p>
-          <form id="remove-form">
-            <label>Removal reason <textarea id="removal-reason" required maxlength="2000" rows="3"></textarea></label>
-            <div class="publish-actions">
-              <button type="submit" class="danger">Remove plugin</button>
-            </div>
-          </form>
-        </div>
-      </div>
-      <h2>Publish plugin</h2>
-      <form id="publish-form">
-        <fieldset class="publish-mode">
-          <legend>Mode</legend>
-          <label class="inline"><input type="radio" name="publish-mode" value="first" checked> First version (new plugin)</label>
-          <label class="inline"><input type="radio" name="publish-mode" value="version"> New version of existing plugin</label>
-        </fieldset>
-        <label id="plugin-id-wrap" class="hidden">Plugin ID
-          <input type="text" id="publish-plugin-id" pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]" placeholder="from catalogue or manifest">
+  <main class="page">
+    <section id="login-section" class="login-wrap card hidden">
+      <h2>Sign in</h2>
+      <p class="login-lead">Sign in to publish plugins, manage versions, and license entitlements.</p>
+      <div id="login-options"></div>
+      <form id="admin-login-form" class="hidden">
+        <div id="admin-login-divider" class="login-divider hidden">or admin</div>
+        <label class="field">
+          <span class="field-label">Username</span>
+          <input type="text" id="username" autocomplete="username">
         </label>
-        <label>Plugin JAR <input type="file" id="publish-jar" accept=".jar,application/java-archive" required></label>
-        <label>CHANGELOG.md (optional) <input type="file" id="publish-changelog" accept=".md,text/markdown,text/plain"></label>
-        <label>Screenshots (optional, max 5) <input type="file" id="publish-screenshots" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple></label>
-        <div class="publish-actions">
-          <button type="button" id="preview-manifest">Preview manifest</button>
-          <button type="submit" id="publish-submit">Publish</button>
+        <label class="field">
+          <span class="field-label">Password</span>
+          <input type="password" id="password" autocomplete="current-password">
+        </label>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary btn-block">Sign in</button>
         </div>
-        <pre id="manifest-preview" class="mono hidden"></pre>
-        <p id="publish-error" class="error"></p>
-        <pre id="publish-result" class="mono hidden"></pre>
       </form>
+      <p id="login-error" class="alert alert-error"></p>
+    </section>
 
-    </div>
+    <section id="console-section" class="hidden">
+      <nav class="console-nav" aria-label="Operator sections">
+        <div class="tab-list" role="tablist">
+          <button type="button" data-tab="plugins" class="tab-btn active" role="tab" aria-selected="true">Plugins</button>
+          <button type="button" data-tab="licenses" class="tab-btn" role="tab" aria-selected="false">Licenses</button>
+        </div>
+        <div class="nav-actions">
+          <button type="button" id="logout-btn" class="btn btn-secondary">Log out</button>
+        </div>
+      </nav>
 
+      <div id="tab-plugins" class="tab">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Publish plugin</h2>
+          </div>
+          <p class="panel-help">Upload a JAR with marketplace-manifest.json. Optional changelog and screenshots are stored with the version.</p>
+          <form id="publish-form">
+            <fieldset class="publish-mode">
+              <legend>Mode</legend>
+              <label class="inline"><input type="radio" name="publish-mode" value="first" checked> First version (new plugin)</label>
+              <label class="inline"><input type="radio" name="publish-mode" value="version"> New version of existing plugin</label>
+            </fieldset>
+            <label id="plugin-id-wrap" class="field hidden">
+              <span class="field-label">Plugin ID</span>
+              <input type="text" id="publish-plugin-id" pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]" placeholder="from catalogue or manifest">
+            </label>
+            <label class="field">
+              <span class="field-label">Plugin JAR</span>
+              <input type="file" id="publish-jar" accept=".jar,application/java-archive" required>
+              <span class="field-file-name" data-for="publish-jar"></span>
+            </label>
+            <label class="field">
+              <span class="field-label">CHANGELOG.md <span class="muted">(optional)</span></span>
+              <input type="file" id="publish-changelog" accept=".md,text/markdown,text/plain">
+              <span class="field-file-name" data-for="publish-changelog"></span>
+            </label>
+            <label class="field">
+              <span class="field-label">Screenshots <span class="muted">(optional, max 5)</span></span>
+              <input type="file" id="publish-screenshots" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple>
+              <span class="field-file-name" data-for="publish-screenshots"></span>
+            </label>
+            <div class="form-actions">
+              <button type="button" id="preview-manifest" class="btn btn-secondary">Preview manifest</button>
+              <button type="submit" id="publish-submit" class="btn btn-primary">Publish</button>
+            </div>
+            <details id="manifest-preview-box" class="mono-box hidden">
+              <summary>Manifest preview</summary>
+              <pre id="manifest-preview" class="mono"></pre>
+            </details>
+            <p id="publish-error" class="alert alert-error"></p>
+            <p id="publish-success" class="alert alert-success hidden"></p>
+            <details id="publish-result-box" class="mono-box hidden">
+              <summary>Response details</summary>
+              <pre id="publish-result" class="mono"></pre>
+            </details>
+          </form>
+        </div>
 
-    <div id="tab-licenses" class="tab hidden">
-      <h2>License entitlements</h2>
-      <form id="create-license-form">
-        <label>Customer ID <input type="text" id="customer-id" required pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]"></label>
-        <label>Expires (optional) <input type="date" id="expires-at"></label>
-        <button type="submit">Create entitlement</button>
-      </form>
-      <pre id="license-result" class="mono hidden"></pre>
-      <ul id="license-list"></ul>
-    </div>
-  </section>
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Catalogue</h2>
+          </div>
+          <div class="filters">
+            <input type="search" id="search" placeholder="Search plugins" aria-label="Search plugins">
+            <select id="category" aria-label="Category">
+              <option value="">All categories</option>
+              <option value="bug-tracking">Bug tracking</option>
+              <option value="notifications">Notifications</option>
+              <option value="authorization">Authorization</option>
+              <option value="import">Import</option>
+              <option value="other">Other</option>
+            </select>
+            <button type="button" id="refresh-plugins" class="btn btn-secondary">Refresh</button>
+          </div>
+          <div id="plugin-empty" class="empty-state hidden">
+            <p>No plugins match the current filters.</p>
+          </div>
+          <ul id="plugin-list" class="list"></ul>
+        </div>
+
+        <div id="plugin-detail" class="panel detail-panel hidden">
+          <div class="detail-header">
+            <div>
+              <h2 id="detail-title">Plugin</h2>
+              <p id="detail-sub" class="muted"></p>
+            </div>
+            <div class="detail-header-actions">
+              <button type="button" id="detail-new-version" class="btn btn-secondary">New version</button>
+              <button type="button" id="detail-close" class="btn btn-ghost">Close</button>
+            </div>
+          </div>
+
+          <h3>Versions</h3>
+          <div id="version-empty" class="empty-state hidden">
+            <p>No versions found for this plugin.</p>
+          </div>
+          <ul id="version-list"></ul>
+          <p id="detail-error" class="alert alert-error"></p>
+          <p id="detail-success" class="alert alert-success hidden"></p>
+          <details id="detail-result-box" class="mono-box hidden">
+            <summary>Response details</summary>
+            <pre id="detail-result" class="mono"></pre>
+          </details>
+
+          <div id="block-form-wrap" class="action-panel hidden">
+            <h3>Block version <span id="block-target"></span></h3>
+            <p class="panel-help">Blocked versions stay in history but cannot be newly installed.</p>
+            <form id="block-form">
+              <label class="field">
+                <span class="field-label">Reason</span>
+                <textarea id="block-reason" required maxlength="2000" rows="3"></textarea>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-secondary">Block version</button>
+                <button type="button" id="block-cancel" class="btn btn-ghost">Cancel</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="advisory-form-wrap" class="action-panel hidden">
+            <h3>Attach advisory <span id="advisory-target"></span></h3>
+            <p class="panel-help">Replaces any existing advisory on this version.</p>
+            <form id="advisory-form">
+              <label class="field">
+                <span class="field-label">Severity</span>
+                <select id="advisory-severity" required>
+                  <option value="low">low</option>
+                  <option value="medium" selected>medium</option>
+                  <option value="high">high</option>
+                  <option value="critical">critical</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Text</span>
+                <textarea id="advisory-text" required maxlength="5000" rows="4" placeholder="CVE-… — upgrade guidance"></textarea>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save advisory</button>
+                <button type="button" id="advisory-cancel" class="btn btn-ghost">Cancel</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="remove-form-wrap" class="action-panel danger-panel">
+            <h3>Remove plugin</h3>
+            <p class="panel-help">Irreversible: tombstones the plugin, hard-deletes artifacts, and returns 410 to clients.</p>
+            <form id="remove-form">
+              <label class="field">
+                <span class="field-label">Removal reason</span>
+                <textarea id="removal-reason" required maxlength="2000" rows="3"></textarea>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-danger">Remove plugin</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-licenses" class="tab hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>License entitlements</h2>
+          </div>
+          <p class="panel-help">Create customer entitlements for premium plugin access.</p>
+          <form id="create-license-form" class="license-form">
+            <label class="field">
+              <span class="field-label">Customer ID</span>
+              <input type="text" id="customer-id" required pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]">
+            </label>
+            <label class="field">
+              <span class="field-label">Expires <span class="muted">(optional)</span></span>
+              <input type="date" id="expires-at">
+            </label>
+            <div class="form-actions">
+              <button type="submit" id="license-submit" class="btn btn-primary">Create entitlement</button>
+            </div>
+          </form>
+          <p id="license-success" class="alert alert-success hidden"></p>
+          <p id="license-error" class="alert alert-error"></p>
+          <details id="license-result-box" class="mono-box hidden">
+            <summary>Response details</summary>
+            <pre id="license-result" class="mono"></pre>
+          </details>
+          <div id="license-empty" class="empty-state hidden">
+            <p>No entitlements yet. Create one above to get started.</p>
+          </div>
+          <ul id="license-list" class="list"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
 
   <script src="app.js"></script>
 </body>
