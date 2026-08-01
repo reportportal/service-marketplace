@@ -94,12 +94,39 @@ func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason st
 		}
 		blocked = domain.BlockedVersion{Version: version, BlockedAt: now, Reason: reason}
 		st.BlockedVersions = append(st.BlockedVersions, blocked)
+		// AMD-07: recompute latestVersion on block too, not just on
+		// publish -- otherwise blocking the version currently advertised
+		// as latest leaves it advertised forever even though nobody can
+		// install it.
+		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PluginStatePath(pluginID)})
+	// AMD-07 / §6.4 invalidation matrix (Block version row) names three
+	// paths: /index.json, /plugins/{id}/plugin.json, and
+	// /plugins/{id}/versions/{ver}/*. index.json is among the GCS paths
+	// written and invalidated by a block, not just the plugin's own
+	// plugin.json -- the catalogue listing is composed from index.json, so
+	// without this the blocked-but-still-latest version keeps being
+	// advertised there even after plugin.json is corrected. Mirrors
+	// SetTier/RemovePlugin's call below: best-effort, not treated as fatal
+	// to the block itself (rebuildIndex has its own retry/failure surface).
+	//
+	// The version's own paths must be invalidated too: their manifest and
+	// jar are served with a long, immutable Cache-Control
+	// (max-age=31536000), so without an explicit invalidation a CDN edge
+	// that already cached them keeps serving the blocked version's metadata
+	// and artifact indefinitely -- letting a client resolve and download
+	// exactly the version the registry just blocked, defeating the point of
+	// blocking it.
+	_ = s.Publisher.RebuildIndex(ctx)
+	_ = s.Invalidator.Invalidate(ctx, []string{
+		"/" + storage.PathIndex,
+		"/" + storage.PluginStatePath(pluginID),
+		"/" + storage.VersionPrefix(pluginID, version) + "*",
+	})
 	return &blocked, nil
 }
 

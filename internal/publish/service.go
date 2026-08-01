@@ -281,7 +281,12 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		if !found {
 			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha})
 		}
-		st.LatestVersion = m.Version
+		// AMD-07: latestVersion is the SemVer-maximum of the non-blocked,
+		// non-pre-release versions, recomputed here rather than simply set
+		// to the version just published -- publishing a semver-lower
+		// version (e.g. the §6.2 legacy-hotfix patch to an older line)
+		// must never move the pointer.
+		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
