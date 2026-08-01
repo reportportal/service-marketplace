@@ -1,24 +1,68 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// dateLayout is the calendar-date-only format the license entitlement schema declares
+// (OpenAPI `format: date`) for issuedAt/expiresAt — a customer-facing license validity
+// window, not a timestamp.
+const dateLayout = "2006-01-02"
+
+// Date is a calendar date (no time-of-day, no timezone) that marshals as
+// docs/openapi/service-marketplace-v1.yaml declares it: "2006-01-02". A bare time.Time
+// field marshals with a full RFC3339 timestamp, which is a wire-contract mismatch for
+// any field the spec declares `format: date`.
+type Date struct {
+	time.Time
+}
+
+func (d Date) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Time.Format(dateLayout))
+}
+
+func (d *Date) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		d.Time = time.Time{}
+		return nil
+	}
+	t, err := time.Parse(dateLayout, s)
+	if err != nil {
+		return err
+	}
+	d.Time = t
+	return nil
+}
 
 type Category string
 
 const (
-	CategoryBugTracking    Category = "bug-tracking"
-	CategoryNotifications  Category = "notifications"
-	CategoryAuthorization  Category = "authorization"
-	CategoryImport         Category = "import"
-	CategoryOther          Category = "other"
+	CategoryBugTracking   Category = "bug-tracking"
+	CategoryNotifications Category = "notifications"
+	CategoryAuthorization Category = "authorization"
+	CategoryImport        Category = "import"
 )
 
+// AllCategories is the RP-defined controlled vocabulary (§6.2 of the marketplace plan):
+// closed, operator-extended only, not author-extensible. It is the single source of
+// truth ValidCategory checks against, and what
+// internal/domain/category_vocabulary_test.go binds to the OpenAPI PluginCategory enum
+// and the marketplace-manifest JSON Schema's category enum so the three cannot drift
+// apart again.
+var AllCategories = []Category{CategoryBugTracking, CategoryNotifications, CategoryAuthorization, CategoryImport}
+
 func ValidCategory(c Category) bool {
-	switch c {
-	case CategoryBugTracking, CategoryNotifications, CategoryAuthorization, CategoryImport, CategoryOther:
-		return true
-	default:
-		return false
+	for _, v := range AllCategories {
+		if c == v {
+			return true
+		}
 	}
+	return false
 }
 
 type AccessTier string
@@ -122,6 +166,34 @@ type PluginTombstone struct {
 	RemovedBy     string    `json:"removedBy"`
 }
 
+// LicensePublicKey and LicenseEntitlement are dual-purpose: they are marshalled both
+// as HTTP response bodies (see httpapi.LicensePublicKeyResponse/
+// LicenseEntitlementResponse, which convert from these) and, unmarshalled, ARE the
+// persisted document at auth/authorized_keys.json (see internal/license.Service.load/
+// save). They deliberately keep the storage-era shape — full time.Time/RFC3339
+// timestamps, matching every byte already on disk in any existing deployment — so a
+// wire-contract fix (e.g. satisfying the OpenAPI `format: date` declaration on the
+// response) never has to touch what gets read from or written to storage. Wire-only
+// concerns (the `Date` date-only formatting, the OpenAPI-declared "issuedAt" name for
+// what storage still calls CreatedAt) belong on the httpapi response types, not here.
+//
+// KID is likewise storage-only, for a different reason than the dates: it was never
+// part of the wire contract at all (LicensePublicKey's OpenAPI schema has no "kid"
+// property, and it never carried one). But every entitlement created or rotated by the
+// release before this branch wrote a "kid" value into authorized_keys.json, and
+// Service.load/save round-trips this type directly, so dropping the Go field — correct
+// as a wire decision, since nothing on the wire ever read it — silently erases every
+// existing "kid" from disk the next time *any* entitlement in the document is created,
+// rotated or revoked (the whole document is unmarshalled and re-marshalled on every
+// write, not just the changed entitlement). Keeping the field here preserves whatever
+// is already on disk without reviving it on the wire. New keys deliberately leave it
+// empty (see license.Service.Create/RotateKey) rather than resurrect the old
+// randomID()-based generator: AMD-11 defines a real keyId as a deterministic
+// `first 8 hex chars of SHA-256(publicKey)`, a different value under a different wire
+// name ("keyId", not "kid") than the old opaque random one this field preserves. Every
+// key issued between this fix and AMD-11 landing keeps kid empty, so AMD-11's
+// migration only has one case to handle (absent) instead of two (absent, or present but
+// wrong-scheme).
 type LicensePublicKey struct {
 	KID       string    `json:"kid,omitempty"`
 	PublicKey string    `json:"publicKey"`

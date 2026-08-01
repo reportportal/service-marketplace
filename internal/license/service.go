@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/reportportal/service-marketplace/internal/domain"
@@ -69,7 +68,6 @@ func (s *Service) Create(ctx context.Context, customerID string, expiresAt *time
 	if err != nil {
 		return nil, err
 	}
-	kid, _ := randomID()
 	now := time.Now().UTC()
 	ent := domain.LicenseEntitlement{
 		CustomerID: customerID,
@@ -77,7 +75,6 @@ func (s *Service) Create(ctx context.Context, customerID string, expiresAt *time
 		CreatedAt:  now,
 		ExpiresAt:  expiresAt,
 		PublicKeys: []domain.LicensePublicKey{{
-			KID:       kid,
 			PublicKey: base64.StdEncoding.EncodeToString(pub),
 			IssuedAt:  now,
 		}},
@@ -128,9 +125,9 @@ func (s *Service) Revoke(ctx context.Context, customerID string) error {
 }
 
 type RotateResult struct {
-	CustomerID string
-	PrivateKey string
-	PublicKey  string
+	CustomerID string `json:"customerId"`
+	PrivateKey string `json:"privateKey"`
+	PublicKey  string `json:"publicKey"`
 }
 
 func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResult, error) {
@@ -138,7 +135,6 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 	if err != nil {
 		return nil, err
 	}
-	kid, _ := randomID()
 	now := time.Now().UTC()
 	var pubB64 string
 	err = storage.WriteWithRetry(ctx, s.Store, storage.PathAuthorizedKeys, func(data []byte, gen int64) ([]byte, error) {
@@ -152,7 +148,6 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 				found = true
 				pubB64 = base64.StdEncoding.EncodeToString(pub)
 				ak.Entitlements[i].PublicKeys = append(ak.Entitlements[i].PublicKeys, domain.LicensePublicKey{
-					KID:       kid,
 					PublicKey: pubB64,
 					IssuedAt:  now,
 				})
@@ -197,12 +192,4 @@ func (s *Service) PublicKeysForCustomer(ctx context.Context, customerID string) 
 
 func (s *Service) FindCustomerByPlugin(ctx context.Context, customerID, pluginID string) ([]string, error) {
 	return s.PublicKeysForCustomer(ctx, customerID)
-}
-
-func randomID() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("random: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }

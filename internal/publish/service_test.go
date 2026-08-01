@@ -10,7 +10,7 @@ func TestExtractManifest(t *testing.T) {
 	m := &domain.Manifest{
 		ID: "plugin-demo", Name: "Demo", Version: "1.0.0", Description: "d",
 		Author: domain.Author{Name: "A"}, License: "Apache-2.0",
-		Category: domain.CategoryOther, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
+		Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
 		Access: domain.AccessPublic,
 	}
 	jar, err := BuildTestJAR(m)

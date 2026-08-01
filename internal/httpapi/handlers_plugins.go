@@ -35,10 +35,11 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if plugins == nil {
-		plugins = []domain.IndexPlugin{}
+	items := make([]PluginListItemResponse, len(plugins))
+	for i, p := range plugins {
+		items[i] = newPluginListItemResponse(p)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"plugins": plugins})
+	writeJSON(w, http.StatusOK, PluginListResponse{Plugins: items})
 }
 
 func (s *Server) handleGetPlugin(w http.ResponseWriter, r *http.Request) {
@@ -56,24 +57,16 @@ func (s *Server) handleGetPlugin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, catalogue.TombstoneFromState(st))
 		return
 	}
-	out := manifestToDetail(*m, st)
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, pluginDetailResponse(*m, st))
 }
 
-func manifestToDetail(m domain.Manifest, st *domain.PluginState) map[string]any {
-	out := map[string]any{
-		"id": m.ID, "name": m.Name, "version": m.Version, "description": m.Description,
-		"author": m.Author, "license": m.License, "category": m.Category,
-		"compatibility": m.Compatibility, "access": m.Access, "tier": st.Tier,
-		"latestVersion": st.LatestVersion,
+func pluginDetailResponse(m domain.Manifest, st *domain.PluginState) PluginDetailResponse {
+	return PluginDetailResponse{
+		ID: m.ID, Name: m.Name, Version: m.Version, Description: m.Description,
+		Author: m.Author, License: m.License, Category: m.Category,
+		Compatibility: m.Compatibility, Homepage: m.Homepage, Access: m.Access,
+		ContactURL: m.ContactURL, Tier: st.Tier, LatestVersion: st.LatestVersion,
 	}
-	if m.Homepage != "" {
-		out["homepage"] = m.Homepage
-	}
-	if m.ContactURL != "" {
-		out["contactUrl"] = m.ContactURL
-	}
-	return out
 }
 
 func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
@@ -95,20 +88,22 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	for _, bv := range st.BlockedVersions {
 		blocked[bv.Version] = bv
 	}
-	versions := make([]map[string]any, 0, len(st.Versions))
+	versions := make([]PluginVersionSummary, 0, len(st.Versions))
 	for _, v := range st.Versions {
-		item := map[string]any{"version": v.Version, "blocked": false}
+		item := PluginVersionSummary{Version: v.Version}
 		if !v.PublishedAt.IsZero() {
-			item["publishedAt"] = v.PublishedAt
+			publishedAt := v.PublishedAt
+			item.PublishedAt = &publishedAt
 		}
 		if bv, ok := blocked[v.Version]; ok {
-			item["blocked"] = true
-			item["blockedAt"] = bv.BlockedAt
-			item["blockReason"] = bv.Reason
+			item.Blocked = true
+			blockedAt := bv.BlockedAt
+			item.BlockedAt = &blockedAt
+			item.BlockReason = bv.Reason
 		}
 		versions = append(versions, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pluginId": pluginID, "versions": versions})
+	writeJSON(w, http.StatusOK, PluginVersionListResponse{PluginID: pluginID, Versions: versions})
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
@@ -127,20 +122,35 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, catalogue.TombstoneFromState(st))
 		return
 	}
-	out := manifestToDetail(detail.Manifest, st)
-	out["version"] = detail.Manifest.Version
-	out["blocked"] = detail.Blocked
-	out["sha256"] = detail.SHA256
-	out["screenshotUrls"] = detail.ScreenshotURLs
-	if detail.BlockedAt != nil {
-		out["blockedAt"] = detail.BlockedAt
-		out["blockReason"] = detail.BlockReason
+	m := detail.Manifest
+	screenshotURLs := detail.ScreenshotURLs
+	if screenshotURLs == nil {
+		// PluginVersionDetail.screenshotUrls is a required, non-nullable array; an empty
+		// Go slice marshals as "[]", but a nil one marshals as JSON null and violates the
+		// schema.
+		screenshotURLs = []string{}
 	}
-	if detail.ChangelogURL != nil {
-		out["changelogUrl"] = *detail.ChangelogURL
+	out := PluginVersionDetailResponse{
+		ID: m.ID, Name: m.Name, Version: m.Version, Description: m.Description,
+		Author: m.Author, License: m.License, Category: m.Category,
+		Compatibility: m.Compatibility, Homepage: m.Homepage, Access: m.Access,
+		ContactURL:     m.ContactURL,
+		Tier:           st.Tier,
+		Blocked:        detail.Blocked,
+		SHA256:         detail.SHA256,
+		ScreenshotURLs: screenshotURLs,
 	}
 	if detail.Advisory != nil {
-		out["advisory"] = detail.Advisory
+		adv := newSecurityAdvisoryResponse(*detail.Advisory)
+		out.Advisory = &adv
+	}
+	if detail.BlockedAt != nil {
+		blockedAt := *detail.BlockedAt
+		out.BlockedAt = &blockedAt
+		out.BlockReason = detail.BlockReason
+	}
+	if detail.ChangelogURL != nil {
+		out.ChangelogURL = detail.ChangelogURL
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -170,8 +180,8 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	for _, bv := range st.BlockedVersions {
 		if bv.Version == version {
 			track("public", analytics.ResultBlocked)
-			writeJSON(w, http.StatusForbidden, map[string]any{
-				"blocked": true, "blockedAt": bv.BlockedAt, "reason": bv.Reason,
+			writeJSON(w, http.StatusForbidden, BlockedArtifactErrorResponse{
+				Blocked: true, BlockedAt: bv.BlockedAt, Reason: bv.Reason,
 			})
 			return
 		}
@@ -208,7 +218,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		track(access, analytics.ResultSuccess)
-		writeJSON(w, http.StatusOK, map[string]any{"downloadUrl": url, "expiresAt": expiresAt})
+		writeJSON(w, http.StatusOK, PremiumArtifactResponse{DownloadURL: url, ExpiresAt: expiresAt})
 		return
 	}
 	track(access, analytics.ResultSuccess)
@@ -334,8 +344,12 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id": st.ID, "tier": st.Tier, "latestVersion": st.LatestVersion, "blockedVersions": st.BlockedVersions,
+	blockedVersions := make([]BlockedVersionResponse, len(st.BlockedVersions))
+	for i, bv := range st.BlockedVersions {
+		blockedVersions[i] = newBlockedVersionResponse(bv)
+	}
+	writeJSON(w, http.StatusOK, PluginOperatorStateResponse{
+		ID: st.ID, Tier: st.Tier, LatestVersion: st.LatestVersion, BlockedVersions: blockedVersions,
 	})
 }
 
@@ -395,7 +409,7 @@ func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, bv)
+	writeJSON(w, http.StatusOK, newBlockedVersionResponse(*bv))
 }
 
 func (s *Server) handleAttachAdvisory(w http.ResponseWriter, r *http.Request) {
@@ -422,5 +436,5 @@ func (s *Server) handleAttachAdvisory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, adv)
+	writeJSON(w, http.StatusOK, newSecurityAdvisoryResponse(*adv))
 }

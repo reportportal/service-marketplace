@@ -13,9 +13,9 @@ import (
 )
 
 func (s *Server) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
-		"githubEnabled":     s.deps.GitHub.Enabled(),
-		"adminLoginEnabled": s.deps.AdminAuth.Configured(),
+	writeJSON(w, http.StatusOK, AuthConfigResponse{
+		GithubEnabled:     s.deps.GitHub.Enabled(),
+		AdminLoginEnabled: s.deps.AdminAuth.Configured(),
 	})
 }
 
@@ -54,10 +54,10 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Add("Set-Cookie", auth.BuildSessionCookie(token, s.deps.Sessions.TTLSeconds(), isHTTPS(r)))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"accessToken": token,
-		"tokenType":   "Bearer",
-		"expiresIn":   s.deps.Sessions.TTLSeconds(),
+	writeJSON(w, http.StatusOK, AuthTokenResponse{
+		AccessToken: token,
+		TokenType:   "Bearer",
+		ExpiresIn:   s.deps.Sessions.TTLSeconds(),
 	})
 }
 
@@ -116,10 +116,11 @@ func (s *Server) handleListLicenses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	if items == nil {
-		items = []domain.LicenseEntitlement{}
+	entitlements := make([]LicenseEntitlementResponse, len(items))
+	for i, e := range items {
+		entitlements[i] = newLicenseEntitlementResponse(e)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entitlements": items})
+	writeJSON(w, http.StatusOK, LicenseEntitlementListResponse{Entitlements: entitlements})
 }
 
 func (s *Server) handleCreateLicense(w http.ResponseWriter, r *http.Request) {
@@ -153,15 +154,15 @@ func (s *Server) handleCreateLicense(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	out := map[string]any{
-		"customerId": res.Entitlement.CustomerID,
-		"tier":       res.Entitlement.Tier,
-		"createdAt":  res.Entitlement.CreatedAt.Format("2006-01-02"),
-		"expiresAt":  res.Entitlement.ExpiresAt,
-		"publicKeys": res.Entitlement.PublicKeys,
-		"privateKey": res.PrivateKey,
-	}
-	writeJSON(w, http.StatusCreated, out)
+	entitlement := newLicenseEntitlementResponse(res.Entitlement)
+	writeJSON(w, http.StatusCreated, CreateLicenseResponse{
+		CustomerID: entitlement.CustomerID,
+		Tier:       entitlement.Tier,
+		IssuedAt:   entitlement.IssuedAt,
+		ExpiresAt:  entitlement.ExpiresAt,
+		PublicKeys: entitlement.PublicKeys,
+		PrivateKey: res.PrivateKey,
+	})
 }
 
 func (s *Server) handleRevokeLicense(w http.ResponseWriter, r *http.Request) {
