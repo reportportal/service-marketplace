@@ -99,17 +99,17 @@ type Compatibility struct {
 }
 
 type Manifest struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Version       string          `json:"version"`
-	Description   string          `json:"description"`
-	Author        Author          `json:"author"`
-	License       string          `json:"license"`
-	Category      Category        `json:"category"`
-	Compatibility Compatibility   `json:"compatibility"`
-	Homepage      string          `json:"homepage,omitempty"`
-	Access        AccessTier      `json:"access,omitempty"`
-	ContactURL    string          `json:"contactUrl,omitempty"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Version       string        `json:"version"`
+	Description   string        `json:"description"`
+	Author        Author        `json:"author"`
+	License       string        `json:"license"`
+	Category      Category      `json:"category"`
+	Compatibility Compatibility `json:"compatibility"`
+	Homepage      string        `json:"homepage,omitempty"`
+	Access        AccessTier    `json:"access,omitempty"`
+	ContactURL    string        `json:"contactUrl,omitempty"`
 }
 
 type IndexPlugin struct {
@@ -161,14 +161,14 @@ type VersionState struct {
 }
 
 type PluginState struct {
-	ID              string           `json:"id"`
-	Tier            TrustTier        `json:"tier"`
-	LatestVersion   string           `json:"latestVersion"`
-	Versions        []VersionMeta    `json:"versions"`
-	BlockedVersions []BlockedVersion `json:"blockedVersions,omitempty"`
-	Removed         *time.Time       `json:"removed,omitempty"`
-	RemovalReason   string           `json:"removalReason,omitempty"`
-	RemovedBy       string           `json:"removedBy,omitempty"`
+	ID              string                  `json:"id"`
+	Tier            TrustTier               `json:"tier"`
+	LatestVersion   string                  `json:"latestVersion"`
+	Versions        []VersionMeta           `json:"versions"`
+	BlockedVersions []BlockedVersion        `json:"blockedVersions,omitempty"`
+	Removed         *time.Time              `json:"removed,omitempty"`
+	RemovalReason   string                  `json:"removalReason,omitempty"`
+	RemovedBy       string                  `json:"removedBy,omitempty"`
 	VersionStates   map[string]VersionState `json:"versionStates,omitempty"`
 }
 

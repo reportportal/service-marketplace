@@ -42,10 +42,10 @@ func (e ValidationErrors) Error() string {
 }
 
 type Bundle struct {
-	JAR          []byte
-	JARFilename  string
-	Changelog    []byte
-	Screenshots  map[string][]byte
+	JAR         []byte
+	JARFilename string
+	Changelog   []byte
+	Screenshots map[string][]byte
 }
 
 type Result struct {

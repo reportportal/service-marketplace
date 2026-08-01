@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -77,7 +78,14 @@ func main() {
 		AllowedSources: cfg.PublishOIDCAllowedSources,
 	}
 
-	lc.StartOrphanCleanup(ctx, cfg.OrphanCleanupInterval)
+	orphanCleanupOwner := fmt.Sprintf("%s-%d", hostname(), os.Getpid())
+	lc.StartOrphanCleanup(ctx, lifecycle.CleanupConfig{
+		Enabled:     cfg.OrphanCleanupEnabled,
+		DryRun:      cfg.OrphanCleanupDryRun,
+		MinAge:      cfg.OrphanCleanupMinAge,
+		RunInterval: cfg.OrphanCleanupRunInterval,
+		LeaseTTL:    cfg.OrphanCleanupLeaseTTL,
+	}, cfg.OrphanCleanupInterval, orphanCleanupOwner)
 
 	srv := httpapi.NewServer(httpapi.Deps{
 		Config:     cfg,
@@ -114,4 +122,16 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+// hostname identifies this process for the orphan-cleanup lease's Owner
+// field (diagnostics only -- the lease's coordination is by CAS generation,
+// not by Owner value). Falls back to "unknown-host" rather than failing
+// startup if os.Hostname is unavailable.
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "unknown-host"
+	}
+	return h
 }
