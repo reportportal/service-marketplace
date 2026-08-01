@@ -42,20 +42,27 @@ func (d *Date) UnmarshalJSON(b []byte) error {
 type Category string
 
 const (
-	CategoryBugTracking    Category = "bug-tracking"
-	CategoryNotifications  Category = "notifications"
-	CategoryAuthorization  Category = "authorization"
-	CategoryImport         Category = "import"
-	CategoryOther          Category = "other"
+	CategoryBugTracking   Category = "bug-tracking"
+	CategoryNotifications Category = "notifications"
+	CategoryAuthorization Category = "authorization"
+	CategoryImport        Category = "import"
 )
 
+// AllCategories is the RP-defined controlled vocabulary (§6.2 of the marketplace plan):
+// closed, operator-extended only, not author-extensible. It is the single source of
+// truth ValidCategory checks against, and what
+// internal/domain/category_vocabulary_test.go binds to the OpenAPI PluginCategory enum
+// and the marketplace-manifest JSON Schema's category enum so the three cannot drift
+// apart again.
+var AllCategories = []Category{CategoryBugTracking, CategoryNotifications, CategoryAuthorization, CategoryImport}
+
 func ValidCategory(c Category) bool {
-	switch c {
-	case CategoryBugTracking, CategoryNotifications, CategoryAuthorization, CategoryImport, CategoryOther:
-		return true
-	default:
-		return false
+	for _, v := range AllCategories {
+		if c == v {
+			return true
+		}
 	}
+	return false
 }
 
 type AccessTier string
