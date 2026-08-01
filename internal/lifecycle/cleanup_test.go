@@ -18,7 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reportportal/service-marketplace/internal/cdn"
 	"github.com/reportportal/service-marketplace/internal/domain"
+	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
 	"github.com/reportportal/service-marketplace/internal/storage/storagetest"
 )
@@ -43,10 +45,12 @@ func baseCleanupConfig() CleanupConfig {
 }
 
 // seedIndex writes a real index.json with the given plugin -> committed
-// versions mapping, exactly the shape rebuildIndex produces.
+// versions mapping, exactly the shape a fully successful rebuildIndex
+// produces -- including Complete: true, since every plugin passed in here is
+// modelled as having resolved cleanly (see domain.Index.Complete).
 func seedIndex(t *testing.T, store storage.ObjectStore, plugins map[string][]string) {
 	t.Helper()
-	idx := domain.Index{}
+	idx := domain.Index{Complete: true}
 	for id, versions := range plugins {
 		idx.Plugins = append(idx.Plugins, domain.IndexPlugin{ID: id, Name: id, Versions: versions})
 	}
@@ -175,6 +179,120 @@ func TestOrphanCleanup_RefusesWhenIndexRecordsNoVersionsAtAll(t *testing.T) {
 		t.Fatalf("report.Deleted = %d, want 0", report.Deleted)
 	}
 	mustExist(t, store, orphan, true)
+}
+
+// TestOrphanCleanup_RefusesOnEmptyIndexNotMarkedComplete is the MAJOR fix:
+// before this change, the refuse-to-delete guard was conjoined with
+// `len(idx.Plugins) > 0`, so a syntactically valid `{"plugins":[]}` document
+// -- which references zero versions just as thoroughly as the "plugins
+// listed but all empty" shape the guard already caught -- sailed straight
+// through it. Zero plugins referenced means every version directory in
+// storage reads as an orphan. This index.json was never written by
+// rebuildIndex (which always sets "complete":true on success), so it must be
+// refused on that basis regardless of how many plugins it lists.
+func TestOrphanCleanup_RefusesOnEmptyIndexNotMarkedComplete(t *testing.T) {
+	store := newCleanupStore(t)
+	if _, err := store.Write(context.Background(), storage.PathIndex, []byte(`{"plugins":[]}`), 0); err != nil {
+		t.Fatalf("seed empty index.json: %v", err)
+	}
+	orphan := seedVersionObject(t, store, "plugin-x", "1.0.0")
+
+	job := &OrphanCleanup{
+		Store:  store,
+		Config: baseCleanupConfig(),
+		Owner:  "replica-1",
+		Now:    func() time.Time { return time.Now().UTC().Add(48 * time.Hour) },
+	}
+	report, err := job.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !report.Aborted {
+		t.Fatalf("report.Aborted = false, want true (an index not marked complete must never be trusted, empty or not): %+v", report)
+	}
+	if report.Deleted != 0 {
+		t.Fatalf("report.Deleted = %d, want 0", report.Deleted)
+	}
+	mustExist(t, store, orphan, true)
+}
+
+// TestOrphanCleanup_DoesNotDeleteVersionsOfAPluginItCannotRead is this
+// package's version of "defeat your own guard": it runs the real
+// publish.Service (so index.json is exactly what production code writes),
+// legitimately publishes two plugins, then makes one plugin's plugin.json
+// unreadable -- reference data that is only PARTIALLY unavailable, the exact
+// shape the pre-fix guard missed (every OTHER plugin still has versions, so
+// the old "all plugins report zero versions" heuristic never fires). It
+// proves the sweeper deletes nothing at all against that store: not
+// plugin-bad's version (protected because rebuildIndex refused to drop it
+// from index.json), and not plugin-good's version either (protected because
+// it is still legitimately referenced).
+func TestOrphanCleanup_DoesNotDeleteVersionsOfAPluginItCannotRead(t *testing.T) {
+	root := t.TempDir()
+	backing, err := storage.NewLocalStore(root, "http://cdn.test", "signing-secret")
+	if err != nil {
+		t.Fatalf("NewLocalStore: %v", err)
+	}
+	pub := &publish.Service{Store: backing, Invalidator: cdn.NoopInvalidator{}}
+
+	publishManifest(t, pub, "plugin-good", "1.0.0")
+	publishManifest(t, pub, "plugin-bad", "1.0.0")
+
+	goodPath := storage.VersionArtifactPath("plugin-good", "1.0.0", "public")
+	badPath := storage.VersionArtifactPath("plugin-bad", "1.0.0", "public")
+	mustExist(t, backing, goodPath, true)
+	mustExist(t, backing, badPath, true)
+
+	// Simulate plugin-bad's plugin.json becoming unreadable sometime after
+	// it was legitimately published (bit rot, a bad manual edit, whatever).
+	// A later, unrelated operator action (SetTier/RemovePlugin on any
+	// plugin, or another publish) would trigger rebuildIndex against this
+	// store; per the BLOCKING fix it refuses to overwrite index.json, so the
+	// document on disk stays exactly what it was right after both
+	// legitimate publishes -- still referencing both plugins.
+	fs := storagetest.Wrap(backing)
+	fs.Fail(storagetest.OpRead, storage.PluginStatePath("plugin-bad"), errors.New("boom: plugin-bad/plugin.json unreadable"))
+
+	faultyPub := &publish.Service{Store: fs, Invalidator: cdn.NoopInvalidator{}}
+	if err := faultyPub.RebuildIndex(context.Background()); err == nil {
+		t.Fatalf("RebuildIndex succeeded despite plugin-bad being unreadable -- setup invalid for this test")
+	}
+
+	job := &OrphanCleanup{
+		Store:  fs,
+		Config: baseCleanupConfig(),
+		Owner:  "replica-1",
+		Now:    func() time.Time { return time.Now().UTC().Add(48 * time.Hour) },
+	}
+	report, runErr := job.Run(context.Background())
+	if runErr != nil {
+		t.Fatalf("Run: %v", runErr)
+	}
+	if report.Deleted != 0 {
+		t.Fatalf("report.Deleted = %d, want 0 (a partially-unreadable store must delete nothing at all): %+v", report.Deleted, report)
+	}
+	mustExist(t, backing, goodPath, true)
+	mustExist(t, backing, badPath, true)
+}
+
+// publishManifest publishes a minimal valid version for pluginID/version via
+// a real publish.Service, so index.json and plugin.json reflect exactly what
+// production code writes.
+func publishManifest(t *testing.T, pub *publish.Service, pluginID, version string) {
+	t.Helper()
+	m := &domain.Manifest{
+		ID: pluginID, Name: pluginID, Version: version, Description: "d",
+		Author: domain.Author{Name: "A"}, License: "Apache-2.0",
+		Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
+		Access: domain.AccessPublic,
+	}
+	jar, err := publish.BuildTestJAR(m)
+	if err != nil {
+		t.Fatalf("BuildTestJAR(%s): %v", pluginID, err)
+	}
+	if _, err := pub.PublishFirst(context.Background(), &publish.Bundle{JAR: jar, JARFilename: "p.jar", Screenshots: map[string][]byte{}}, "op"); err != nil {
+		t.Fatalf("PublishFirst(%s): %v", pluginID, err)
+	}
 }
 
 // TestOrphanCleanup_AgeGuardHoldsRecentlyWrittenObject is the other

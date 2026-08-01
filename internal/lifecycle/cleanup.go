@@ -216,12 +216,10 @@ func (c *OrphanCleanup) sweep(ctx context.Context, now time.Time, report *Cleanu
 	}
 
 	referenced := map[string]map[string]bool{}
-	totalReferencedVersions := 0
 	for _, p := range idx.Plugins {
 		set := make(map[string]bool, len(p.Versions))
 		for _, v := range p.Versions {
 			set[v] = true
-			totalReferencedVersions++
 		}
 		referenced[p.ID] = set
 		report.PluginsInIndex++
@@ -234,17 +232,27 @@ func (c *OrphanCleanup) sweep(ctx context.Context, now time.Time, report *Cleanu
 		return
 	}
 
-	// Refuse-to-delete guard: an index.json that names plugins but records
-	// zero versions across every one of them, while storage plainly holds
-	// version directories, is not "an empty catalogue" -- it is almost
-	// certainly a pre-AMD-27 index.json (the Versions field did not exist
-	// before this change) or a corrupted rebuild. Trusting either as ground
-	// truth would read every version directory in the registry as an
-	// orphan.
-	if len(idx.Plugins) > 0 && totalReferencedVersions == 0 && len(candidates) > 0 {
+	// Refuse-to-delete guard. The question this asks is deliberately not
+	// "does this index look plausible" (a heuristic like "the plugins it
+	// lists collectively carry zero versions", or "it lists zero plugins")
+	// -- both of those only catch the specific shapes their author thought
+	// of, and a rebuild that silently dropped ONE unreadable plugin out of
+	// many produces an index that looks perfectly plausible by either
+	// measure: nonzero plugins, each with a real nonzero Versions list. The
+	// question this asks instead is "did whoever wrote this document
+	// positively attest that it is exhaustive" -- domain.Index.Complete,
+	// which internal/publish.Service.rebuildIndex sets to true only when it
+	// successfully resolved every known plugin, and which any document not
+	// written by that code path (a legacy pre-AMD-27 index.json, a
+	// hand-edited one, a partial rebuild that got aborted mid-write by
+	// something other than this fix) decodes as false by construction --
+	// Go's json zero value for a missing bool field. A sweeper that cannot
+	// prove its reference data is complete has no business deleting
+	// anything on the strength of it.
+	if len(candidates) > 0 && !idx.Complete {
 		report.Aborted = true
-		report.AbortReason = "index.json lists plugins but records no versions for any of them " +
-			"(looks like a pre-AMD-27 document, not an empty catalogue) -- refusing to run"
+		report.AbortReason = "index.json is not marked complete (\"complete\" is false or absent) " +
+			"while storage holds version directories -- refusing to trust it as proof anything is unreferenced"
 		return
 	}
 

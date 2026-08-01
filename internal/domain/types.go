@@ -136,6 +136,27 @@ type IndexPlugin struct {
 
 type Index struct {
 	Plugins []IndexPlugin `json:"plugins"`
+	// Complete attests that this document was produced by a rebuild that
+	// successfully read and resolved every known plugin.json (excluding
+	// legitimately-tombstoned plugins, whose artifacts are already deleted by
+	// the time a rebuild runs) -- not that the catalogue happens to look
+	// plausible. internal/publish.Service.rebuildIndex sets this to true only
+	// on the success path; if any plugin.json failed to read, failed to
+	// unmarshal, or its latest version's manifest could not be resolved,
+	// rebuildIndex aborts the whole rebuild and writes nothing at all, so a
+	// document that IS on disk with Complete==false can only be:
+	//   - one written before this field existed (decodes to the zero value,
+	//     false, by construction -- no legacy-format special-casing needed), or
+	//   - one written by hand / by something other than rebuildIndex.
+	// internal/lifecycle.OrphanCleanup treats Complete==false, combined with
+	// storage holding candidate version directories, as reference data it
+	// cannot prove is exhaustive -- and refuses to delete anything on that
+	// basis. This is deliberately a positive attestation ("I verified
+	// everything") rather than a derived plausibility heuristic ("this looks
+	// empty" / "this looks legacy-shaped"): a heuristic only catches the
+	// shapes its author thought of, and a partial index missing one plugin
+	// among many looks exactly as "plausible" as a genuinely complete one.
+	Complete bool `json:"complete"`
 }
 
 type BlockedVersion struct {

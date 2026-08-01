@@ -303,6 +303,28 @@ func (s *Service) RebuildIndex(ctx context.Context) error {
 	return s.rebuildIndex(ctx)
 }
 
+// rebuildIndex recomputes index.json from every plugins/{id}/plugin.json in
+// storage. It either writes a document it can vouch for in full
+// (domain.Index.Complete == true, every non-removed plugin represented with
+// its real Versions set) or it writes nothing at all and returns an error --
+// it never writes a partial index.
+//
+// That "all or nothing" rule is deliberate, not an oversight the old
+// silently-`continue`-past-errors version had: a rebuild that omits a real,
+// non-removed plugin because its plugin.json happened to be unreadable this
+// one tick is indistinguishable, from index.json's own contents, from that
+// plugin having been legitimately removed -- and
+// internal/lifecycle.OrphanCleanup treats "absent from index.json" as proof
+// a version is safe to delete. Writing such a document would be actively
+// worse than writing nothing: leaving the previous (older, but honest)
+// index.json in place keeps protecting that plugin's versions until whatever
+// made its plugin.json unreadable is fixed and a rebuild can complete
+// cleanly. "Carry the plugin through as unresolved" (fabricating an entry
+// from a storage listing instead) was considered and rejected for this exact
+// failure: without a readable plugin.json there is no verified version list
+// for that plugin to carry through, and reconstructing one from a raw
+// directory listing would just be a second, less-audited orphan-detector
+// duplicating what OrphanCleanup itself already does against index.json.
 func (s *Service) rebuildIndex(ctx context.Context) error {
 	pluginDirs, err := s.Store.ListPrefix(ctx, "plugins/")
 	if err != nil {
@@ -325,19 +347,38 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 		seen[id] = struct{}{}
 		obj, err := s.Store.Read(ctx, storage.PluginStatePath(id))
 		if err != nil {
-			continue
+			return fmt.Errorf("rebuildIndex: plugin %q: plugin.json unreadable, refusing to write a partial index: %w", id, err)
 		}
 		var st domain.PluginState
-		if err := json.Unmarshal(obj.Data, &st); err != nil || st.Removed != nil || st.LatestVersion == "" {
+		if err := json.Unmarshal(obj.Data, &st); err != nil {
+			return fmt.Errorf("rebuildIndex: plugin %q: plugin.json unparseable, refusing to write a partial index: %w", id, err)
+		}
+		if st.Removed != nil {
+			// Legitimate exclusion, not a failure: RemovePlugin already
+			// hard-deletes every non-plugin.json artifact as part of the
+			// primary write, before housekeeping (and therefore this rebuild)
+			// ever runs, so there is nothing left for this plugin to
+			// reference.
 			continue
+		}
+		if st.LatestVersion == "" {
+			if len(st.Versions) == 0 {
+				// Genuinely versionless: nothing published yet, nothing in
+				// storage at risk. Legitimate exclusion.
+				continue
+			}
+			// Inconsistent state: versions exist but nothing was ever marked
+			// latest. Can't be resolved -- treat the same as any other
+			// unresolvable plugin.
+			return fmt.Errorf("rebuildIndex: plugin %q has %d version(s) but no latestVersion, refusing to write a partial index", id, len(st.Versions))
 		}
 		mObj, err := s.Store.Read(ctx, storage.VersionManifestPath(id, st.LatestVersion))
 		if err != nil {
-			continue
+			return fmt.Errorf("rebuildIndex: plugin %q: latest version %q manifest unreadable, refusing to write a partial index: %w", id, st.LatestVersion, err)
 		}
 		var m domain.Manifest
 		if err := json.Unmarshal(mObj.Data, &m); err != nil {
-			continue
+			return fmt.Errorf("rebuildIndex: plugin %q: latest version %q manifest unparseable, refusing to write a partial index: %w", id, st.LatestVersion, err)
 		}
 		versions := make([]string, 0, len(st.Versions))
 		for _, v := range st.Versions {
@@ -356,7 +397,7 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })
-	idx := domain.Index{Plugins: plugins}
+	idx := domain.Index{Plugins: plugins, Complete: true}
 	data, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
 		return err

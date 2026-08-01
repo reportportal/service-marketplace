@@ -42,11 +42,24 @@ func newTestPublisher(store storage.ObjectStore) *publish.Service {
 	return &publish.Service{Store: store, Invalidator: cdn.NoopInvalidator{}}
 }
 
+// seedLifecyclePlugin seeds a plugin.json claiming version 1.0.0, AND the
+// version manifest object that backs it -- rebuildIndex resolves a plugin's
+// display fields (name/description/category) from its latest version's
+// manifest, and (since the BLOCKING fix making rebuildIndex refuse to write
+// a partial index) now hard-fails the whole rebuild if that manifest is
+// missing. A plugin.json with no corresponding manifest is not "a plugin
+// that successfully published a version" -- it is exactly the unresolvable
+// state rebuildIndex must refuse to paper over, so tests that want a
+// genuinely healthy plugin must seed both.
 func seedLifecyclePlugin(t *testing.T, store storage.ObjectStore, pluginID string) {
 	t.Helper()
 	seed := fmt.Sprintf(`{"id": %q, "tier": "partner", "latestVersion": "1.0.0", "versions": [{"version": "1.0.0", "sha256": "aaa"}]}`, pluginID)
 	if _, err := store.Write(context.Background(), storage.PluginStatePath(pluginID), []byte(seed), 0); err != nil {
 		t.Fatalf("seed plugin.json: %v", err)
+	}
+	manifest := fmt.Sprintf(`{"id": %q, "name": %q, "version": "1.0.0", "description": "d", "author": {"name": "A"}, "license": "Apache-2.0", "category": "import", "compatibility": {"reportPortal": ">=25.1"}, "access": "public"}`, pluginID, pluginID)
+	if _, err := store.Write(context.Background(), storage.VersionManifestPath(pluginID, "1.0.0"), []byte(manifest), 0); err != nil {
+		t.Fatalf("seed version manifest: %v", err)
 	}
 }
 
