@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLocalStoreConcurrentWrite(t *testing.T) {
@@ -81,6 +82,101 @@ func TestLocalStoreConcurrentWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = genPath
+}
+
+// TestLocalStoreReadIsAtomicWithGeneration proves that Read() cannot return a
+// (data, generation) pair that never existed together. It engineers a
+// deterministic interleaving -- not a race that merely might get caught --
+// by parking a Read() call at the exact seam between its byte-read and its
+// generation-read, running a complete concurrent Write() across that seam,
+// and then resuming the Read().
+//
+// A Read() call that started before the Write() began must observe the
+// pre-write snapshot in its entirety: generation g1 paired with the bytes
+// that were live at g1. Anything else -- in particular the post-write
+// generation paired with the pre-write bytes -- is the torn read this test
+// exists to catch.
+func TestLocalStoreReadIsAtomicWithGeneration(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewLocalStore(root, "http://localhost/cdn", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	path := "test/object.json"
+
+	gen1, err := store.Write(ctx, path, []byte("v1"), 0)
+	if err != nil {
+		t.Fatalf("seed write failed: %v", err)
+	}
+
+	readerAtSeam := make(chan struct{})
+	resumeReader := make(chan struct{})
+	store.testAfterReadData = func() {
+		close(readerAtSeam)
+		<-resumeReader
+	}
+
+	writerCommitted := make(chan struct{})
+	store.testAfterWriteCommit = func() {
+		close(writerCommitted)
+	}
+
+	type readResult struct {
+		obj *Object
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		obj, err := store.Read(ctx, path)
+		readDone <- readResult{obj, err}
+	}()
+
+	<-readerAtSeam // Read() has the pre-write bytes and is paused before resolving the generation.
+
+	type writeResult struct {
+		gen int64
+		err error
+	}
+	writeDone := make(chan writeResult, 1)
+	go func() {
+		gen, err := store.Write(ctx, path, []byte("v2"), gen1)
+		writeDone <- writeResult{gen, err}
+	}()
+
+	// The Write must either fully commit here (proving Read released the lock
+	// mid-operation, the bug) or remain blocked behind the lock the paused
+	// Read still holds (the fix). This wait only decides which of those two
+	// worlds we are in; the correctness assertion below does not depend on
+	// which branch fires.
+	select {
+	case <-writerCommitted:
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	close(resumeReader)
+
+	wres := <-writeDone
+	if wres.err != nil {
+		t.Fatalf("concurrent write failed: %v", wres.err)
+	}
+	if wres.gen != gen1+1 {
+		t.Fatalf("expected write to land at generation %d, got %d", gen1+1, wres.gen)
+	}
+
+	rres := <-readDone
+	if rres.err != nil {
+		t.Fatalf("read failed: %v", rres.err)
+	}
+
+	// Read()'s byte-read completed before the concurrent Write() even started
+	// (we only launched the writer after observing readerAtSeam). A correct,
+	// atomic Read() must therefore report the pre-write snapshot in full.
+	if rres.obj.Generation != gen1 || string(rres.obj.Data) != "v1" {
+		t.Fatalf("torn read: got (generation=%d, data=%q), want (generation=%d, data=%q) -- "+
+			"Read() paired bytes from one point in time with a generation from another",
+			rres.obj.Generation, rres.obj.Data, gen1, "v1")
+	}
 }
 
 func TestLocalStoreRejectsPathTraversal(t *testing.T) {

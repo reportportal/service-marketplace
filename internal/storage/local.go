@@ -17,11 +17,18 @@ import (
 )
 
 type LocalStore struct {
-	root           string
-	cdnBase        string
-	signingSecret  string
-	mu             sync.RWMutex
-	generations    map[string]int64
+	root          string
+	cdnBase       string
+	signingSecret string
+	mu            sync.RWMutex
+	generations   map[string]int64
+
+	// testAfterReadData and testAfterWriteCommit are test-only seams, nil in
+	// production. They let tests deterministically pause Read between its
+	// byte-read and generation-read steps, and observe the instant a Write
+	// becomes durable, in order to prove the two cannot interleave.
+	testAfterReadData    func()
+	testAfterWriteCommit func()
 }
 
 func NewLocalStore(root, cdnBase, signingSecret string) (*LocalStore, error) {
@@ -93,15 +100,6 @@ func (s *LocalStore) loadGenerations() error {
 	})
 }
 
-func (s *LocalStore) getGeneration(objectPath string) int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if g, ok := s.generations[objectPath]; ok {
-		return g
-	}
-	return 0
-}
-
 func (s *LocalStore) setGeneration(objectPath string, gen int64) error {
 	s.mu.Lock()
 	s.generations[objectPath] = gen
@@ -123,14 +121,27 @@ func (s *LocalStore) Read(ctx context.Context, objectPath string) (*Object, erro
 	if err != nil {
 		return nil, err
 	}
+
+	// The byte-read and the generation lookup must be a single atomic
+	// operation from Write()'s point of view: Write() holds s.mu for its
+	// entire critical section (rename + generation bump), so holding the
+	// same RLock across both of our steps here guarantees Read() can only
+	// ever observe a fully pre-write or fully post-write snapshot, never a
+	// mix of the two.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	data, err := os.ReadFile(p)
+	if s.testAfterReadData != nil {
+		s.testAfterReadData()
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return &Object{Path: objectPath, Data: data, Generation: s.getGeneration(objectPath)}, nil
+	return &Object{Path: objectPath, Data: data, Generation: s.generations[objectPath]}, nil
 }
 
 func (s *LocalStore) Write(ctx context.Context, objectPath string, data []byte, expectedGen int64) (int64, error) {
@@ -169,6 +180,9 @@ func (s *LocalStore) Write(ctx context.Context, objectPath string, data []byte, 
 	gp := p + ".gen"
 	if err := os.WriteFile(gp, []byte(strconv.FormatInt(next, 10)), 0o644); err != nil {
 		return 0, err
+	}
+	if s.testAfterWriteCommit != nil {
+		s.testAfterWriteCommit()
 	}
 	return next, nil
 }
