@@ -16,7 +16,9 @@ import (
 	"encoding/json"
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/reportportal/service-marketplace/internal/domain"
 	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/openapispec"
 	"github.com/reportportal/service-marketplace/internal/publish"
@@ -30,12 +32,85 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		t.Fatalf("loading OpenAPI spec: %v", err)
 	}
 
+	now := time.Now().UTC()
+	blockReason := "CVE-2026-1234 in jackson-databind"
+	changelogURL := "https://cdn.example/CHANGELOG.md"
+	expires := domain.Date{Time: now}
+
 	cases := []struct {
 		schema string
 		value  any
 	}{
 		{"PublishResponse", publish.Result{PluginID: "plugin-jira-cloud", Version: "1.4.2", SHA256: "abc"}},
 		{"RotateLicenseKeyResponse", license.RotateResult{CustomerID: "acme-corp", PrivateKey: "priv", PublicKey: "pub"}},
+
+		{"Author", domain.Author{Name: "ReportPortal Team", Email: "a@b.com", URL: "https://reportportal.io"}},
+		{"Compatibility", domain.Compatibility{ReportPortal: ">=25.1"}},
+		{"BlockedVersion", domain.BlockedVersion{Version: "1.0.0", BlockedAt: now, Reason: "reason"}},
+		{"SecurityAdvisory", domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "text", AttachedAt: now}},
+		{"PluginTombstone", domain.PluginTombstone{Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
+		{"PluginListItem", domain.IndexPlugin{
+			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
+			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,
+		}},
+		{"PluginManifestFields", domain.Manifest{
+			ID: "plugin-jira-cloud", Name: "Jira Cloud", Version: "1.4.2", Description: "d",
+			Author: domain.Author{Name: "A"}, License: "Apache-2.0", Category: domain.CategoryBugTracking,
+			Compatibility: domain.Compatibility{ReportPortal: ">=25.1"}, Homepage: "https://reportportal.io",
+			Access: domain.AccessPublic, ContactURL: "https://reportportal.io/pricing",
+		}},
+		{"LicensePublicKey", domain.LicensePublicKey{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+		{"LicenseEntitlement", domain.LicenseEntitlement{
+			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
+			PublicKeys: []domain.LicensePublicKey{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+		}},
+
+		{"PluginListResponse", PluginListResponse{Plugins: []domain.IndexPlugin{{
+			ID: "p", Name: "n", LatestVersion: "1.0.0", Description: "d",
+			Category: domain.CategoryImport, Access: domain.AccessPublic, Tier: domain.TierOfficial,
+		}}}},
+		{"PluginDetail", PluginDetailResponse{
+			ID: "p", Name: "n", Version: "1.0.0", Description: "d", Author: domain.Author{Name: "A"},
+			License: "Apache-2.0", Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
+			Homepage: "https://x", Access: domain.AccessPublic, ContactURL: "https://x/pricing",
+			Tier: domain.TierOfficial, LatestVersion: "1.0.0",
+		}},
+		{"PluginVersionListResponse", PluginVersionListResponse{
+			PluginID: "p",
+			Versions: []PluginVersionSummary{{
+				Version: "1.0.0", PublishedAt: &now, Blocked: true, BlockedAt: &now, BlockReason: blockReason,
+			}},
+		}},
+		{"PluginVersionDetail", PluginVersionDetailResponse{
+			ID: "p", Name: "n", Version: "1.0.0", Description: "d", Author: domain.Author{Name: "A"},
+			License: "Apache-2.0", Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
+			Homepage: "https://x", Access: domain.AccessPublic, ContactURL: "https://x/pricing",
+			Tier: domain.TierOfficial, Blocked: true, BlockedAt: &now, BlockReason: blockReason,
+			Advisory:       &domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "t", AttachedAt: now},
+			SHA256:         "abc",
+			ChangelogURL:   &changelogURL,
+			ScreenshotURLs: []string{"https://cdn/1.png"},
+		}},
+		{"PremiumArtifactResponse", PremiumArtifactResponse{DownloadURL: "https://s3/x", ExpiresAt: now}},
+		{"BlockedArtifactError", BlockedArtifactErrorResponse{Blocked: true, BlockedAt: now, Reason: "reason"}},
+		{"PluginOperatorState", PluginOperatorStateResponse{
+			ID: "p", Tier: domain.TierOfficial, LatestVersion: "1.0.0",
+			BlockedVersions: []domain.BlockedVersion{{Version: "1.0.0", BlockedAt: now, Reason: "r"}},
+		}},
+		{"AuthConfigResponse", AuthConfigResponse{GithubEnabled: true, AdminLoginEnabled: true}},
+		{"AuthTokenResponse", AuthTokenResponse{AccessToken: "tok", TokenType: "Bearer", ExpiresIn: 3600}},
+		{"LicenseEntitlementListResponse", LicenseEntitlementListResponse{Entitlements: []domain.LicenseEntitlement{
+			{CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
+				PublicKeys: []domain.LicensePublicKey{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}}},
+		}}},
+		{"CreateLicenseResponse", CreateLicenseResponse{
+			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
+			PublicKeys: []domain.LicensePublicKey{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+			PrivateKey: "priv",
+		}},
+
+		{"ErrorResponse", ErrorResponse{Code: CodeNotFound, Message: "not found"}},
+		{"ValidationErrorResponse", ValidationErrorResponse{Code: CodeValidation, Message: "bad", Errors: []FieldError{{Field: "f", Message: "m"}}}},
 	}
 
 	for _, c := range cases {

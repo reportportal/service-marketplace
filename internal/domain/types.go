@@ -1,6 +1,43 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// dateLayout is the calendar-date-only format the license entitlement schema declares
+// (OpenAPI `format: date`) for issuedAt/expiresAt — a customer-facing license validity
+// window, not a timestamp.
+const dateLayout = "2006-01-02"
+
+// Date is a calendar date (no time-of-day, no timezone) that marshals as
+// docs/openapi/service-marketplace-v1.yaml declares it: "2006-01-02". A bare time.Time
+// field marshals with a full RFC3339 timestamp, which is a wire-contract mismatch for
+// any field the spec declares `format: date`.
+type Date struct {
+	time.Time
+}
+
+func (d Date) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Time.Format(dateLayout))
+}
+
+func (d *Date) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		d.Time = time.Time{}
+		return nil
+	}
+	t, err := time.Parse(dateLayout, s)
+	if err != nil {
+		return err
+	}
+	d.Time = t
+	return nil
+}
 
 type Category string
 
@@ -123,16 +160,15 @@ type PluginTombstone struct {
 }
 
 type LicensePublicKey struct {
-	KID       string    `json:"kid,omitempty"`
-	PublicKey string    `json:"publicKey"`
-	IssuedAt  time.Time `json:"issuedAt"`
+	PublicKey string `json:"publicKey"`
+	IssuedAt  Date   `json:"issuedAt"`
 }
 
 type LicenseEntitlement struct {
 	CustomerID string             `json:"customerId"`
 	Tier       string             `json:"tier"`
-	CreatedAt  time.Time          `json:"createdAt,omitempty"`
-	ExpiresAt  *time.Time         `json:"expiresAt,omitempty"`
+	IssuedAt   Date               `json:"issuedAt"`
+	ExpiresAt  *Date              `json:"expiresAt,omitempty"`
 	PublicKeys []LicensePublicKey `json:"publicKeys"`
 }
 
