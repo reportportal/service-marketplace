@@ -201,7 +201,13 @@ func (s *Service) PublishFirst(ctx context.Context, bundle *Bundle, operator str
 	obj, err := s.Store.Read(ctx, storage.PluginStatePath(m.ID))
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return s.publish(ctx, m, bundle, operator, false)
+			// This outer Read is only a fast-path belief that the id is
+			// free; it can be stale by the time publish()'s own
+			// compare-and-swap runs (a competing create/resurrect may win
+			// the race in the gap). firstPublish=true makes every CAS
+			// attempt re-derive "already exists" from what it actually
+			// reads instead of trusting this Read.
+			return s.publish(ctx, m, bundle, operator, true)
 		}
 		return nil, err
 	}
@@ -318,17 +324,36 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 // 1 requires overwriting any orphaned per-version objects left by an earlier
 // interrupted attempt, "regardless of byte-equality with the partial state".
 //
-// resurrect, when true, clears an existing tombstone (Removed/RemovalReason/
-// RemovedBy) as part of the same plugin.json compare-and-swap that records
-// the new version — AMD-06-removal-lifecycle's resurrection path
-// (PublishFirst only). When false, the compare-and-swap re-checks Removed on
-// every attempt and aborts with *RemovedError instead of writing if it
-// observes the plugin was tombstoned after PublishVersion's own top-level
-// check but before this compare-and-swap committed (the TOCTOU the
-// go-assessment flagged: "PublishVersion checks the removed flag once at
-// the top of the flow, but its own plugin.json compare-and-swap callback
-// never re-checks it").
-func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundle, operator string, resurrect bool) (*Result, error) {
+// firstPublish is true only for PublishFirst's two call sites and carries
+// that route's whole contract into the compare-and-swap loop, re-derived
+// from what each attempt actually reads rather than trusted from the
+// caller's earlier, possibly-stale Read:
+//
+//   - tombstoned (st.Removed != nil) -> unconditionally resurrect (clear
+//     Removed/RemovalReason/RemovedBy) as part of the same CAS that records
+//     the new version. AMD-06-removal-lifecycle / D-06: PublishFirst never
+//     returns ErrRemoved, so this applies whether the tombstone was already
+//     there when the attempt started or landed mid-flight.
+//   - live (st.Removed == nil) but plugin.json already has content -> the id
+//     already exists; AMD-04-duplicate-publish-contract requires 409
+//     ErrPluginExists here, even if the caller's own outer Read raced and
+//     saw ErrNotFound (ANOTHER publish created the id in the gap between
+//     that Read and this attempt/retry).
+//
+// When firstPublish is false (PublishVersion's branch-1/auto-create calls),
+// the CAS instead aborts with *RemovedError the moment any attempt observes
+// a tombstone — the TOCTOU the go-assessment flagged: "PublishVersion
+// checks the removed flag once at the top of the flow, but its own
+// plugin.json compare-and-swap callback never re-checks it".
+//
+// Independent of firstPublish, every attempt also re-derives AMD-04's
+// committed-version decision (branches 1/2/3) from what it just read: a
+// caller may have seen "not committed" once, before the loop, but a
+// competing publish can commit that exact version — with different content
+// — in the gap before a retry's write lands. Reusing the caller's stale
+// belief here instead of re-checking would silently overwrite a
+// now-immutable committed version instead of returning ErrVersionConflict.
+func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundle, operator string, firstPublish bool) (*Result, error) {
 	sha := storage.HashSHA256(bundle.JAR)
 	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))
 	if err := upsertObject(ctx, s.Store, artPath, bundle.JAR); err != nil {
@@ -368,24 +393,50 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		} else {
 			st = domain.PluginState{ID: m.ID, Tier: domain.TierOfficial, Versions: []domain.VersionMeta{}}
 		}
-		if st.Removed != nil {
-			if !resurrect {
-				return nil, &RemovedError{Tombstone: domain.PluginTombstone{
-					Removed: *st.Removed, RemovalReason: st.RemovalReason, RemovedBy: st.RemovedBy,
-				}}
+		if firstPublish {
+			if st.Removed != nil {
+				// AMD-06/D-06: PublishFirst always resurrects, never
+				// returns ErrRemoved — whether the tombstone was already
+				// there or a racing removal/resurrection landed it since
+				// the last read.
+				st.Removed = nil
+				st.RemovalReason = ""
+				st.RemovedBy = ""
+			} else if len(data) > 0 {
+				// The id already has a live plugin.json. The caller's own
+				// pre-check may have seen ErrNotFound before a competing
+				// create/resurrect won the race; re-derive "already
+				// exists" from this attempt's own read, not that stale
+				// belief.
+				return nil, ErrPluginExists
 			}
-			st.Removed = nil
-			st.RemovalReason = ""
-			st.RemovedBy = ""
+		} else if st.Removed != nil {
+			return nil, &RemovedError{Tombstone: domain.PluginTombstone{
+				Removed: *st.Removed, RemovalReason: st.RemovalReason, RemovedBy: st.RemovedBy,
+			}}
 		}
 		found := false
 		for i, v := range st.Versions {
-			if v.Version == m.Version {
-				st.Versions[i].SHA256 = sha
+			if v.Version != m.Version {
+				continue
+			}
+			if v.SHA256 == sha {
+				// Already committed with byte-identical content — the
+				// caller's own AMD-04 branch-2 fast path normally catches
+				// this before ever calling publish(), so reaching it here
+				// means a retry discovered a competing publish of the
+				// exact same content landed in the gap. Idempotent: keep
+				// the entry, just refresh PublishedAt.
 				st.Versions[i].PublishedAt = now
 				found = true
 				break
 			}
+			// Committed with DIFFERENT content: a competing publish won
+			// this version in the gap between the caller's "not
+			// committed" decision and this attempt/retry. AMD-04 branch 3
+			// requires a conflict here, not silently overwriting the
+			// checksum a concurrent writer already committed.
+			return nil, ErrVersionConflict
 		}
 		if !found {
 			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha})

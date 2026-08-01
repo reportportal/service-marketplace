@@ -245,6 +245,192 @@ func TestPublishVersionNotCommittedRetryOverwritesOrphanedArtifact(t *testing.T)
 	}
 }
 
+// versionRaceStore wraps a storagetest.FaultStore and, the moment the
+// wrapped store's Write to pluginPath returns the fault armed on it, runs
+// winner() synchronously before propagating that error back to the caller.
+// It exists to make deterministic what an unseeded goroutine race can only
+// hope to hit: a competing publish committing the SAME target version to
+// plugin.json in the exact window between this call's first failed
+// compare-and-swap attempt and its retry.
+type versionRaceStore struct {
+	*storagetest.FaultStore
+	pluginPath string
+	fired      bool
+	winner     func()
+}
+
+func (v *versionRaceStore) Write(ctx context.Context, objectPath string, data []byte, expectedGen int64) (int64, error) {
+	n, err := v.FaultStore.Write(ctx, objectPath, data, expectedGen)
+	if err != nil && !v.fired && objectPath == v.pluginPath {
+		v.fired = true
+		v.winner()
+	}
+	return n, err
+}
+
+// TestPublishVersionConcurrentSameVersionCommitMidPublishReturnsConflict is
+// the regression test for the second half of the go-assessment TOCTOU
+// finding: PublishVersion's "is this version already committed" decision
+// (AMD-04-duplicate-publish-contract branches 1/2/3) is computed once from a
+// single Read before publish()'s plugin.json compare-and-swap loop even
+// starts. A losing racer whose own pre-check saw "not committed" must not
+// get to reuse that stale belief on every CAS retry: once a competing
+// publish commits the SAME version with DIFFERENT content in between, the
+// retry must observe that and fail with ErrVersionConflict (AMD-04 branch
+// 3), never silently overwrite the committed checksum with its own stale
+// content.
+//
+// This is deterministic, not a goroutine race that hopes to hit a window: a
+// storagetest.FaultStore fault forces the loser's first plugin.json write to
+// fail, and a wrapper hook lands the winner's complete, independent publish
+// of the same version (different bytes) synchronously in that exact gap
+// before the loser's WriteWithRetry re-reads and retries.
+//
+// Mutation that makes this fail: reverting publish()'s WriteWithRetry
+// callback to the old "found -> blindly overwrite SHA256/PublishedAt on the
+// matching entry" logic (no re-check against the freshly read data) makes
+// the retry succeed and stamp plugin.json with the loser's SHA-256 even
+// though the winner's bytes are what's actually sitting at the versioned
+// artifact path — err comes back nil instead of ErrVersionConflict, and the
+// asserted SHA256 mismatches.
+func TestPublishVersionConcurrentSameVersionCommitMidPublishReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	backing := newLocalStore(t)
+
+	base := testManifest("plugin-demo", "1.0.0")
+	jar0, err := BuildTestJAR(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedSvc := newTestService(t, backing)
+	if _, err := seedSvc.PublishFirst(ctx, &Bundle{JAR: jar0, JARFilename: "p.jar"}, "operator"); err != nil {
+		t.Fatalf("seed PublishFirst: %v", err)
+	}
+
+	mLoser := testManifest("plugin-demo", "2.0.0")
+	mLoser.Description = "loser content"
+	jarLoser, err := BuildTestJAR(mLoser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mWinner := testManifest("plugin-demo", "2.0.0")
+	mWinner.Description = "winner content, commits mid-publish"
+	jarWinner, err := BuildTestJAR(mWinner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.HashSHA256(jarLoser) == storage.HashSHA256(jarWinner) {
+		t.Fatalf("test fixture bug: jarLoser and jarWinner hash the same")
+	}
+
+	fs := storagetest.Wrap(backing)
+	fs.FailN(storagetest.OpWrite, storage.PluginStatePath(base.ID), storage.ErrConflict, 1)
+	race := &versionRaceStore{FaultStore: fs, pluginPath: storage.PluginStatePath(base.ID)}
+	race.winner = func() {
+		winnerSvc := newTestService(t, backing)
+		if _, _, werr := winnerSvc.PublishVersion(ctx, base.ID, &Bundle{JAR: jarWinner, JARFilename: "p.jar"}, "ci", false); werr != nil {
+			t.Fatalf("winner publish (racing in the gap): %v", werr)
+		}
+	}
+	loserSvc := newTestService(t, race)
+
+	_, idempotent, err := loserSvc.PublishVersion(ctx, base.ID, &Bundle{JAR: jarLoser, JARFilename: "p.jar"}, "operator", false)
+	if !race.fired {
+		t.Fatalf("test bug: the simulated concurrent commit never fired")
+	}
+	if idempotent {
+		t.Fatalf("idempotent = true, want false: loser and winner content differ")
+	}
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("PublishVersion racing a mid-flight same-version commit = %v, want ErrVersionConflict", err)
+	}
+
+	obj, err := backing.Read(ctx, storage.PluginStatePath(base.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st domain.PluginState
+	if err := json.Unmarshal(obj.Data, &st); err != nil {
+		t.Fatal(err)
+	}
+	wantSHA := storage.HashSHA256(jarWinner)
+	found := false
+	for _, v := range st.Versions {
+		if v.Version != "2.0.0" {
+			continue
+		}
+		found = true
+		if v.SHA256 != wantSHA {
+			t.Fatalf("plugin.json 2.0.0 SHA256 = %q, want winner's %q — loser's retry must not have overwritten the committed checksum", v.SHA256, wantSHA)
+		}
+	}
+	if !found {
+		t.Fatalf("plugin.json must still record the winner's committed 2.0.0 version")
+	}
+}
+
+// TestPublishFirstConcurrentCreateMidPublishReturnsPluginExists is the
+// regression test for a third instance of the same stale-decision pattern:
+// PublishFirst decides "this id does not exist yet" from a single outer
+// Read, then reuses that belief unconditionally deep inside publish()'s
+// compare-and-swap retry loop instead of re-deriving it from what the loop
+// actually observes. A competing PublishFirst that creates the plugin in
+// the gap must make the loser 409 with ErrPluginExists (AMD-04's "id whose
+// plugin.json exists with removed == null"), not silently merge its own
+// version into the winner's freshly created plugin.
+//
+// Mutation that makes this fail: passing resurrect=false unconditionally
+// from PublishFirst's ErrNotFound branch (today's code) never re-checks
+// existence inside the CAS loop at all, so the retry just appends the
+// loser's version onto the winner's plugin.json — err comes back nil
+// instead of ErrPluginExists.
+func TestPublishFirstConcurrentCreateMidPublishReturnsPluginExists(t *testing.T) {
+	ctx := context.Background()
+	backing := newLocalStore(t)
+
+	mLoser := testManifest("plugin-race", "1.0.0")
+	jarLoser, err := BuildTestJAR(mLoser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mWinner := testManifest("plugin-race", "9.9.9")
+	jarWinner, err := BuildTestJAR(mWinner)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fs := storagetest.Wrap(backing)
+	fs.FailN(storagetest.OpWrite, storage.PluginStatePath("plugin-race"), storage.ErrConflict, 1)
+	race := &versionRaceStore{FaultStore: fs, pluginPath: storage.PluginStatePath("plugin-race")}
+	race.winner = func() {
+		winnerSvc := newTestService(t, backing)
+		if _, werr := winnerSvc.PublishFirst(ctx, &Bundle{JAR: jarWinner, JARFilename: "p.jar"}, "operator-2"); werr != nil {
+			t.Fatalf("winner PublishFirst (racing in the gap): %v", werr)
+		}
+	}
+	loserSvc := newTestService(t, race)
+
+	_, err = loserSvc.PublishFirst(ctx, &Bundle{JAR: jarLoser, JARFilename: "p.jar"}, "operator-1")
+	if !race.fired {
+		t.Fatalf("test bug: the simulated concurrent create never fired")
+	}
+	if !errors.Is(err, ErrPluginExists) {
+		t.Fatalf("PublishFirst racing a mid-flight competing create = %v, want ErrPluginExists", err)
+	}
+
+	obj, err := backing.Read(ctx, storage.PluginStatePath("plugin-race"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st domain.PluginState
+	if err := json.Unmarshal(obj.Data, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Versions) != 1 || st.Versions[0].Version != "9.9.9" {
+		t.Fatalf("plugin.json versions = %+v, want only the winner's 9.9.9", st.Versions)
+	}
+}
+
 // --- AMD-06-removal-lifecycle / D-06 ----------------------------------------
 
 // TestPublishFirstExistingLivePluginReturns409PluginAlreadyExists guards the
