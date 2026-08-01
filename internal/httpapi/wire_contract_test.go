@@ -47,10 +47,10 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 
 		{"Author", domain.Author{Name: "ReportPortal Team", Email: "a@b.com", URL: "https://reportportal.io"}},
 		{"Compatibility", domain.Compatibility{ReportPortal: ">=25.1"}},
-		{"BlockedVersion", domain.BlockedVersion{Version: "1.0.0", BlockedAt: now, Reason: "reason"}},
-		{"SecurityAdvisory", domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "text", AttachedAt: now}},
+		{"BlockedVersion", BlockedVersionResponse{Version: "1.0.0", BlockedAt: now, Reason: "reason"}},
+		{"SecurityAdvisory", SecurityAdvisoryResponse{Severity: domain.SeverityHigh, Text: "text", AttachedAt: now}},
 		{"PluginTombstone", domain.PluginTombstone{Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
-		{"PluginListItem", domain.IndexPlugin{
+		{"PluginListItem", PluginListItemResponse{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
 			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,
 		}},
@@ -66,7 +66,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 			PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
 		}},
 
-		{"PluginListResponse", PluginListResponse{Plugins: []domain.IndexPlugin{{
+		{"PluginListResponse", PluginListResponse{Plugins: []PluginListItemResponse{{
 			ID: "p", Name: "n", LatestVersion: "1.0.0", Description: "d",
 			Category: domain.CategoryImport, Access: domain.AccessPublic, Tier: domain.TierOfficial,
 		}}}},
@@ -87,7 +87,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 			License: "Apache-2.0", Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
 			Homepage: "https://x", Access: domain.AccessPublic, ContactURL: "https://x/pricing",
 			Tier: domain.TierOfficial, Blocked: true, BlockedAt: &now, BlockReason: blockReason,
-			Advisory:       &domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "t", AttachedAt: now},
+			Advisory:       &SecurityAdvisoryResponse{Severity: domain.SeverityHigh, Text: "t", AttachedAt: now},
 			SHA256:         "abc",
 			ChangelogURL:   &changelogURL,
 			ScreenshotURLs: []string{"https://cdn/1.png"},
@@ -96,7 +96,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"BlockedArtifactError", BlockedArtifactErrorResponse{Blocked: true, BlockedAt: now, Reason: "reason"}},
 		{"PluginOperatorState", PluginOperatorStateResponse{
 			ID: "p", Tier: domain.TierOfficial, LatestVersion: "1.0.0",
-			BlockedVersions: []domain.BlockedVersion{{Version: "1.0.0", BlockedAt: now, Reason: "r"}},
+			BlockedVersions: []BlockedVersionResponse{{Version: "1.0.0", BlockedAt: now, Reason: "r"}},
 		}},
 		{"AuthConfigResponse", AuthConfigResponse{GithubEnabled: true, AdminLoginEnabled: true}},
 		{"AuthTokenResponse", AuthTokenResponse{AccessToken: "tok", TokenType: "Bearer", ExpiresIn: 3600}},

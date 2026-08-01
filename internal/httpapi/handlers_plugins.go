@@ -35,10 +35,11 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if plugins == nil {
-		plugins = []domain.IndexPlugin{}
+	items := make([]PluginListItemResponse, len(plugins))
+	for i, p := range plugins {
+		items[i] = newPluginListItemResponse(p)
 	}
-	writeJSON(w, http.StatusOK, PluginListResponse{Plugins: plugins})
+	writeJSON(w, http.StatusOK, PluginListResponse{Plugins: items})
 }
 
 func (s *Server) handleGetPlugin(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +139,10 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		Blocked:        detail.Blocked,
 		SHA256:         detail.SHA256,
 		ScreenshotURLs: screenshotURLs,
-		Advisory:       detail.Advisory,
+	}
+	if detail.Advisory != nil {
+		adv := newSecurityAdvisoryResponse(*detail.Advisory)
+		out.Advisory = &adv
 	}
 	if detail.BlockedAt != nil {
 		blockedAt := *detail.BlockedAt
@@ -340,8 +344,12 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
+	blockedVersions := make([]BlockedVersionResponse, len(st.BlockedVersions))
+	for i, bv := range st.BlockedVersions {
+		blockedVersions[i] = newBlockedVersionResponse(bv)
+	}
 	writeJSON(w, http.StatusOK, PluginOperatorStateResponse{
-		ID: st.ID, Tier: st.Tier, LatestVersion: st.LatestVersion, BlockedVersions: st.BlockedVersions,
+		ID: st.ID, Tier: st.Tier, LatestVersion: st.LatestVersion, BlockedVersions: blockedVersions,
 	})
 }
 
@@ -401,7 +409,7 @@ func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, bv)
+	writeJSON(w, http.StatusOK, newBlockedVersionResponse(*bv))
 }
 
 func (s *Server) handleAttachAdvisory(w http.ResponseWriter, r *http.Request) {
@@ -428,5 +436,5 @@ func (s *Server) handleAttachAdvisory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, mapStorageErr(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, adv)
+	writeJSON(w, http.StatusOK, newSecurityAdvisoryResponse(*adv))
 }

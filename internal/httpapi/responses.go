@@ -84,9 +84,64 @@ type CreateLicenseResponse struct {
 	PrivateKey string                     `json:"privateKey"`
 }
 
+// PluginListItemResponse is the wire shape for the OpenAPI PluginListItem schema.
+// Deliberately a separate Go type from domain.IndexPlugin: that type is the literal
+// persisted document at index.json (see internal/catalogue.Service.loadIndex and
+// internal/publish.Service.rebuildIndex, both of which marshal/unmarshal it directly),
+// so a wire-only change made on it (a renamed field, a computed field the client
+// wants) would silently rewrite index.json. Build these with newPluginListItemResponse.
+type PluginListItemResponse struct {
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	LatestVersion string            `json:"latestVersion"`
+	Description   string            `json:"description,omitempty"`
+	Category      domain.Category   `json:"category"`
+	Access        domain.AccessTier `json:"access"`
+	Tier          domain.TrustTier  `json:"tier"`
+}
+
+func newPluginListItemResponse(p domain.IndexPlugin) PluginListItemResponse {
+	return PluginListItemResponse{
+		ID: p.ID, Name: p.Name, LatestVersion: p.LatestVersion, Description: p.Description,
+		Category: p.Category, Access: p.Access, Tier: p.Tier,
+	}
+}
+
 // PluginListResponse — GET /api/v1/plugins
 type PluginListResponse struct {
-	Plugins []domain.IndexPlugin `json:"plugins"`
+	Plugins []PluginListItemResponse `json:"plugins"`
+}
+
+// BlockedVersionResponse is the wire shape for the OpenAPI BlockedVersion schema.
+// Deliberately a separate Go type from domain.BlockedVersion: that type is the literal
+// persisted shape inside plugins/{id}/plugin.json (see domain.PluginState.
+// BlockedVersions, written/read directly by internal/lifecycle.Service), so a wire-only
+// change made on it would silently rewrite plugin.json. Build these with
+// newBlockedVersionResponse.
+type BlockedVersionResponse struct {
+	Version   string    `json:"version"`
+	BlockedAt time.Time `json:"blockedAt"`
+	Reason    string    `json:"reason"`
+}
+
+func newBlockedVersionResponse(bv domain.BlockedVersion) BlockedVersionResponse {
+	return BlockedVersionResponse{Version: bv.Version, BlockedAt: bv.BlockedAt, Reason: bv.Reason}
+}
+
+// SecurityAdvisoryResponse is the wire shape for the OpenAPI SecurityAdvisory schema.
+// Deliberately a separate Go type from domain.SecurityAdvisory: that type is the
+// literal persisted shape inside plugins/{id}/plugin.json (see domain.PluginState.
+// VersionStates[version].Advisory, written/read directly by internal/lifecycle.
+// Service), so a wire-only change made on it would silently rewrite plugin.json. Build
+// these with newSecurityAdvisoryResponse.
+type SecurityAdvisoryResponse struct {
+	Severity   domain.AdvisorySeverity `json:"severity"`
+	Text       string                  `json:"text"`
+	AttachedAt time.Time               `json:"attachedAt"`
+}
+
+func newSecurityAdvisoryResponse(a domain.SecurityAdvisory) SecurityAdvisoryResponse {
+	return SecurityAdvisoryResponse{Severity: a.Severity, Text: a.Text, AttachedAt: a.AttachedAt}
 }
 
 // PluginDetailResponse — GET /api/v1/plugins/{pluginId}. allOf(PluginManifestFields,
@@ -138,14 +193,14 @@ type PluginVersionDetailResponse struct {
 	Access        domain.AccessTier    `json:"access,omitempty"`
 	ContactURL    string               `json:"contactUrl,omitempty"`
 
-	Tier           domain.TrustTier         `json:"tier"`
-	Blocked        bool                     `json:"blocked"`
-	BlockedAt      *time.Time               `json:"blockedAt,omitempty"`
-	BlockReason    string                   `json:"blockReason,omitempty"`
-	Advisory       *domain.SecurityAdvisory `json:"advisory,omitempty"`
-	SHA256         string                   `json:"sha256"`
-	ChangelogURL   *string                  `json:"changelogUrl,omitempty"`
-	ScreenshotURLs []string                 `json:"screenshotUrls"`
+	Tier           domain.TrustTier          `json:"tier"`
+	Blocked        bool                      `json:"blocked"`
+	BlockedAt      *time.Time                `json:"blockedAt,omitempty"`
+	BlockReason    string                    `json:"blockReason,omitempty"`
+	Advisory       *SecurityAdvisoryResponse `json:"advisory,omitempty"`
+	SHA256         string                    `json:"sha256"`
+	ChangelogURL   *string                   `json:"changelogUrl,omitempty"`
+	ScreenshotURLs []string                  `json:"screenshotUrls"`
 }
 
 // PremiumArtifactResponse — GET .../artifact for a premium plugin.
@@ -163,8 +218,8 @@ type BlockedArtifactErrorResponse struct {
 
 // PluginOperatorStateResponse — PATCH /api/v1/plugins/{pluginId}
 type PluginOperatorStateResponse struct {
-	ID              string                  `json:"id"`
-	Tier            domain.TrustTier        `json:"tier"`
-	LatestVersion   string                  `json:"latestVersion"`
-	BlockedVersions []domain.BlockedVersion `json:"blockedVersions,omitempty"`
+	ID              string                   `json:"id"`
+	Tier            domain.TrustTier         `json:"tier"`
+	LatestVersion   string                   `json:"latestVersion"`
+	BlockedVersions []BlockedVersionResponse `json:"blockedVersions,omitempty"`
 }
