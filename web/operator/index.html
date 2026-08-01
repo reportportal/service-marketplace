@@ -31,28 +31,6 @@
     </nav>
 
     <div id="tab-plugins" class="tab">
-      <h2>Publish plugin</h2>
-      <form id="publish-form">
-        <fieldset class="publish-mode">
-          <legend>Mode</legend>
-          <label class="inline"><input type="radio" name="publish-mode" value="first" checked> First version (new plugin)</label>
-          <label class="inline"><input type="radio" name="publish-mode" value="version"> New version of existing plugin</label>
-        </fieldset>
-        <label id="plugin-id-wrap" class="hidden">Plugin ID
-          <input type="text" id="publish-plugin-id" pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]" placeholder="from catalogue or manifest">
-        </label>
-        <label>Plugin JAR <input type="file" id="publish-jar" accept=".jar,application/java-archive" required></label>
-        <label>CHANGELOG.md (optional) <input type="file" id="publish-changelog" accept=".md,text/markdown,text/plain"></label>
-        <label>Screenshots (optional, max 5) <input type="file" id="publish-screenshots" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple></label>
-        <div class="publish-actions">
-          <button type="button" id="preview-manifest">Preview manifest</button>
-          <button type="submit" id="publish-submit">Publish</button>
-        </div>
-        <pre id="manifest-preview" class="mono hidden"></pre>
-        <p id="publish-error" class="error"></p>
-        <pre id="publish-result" class="mono hidden"></pre>
-      </form>
-
       <h2>Catalogue</h2>
       <div class="filters">
         <input type="search" id="search" placeholder="Search plugins">
@@ -128,7 +106,30 @@
           </form>
         </div>
       </div>
+      <h2>Publish plugin</h2>
+      <form id="publish-form">
+        <fieldset class="publish-mode">
+          <legend>Mode</legend>
+          <label class="inline"><input type="radio" name="publish-mode" value="first" checked> First version (new plugin)</label>
+          <label class="inline"><input type="radio" name="publish-mode" value="version"> New version of existing plugin</label>
+        </fieldset>
+        <label id="plugin-id-wrap" class="hidden">Plugin ID
+          <input type="text" id="publish-plugin-id" pattern="[a-z0-9][a-z0-9-]{0,62}[a-z0-9]" placeholder="from catalogue or manifest">
+        </label>
+        <label>Plugin JAR <input type="file" id="publish-jar" accept=".jar,application/java-archive" required></label>
+        <label>CHANGELOG.md (optional) <input type="file" id="publish-changelog" accept=".md,text/markdown,text/plain"></label>
+        <label>Screenshots (optional, max 5) <input type="file" id="publish-screenshots" accept="image/png,image/jpeg,.png,.jpg,.jpeg" multiple></label>
+        <div class="publish-actions">
+          <button type="button" id="preview-manifest">Preview manifest</button>
+          <button type="submit" id="publish-submit">Publish</button>
+        </div>
+        <pre id="manifest-preview" class="mono hidden"></pre>
+        <p id="publish-error" class="error"></p>
+        <pre id="publish-result" class="mono hidden"></pre>
+      </form>
+
     </div>
+
 
     <div id="tab-licenses" class="tab hidden">
       <h2>License entitlements</h2>

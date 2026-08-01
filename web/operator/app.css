@@ -44,7 +44,7 @@ label {
   color: var(--muted);
 }
 
-input, select, button {
+input, select, button, .button {
   font: inherit;
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
@@ -53,7 +53,7 @@ input, select, button {
   color: var(--text);
 }
 
-button {
+button, .button {
   cursor: pointer;
   background: var(--accent);
   border-color: var(--accent);
