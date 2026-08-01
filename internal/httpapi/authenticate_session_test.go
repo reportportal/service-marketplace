@@ -84,6 +84,19 @@ func TestAuthenticateSessionRejectedCredentialReturns401(t *testing.T) {
 // nothing asserted that end to end until this test. Confirms WS-AUTHZ's
 // task instruction to "finish the taxonomy properly": both credential
 // carriers, not just bearer.
+//
+// This test alone cannot prove the cookie is actually read, though: an
+// absent Authorization header *and* an absent cookie ("no credential at
+// all") fall through authenticateSession's separate bearer=="" branch to
+// the exact same 401 UNAUTHORIZED / "Invalid or missing bearer token"
+// response these three cases expect. A prior review caught this directly:
+// deleting the cookie-fallback block outright (so authenticateSession only
+// ever reads the bearer header) left this test green, because a
+// cookie-carried rejected credential and no credential whatsoever are
+// indistinguishable from the response alone. See
+// TestAuthenticateSessionAcceptsValidSessionCookie below for the
+// positive-path assertion that actually closes the gap: it fails outright
+// under that exact mutation, where this test does not.
 func TestAuthenticateSessionRejectedCookieCredentialReturns401(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -111,5 +124,35 @@ func TestAuthenticateSessionRejectedCookieCredentialReturns401(t *testing.T) {
 				t.Fatalf("expected error code %q per AMD-13, got %q", CodeUnauthorized, body.Code)
 			}
 		})
+	}
+}
+
+// TestAuthenticateSessionAcceptsValidSessionCookie is the positive-path
+// proof that authenticateSession's cookie-fallback branch is actually
+// reached, which TestAuthenticateSessionRejectedCookieCredentialReturns401
+// above cannot provide on its own (see that test's doc comment): a valid,
+// unexpired, non-revoked session token carried *only* as the
+// mp_operator_session cookie -- no Authorization header at all -- must
+// authenticate successfully on a requireSession-gated route.
+//
+// GET /api/v1/licenses is deliberately chosen over POST /auth/logout: it is
+// requireSession-gated but a safe method, so requireSession's XSRF
+// double-submit check (gated on isUnsafe(r.Method) && hasSessionCookie(r))
+// never engages, keeping this a pure test of the cookie-fallback branch of
+// authenticateSession, not of CSRF handling.
+//
+// If the cookie fallback is ever deleted (authenticateSession reads only
+// the bearer header), this request has no Authorization header either, so
+// it falls to the "missing credential" branch and gets 401 UNAUTHORIZED
+// instead of 200 -- unlike the rejection test above, this fails outright
+// under that mutation.
+func TestAuthenticateSessionAcceptsValidSessionCookie(t *testing.T) {
+	env := newTestEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/licenses", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: env.operatorSessionToken()})
+	rec := env.do(req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a valid session carried only as the %s cookie (cookie-fallback branch of authenticateSession), got %d body=%s", auth.SessionCookieName, rec.Code, rec.Body.String())
 	}
 }
