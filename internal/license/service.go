@@ -69,19 +69,14 @@ func (s *Service) Create(ctx context.Context, customerID string, expiresAt *time
 		return nil, err
 	}
 	now := time.Now().UTC()
-	var expires *domain.Date
-	if expiresAt != nil {
-		d := domain.Date{Time: *expiresAt}
-		expires = &d
-	}
 	ent := domain.LicenseEntitlement{
 		CustomerID: customerID,
 		Tier:       "premium",
-		IssuedAt:   domain.Date{Time: now},
-		ExpiresAt:  expires,
+		CreatedAt:  now,
+		ExpiresAt:  expiresAt,
 		PublicKeys: []domain.LicensePublicKey{{
 			PublicKey: base64.StdEncoding.EncodeToString(pub),
-			IssuedAt:  domain.Date{Time: now},
+			IssuedAt:  now,
 		}},
 	}
 
@@ -154,7 +149,7 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 				pubB64 = base64.StdEncoding.EncodeToString(pub)
 				ak.Entitlements[i].PublicKeys = append(ak.Entitlements[i].PublicKeys, domain.LicensePublicKey{
 					PublicKey: pubB64,
-					IssuedAt:  domain.Date{Time: now},
+					IssuedAt:  now,
 				})
 				break
 			}

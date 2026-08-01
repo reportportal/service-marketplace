@@ -14,6 +14,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"regexp"
 	"sort"
 	"testing"
 	"time"
@@ -59,10 +60,10 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 			Compatibility: domain.Compatibility{ReportPortal: ">=25.1"}, Homepage: "https://reportportal.io",
 			Access: domain.AccessPublic, ContactURL: "https://reportportal.io/pricing",
 		}},
-		{"LicensePublicKey", domain.LicensePublicKey{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
-		{"LicenseEntitlement", domain.LicenseEntitlement{
+		{"LicensePublicKey", LicensePublicKeyResponse{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+		{"LicenseEntitlement", LicenseEntitlementResponse{
 			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
-			PublicKeys: []domain.LicensePublicKey{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+			PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
 		}},
 
 		{"PluginListResponse", PluginListResponse{Plugins: []domain.IndexPlugin{{
@@ -99,13 +100,13 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		}},
 		{"AuthConfigResponse", AuthConfigResponse{GithubEnabled: true, AdminLoginEnabled: true}},
 		{"AuthTokenResponse", AuthTokenResponse{AccessToken: "tok", TokenType: "Bearer", ExpiresIn: 3600}},
-		{"LicenseEntitlementListResponse", LicenseEntitlementListResponse{Entitlements: []domain.LicenseEntitlement{
+		{"LicenseEntitlementListResponse", LicenseEntitlementListResponse{Entitlements: []LicenseEntitlementResponse{
 			{CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
-				PublicKeys: []domain.LicensePublicKey{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}}},
+				PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}}},
 		}}},
 		{"CreateLicenseResponse", CreateLicenseResponse{
 			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
-			PublicKeys: []domain.LicensePublicKey{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+			PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
 			PrivateKey: "priv",
 		}},
 
@@ -161,4 +162,76 @@ func assertKeySetsEqual(t *testing.T, schema string, want, got map[string]bool) 
 	sort.Strings(missing)
 	sort.Strings(extra)
 	t.Errorf("%s: wire keys do not match OpenAPI schema properties\n  missing (declared in schema, never emitted): %v\n  extra   (emitted, not declared in schema):    %v", schema, missing, extra)
+}
+
+// dateOnlyPattern is what docs/openapi/service-marketplace-v1.yaml's `format: date`
+// means on the wire: "YYYY-MM-DD", never a full RFC3339 timestamp. TestWireTypesMatchOpenAPISchema
+// only pins property *names* against the schema — it would pass unchanged if issuedAt/
+// expiresAt regressed to marshalling a full timestamp, since the key would still be
+// there. This test pins the *value* format instead, so that regression fails here.
+var dateOnlyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+func TestLicenseWireDatesAreDateOnlyNotTimestamps(t *testing.T) {
+	now := time.Now().UTC()
+	expires := domain.Date{Time: now}
+
+	t.Run("LicenseEntitlementResponse", func(t *testing.T) {
+		entitlement := LicenseEntitlementResponse{
+			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
+			PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+		}
+		data := marshalOrFatal(t, entitlement)
+		assertDateOnlyField(t, data, "issuedAt")
+		assertDateOnlyField(t, data, "expiresAt")
+
+		var withKeys struct {
+			PublicKeys []json.RawMessage `json:"publicKeys"`
+		}
+		if err := json.Unmarshal(data, &withKeys); err != nil {
+			t.Fatalf("unmarshal publicKeys: %v", err)
+		}
+		if len(withKeys.PublicKeys) != 1 {
+			t.Fatalf("want 1 public key, got %d", len(withKeys.PublicKeys))
+		}
+		assertDateOnlyField(t, withKeys.PublicKeys[0], "issuedAt")
+	})
+
+	t.Run("CreateLicenseResponse", func(t *testing.T) {
+		resp := CreateLicenseResponse{
+			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
+			PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+			PrivateKey: "priv",
+		}
+		data := marshalOrFatal(t, resp)
+		assertDateOnlyField(t, data, "issuedAt")
+		assertDateOnlyField(t, data, "expiresAt")
+	})
+}
+
+func marshalOrFatal(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal %T: %v", v, err)
+	}
+	return data
+}
+
+func assertDateOnlyField(t *testing.T, data []byte, field string) {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal into map: %v (raw: %s)", err, data)
+	}
+	raw, ok := m[field]
+	if !ok {
+		t.Fatalf("field %q not present in %s", field, data)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("field %q is not a JSON string: %v (raw: %s)", field, err, raw)
+	}
+	if !dateOnlyPattern.MatchString(s) {
+		t.Errorf("%s = %q: OpenAPI declares `format: date` (YYYY-MM-DD) but the wire value is not date-only (looks like a timestamp)", field, s)
+	}
 }
