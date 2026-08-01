@@ -176,6 +176,15 @@ type PluginTombstone struct {
 	Removed       time.Time `json:"removed"`
 	RemovalReason string    `json:"removalReason"`
 	RemovedBy     string    `json:"removedBy"`
+	// Warnings is populated only by handleRemovePlugin, only when this
+	// removal's downstream housekeeping (index rebuild, CDN invalidation)
+	// failed after the tombstone itself had already committed. Every other
+	// caller that builds a PluginTombstone (GetPlugin, ListVersions,
+	// GetArtifact -- see catalogue.TombstoneFromState) leaves it empty: this
+	// field describes what happened during a removal, not the tombstone's
+	// persisted shape, and PluginTombstone is not itself a persisted
+	// document (see wire_storage_separation_test.go).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // LicensePublicKey and LicenseEntitlement are dual-purpose: they are marshalled both

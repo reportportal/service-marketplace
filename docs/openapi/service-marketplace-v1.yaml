@@ -1411,6 +1411,16 @@ components:
         removedBy:
           type: string
           description: Operator identity from session JWT subject or OIDC subject
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Present only when this removal's downstream housekeeping (index
+            rebuild, CDN invalidation) failed after the removal itself had
+            already committed. Its absence means full success; its presence
+            never means the removal failed -- the plugin is tombstoned
+            either way. Absent (not an empty array) on full success.
 
     BlockedVersion:
       type: object
@@ -1475,6 +1485,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BlockedVersion'
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Present only when this tier change's downstream housekeeping
+            (index rebuild, CDN invalidation) failed after the tier change
+            itself had already committed. Its absence means full success;
+            its presence never means the tier change failed. Absent (not
+            an empty array) on full success.
 
     PublishResponse:
       type: object

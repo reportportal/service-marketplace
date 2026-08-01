@@ -334,7 +334,7 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	st, err := s.deps.Lifecycle.SetTier(r.Context(), pluginID, req.Tier)
+	st, hk, err := s.deps.Lifecycle.SetTier(r.Context(), pluginID, req.Tier)
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrNotFound) {
 			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"})
@@ -351,9 +351,17 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 	for i, bv := range st.BlockedVersions {
 		blockedVersions[i] = newBlockedVersionResponse(bv)
 	}
-	writeJSON(w, http.StatusOK, PluginOperatorStateResponse{
+	resp := PluginOperatorStateResponse{
 		ID: st.ID, Tier: st.Tier, LatestVersion: st.LatestVersion, BlockedVersions: blockedVersions,
-	})
+	}
+	// The tier change itself already committed successfully by this point
+	// (see lifecycle.HousekeepingOutcome's doc comment) -- a degraded
+	// housekeeping outcome is surfaced as a warning on the 200 response, not
+	// as an error, so the caller can still tell the two apart.
+	if hk.Degraded() {
+		resp.Warnings = hk.Warnings
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +377,7 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "removalReason", Message: "required"}}})
 		return
 	}
-	tomb, err := s.deps.Lifecycle.RemovePlugin(r.Context(), pluginID, req.RemovalReason, operatorIdentity(r.Context()))
+	tomb, hk, err := s.deps.Lifecycle.RemovePlugin(r.Context(), pluginID, req.RemovalReason, operatorIdentity(r.Context()))
 	if err != nil {
 		if errors.Is(err, lifecycle.ErrNotFound) {
 			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"})
@@ -381,6 +389,13 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, mapStorageErr(err))
 		return
+	}
+	// The removal itself already committed successfully by this point (see
+	// lifecycle.HousekeepingOutcome's doc comment) -- a degraded
+	// housekeeping outcome is surfaced as a warning on the 200 response, not
+	// as an error.
+	if hk.Degraded() {
+		tomb.Warnings = hk.Warnings
 	}
 	writeJSON(w, http.StatusOK, tomb)
 }

@@ -37,9 +37,16 @@ func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.Plug
 	return &st, nil
 }
 
-func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.TrustTier) (*domain.PluginState, error) {
+// SetTier changes a plugin's trust tier. Its downstream housekeeping (index
+// rebuild, CDN invalidation) is best-effort and reported via the returned
+// HousekeepingOutcome rather than folded into the error return: by the time
+// housekeeping runs, the tier change has already been durably committed to
+// plugin.json, so a housekeeping failure must never be reported the same
+// way a failure of the primary write would be (see HousekeepingOutcome's
+// doc comment).
+func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.TrustTier) (*domain.PluginState, HousekeepingOutcome, error) {
 	if tier != domain.TierOfficial {
-		return nil, ErrForbidden
+		return nil, HousekeepingOutcome{}, ErrForbidden
 	}
 	var out domain.PluginState
 	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
@@ -57,13 +64,12 @@ func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.Trus
 	}, 5)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return nil, ErrNotFound
+			return nil, HousekeepingOutcome{}, ErrNotFound
 		}
-		return nil, err
+		return nil, HousekeepingOutcome{}, err
 	}
-	_ = s.Publisher.RebuildIndex(ctx)
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PathIndex})
-	return &out, nil
+	hk := s.runHousekeeping(ctx, pluginID, "set_tier", true, []string{"/" + storage.PathIndex})
+	return &out, hk, nil
 }
 
 func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason string) (*domain.BlockedVersion, error) {
@@ -103,7 +109,13 @@ func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason st
 	return &blocked, nil
 }
 
-func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy string) (*domain.PluginTombstone, error) {
+// RemovePlugin tombstones a plugin and hard-deletes its version artifacts.
+// As with SetTier, downstream housekeeping (index rebuild, CDN invalidation)
+// is best-effort and reported via the returned HousekeepingOutcome: the
+// tombstone is already durably committed to plugin.json by the time
+// housekeeping runs, so a housekeeping failure must never make this call
+// report as though the removal itself failed.
+func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy string) (*domain.PluginTombstone, HousekeepingOutcome, error) {
 	now := time.Now().UTC()
 	tomb := domain.PluginTombstone{Removed: now, RemovalReason: reason, RemovedBy: removedBy}
 	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
@@ -120,7 +132,7 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
-		return nil, err
+		return nil, HousekeepingOutcome{}, err
 	}
 
 	files, _ := s.Store.ListPrefix(ctx, storage.PluginPrefix(pluginID))
@@ -131,9 +143,8 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 		_ = s.Store.Delete(ctx, f)
 	}
 
-	_ = s.Publisher.RebuildIndex(ctx)
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PathIndex, "/" + storage.PluginStatePath(pluginID)})
-	return &tomb, nil
+	hk := s.runHousekeeping(ctx, pluginID, "remove_plugin", true, []string{"/" + storage.PathIndex, "/" + storage.PluginStatePath(pluginID)})
+	return &tomb, hk, nil
 }
 
 func (s *Service) AttachAdvisory(ctx context.Context, pluginID, version string, sev domain.AdvisorySeverity, text string) (*domain.SecurityAdvisory, error) {
