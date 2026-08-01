@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/jwx/v2 v2.1.1
 	golang.org/x/crypto v0.28.0
+	golang.org/x/mod v0.17.0
 	google.golang.org/api v0.203.0
 	gopkg.in/yaml.v3 v3.0.1
 )
