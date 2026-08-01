@@ -94,6 +94,11 @@ func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason st
 		}
 		blocked = domain.BlockedVersion{Version: version, BlockedAt: now, Reason: reason}
 		st.BlockedVersions = append(st.BlockedVersions, blocked)
+		// AMD-07: recompute latestVersion on block too, not just on
+		// publish -- otherwise blocking the version currently advertised
+		// as latest leaves it advertised forever even though nobody can
+		// install it.
+		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
