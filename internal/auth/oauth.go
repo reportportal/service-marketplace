@@ -2,8 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
@@ -274,44 +271,4 @@ func extractRepo(sub string) string {
 		return parts[1]
 	}
 	return ""
-}
-
-type LicenseClaims struct {
-	CustomerID string
-	PluginID   string
-	Exp        time.Time
-}
-
-func VerifyLicenseJWT(token string, publicKeys []string) (*LicenseClaims, error) {
-	var lastErr error
-	for _, pkB64 := range publicKeys {
-		raw, err := base64.StdEncoding.DecodeString(pkB64)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if len(raw) != ed25519.PublicKeySize {
-			lastErr = ErrUnauthorized
-			continue
-		}
-		pub := ed25519.PublicKey(raw)
-		key, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.EdDSA, pub))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		cid, _ := key.Get("customerId")
-		pid, _ := key.Get("pluginId")
-		exp := key.Expiration()
-		customerID, _ := cid.(string)
-		pluginID, _ := pid.(string)
-		if customerID == "" || pluginID == "" {
-			return nil, ErrUnauthorized
-		}
-		return &LicenseClaims{CustomerID: customerID, PluginID: pluginID, Exp: exp}, nil
-	}
-	if lastErr != nil {
-		return nil, ErrUnauthorized
-	}
-	return nil, ErrUnauthorized
 }

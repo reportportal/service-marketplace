@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"time"
 )
@@ -315,10 +318,55 @@ type PluginTombstone struct {
 // key issued between this fix and AMD-11 landing keeps kid empty, so AMD-11's
 // migration only has one case to handle (absent) instead of two (absent, or present but
 // wrong-scheme).
+//
+// KeyID is AMD-11's real keyId, persisted here (set by license.Service.Create/
+// RotateKey at issuance) so it round-trips like every other field on this type. It is
+// NOT, however, the authoritative source of truth for verification: a document written
+// before this field existed decodes with KeyID == "", and code that trusted the stored
+// field for a legacy record would then fail to match a `kid` the client legitimately
+// sends (clients derive kid from the key bytes themselves; they don't read it off this
+// API). DeriveLicenseKeyID/ResolvedKeyID re-derive the value from PublicKey every time
+// instead, so an absent or even a stale/corrupted stored KeyID can never desync
+// verification from what the key bytes actually hash to. Treat the stored field as a
+// convenience cache for callers that just want to display it, never as an input to an
+// authorization decision.
+//
+// RevokedAt is AMD-11 key-level revocation (set by license.Service.RevokeKey, one key
+// at a time — distinct from whole-entitlement revocation, which removes the
+// LicenseEntitlement entirely via license.Service.Revoke and never sets this field).
+// nil means the key is live. AMD-25 requires revocation to take effect within 30s of
+// the revoking DELETE returning 204; any cache of these keys upstream of a live read of
+// this document must be bounded by that window.
 type LicensePublicKey struct {
-	KID       string    `json:"kid,omitempty"`
-	PublicKey string    `json:"publicKey"`
-	IssuedAt  time.Time `json:"issuedAt"`
+	KID       string     `json:"kid,omitempty"`
+	KeyID     string     `json:"keyId,omitempty"`
+	PublicKey string     `json:"publicKey"`
+	IssuedAt  time.Time  `json:"issuedAt"`
+	RevokedAt *time.Time `json:"revokedAt,omitempty"`
+}
+
+// DeriveLicenseKeyID computes the AMD-11 keyId for a license public key: the first 8
+// hex characters of SHA-256 of the key's raw bytes (PublicKey base64-decoded, not the
+// base64 text itself — the id must be stable across any re-encoding of the same key).
+// This is the single place that derivation happens; every other place in the codebase
+// that needs a keyId — verification (kid-header matching), key creation/rotation, and
+// any wire response that exposes it — must call this (or LicensePublicKey.ResolvedKeyID)
+// rather than reimplementing it inline, so a stored/cached keyId can never silently
+// drift from what the key bytes actually hash to.
+func DeriveLicenseKeyID(publicKeyBase64 string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(publicKeyBase64)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])[:8], nil
+}
+
+// ResolvedKeyID returns k's authoritative AMD-11 keyId, always re-derived from
+// PublicKey — see the doc comment on LicensePublicKey.KeyID for why the persisted field
+// is a display cache, never the value an authorization decision may trust.
+func (k LicensePublicKey) ResolvedKeyID() (string, error) {
+	return DeriveLicenseKeyID(k.PublicKey)
 }
 
 type LicenseEntitlement struct {
