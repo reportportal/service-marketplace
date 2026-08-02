@@ -503,12 +503,18 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha, Complete: boolPtr(false)})
 			writeArtifacts = true
 		}
-		// AMD-07: latestVersion is the SemVer-maximum of the non-blocked,
-		// non-pre-release versions, recomputed here rather than simply set
-		// to the version just published -- publishing a semver-lower
-		// version (e.g. the §6.2 legacy-hotfix patch to an older line)
-		// must never move the pointer.
-		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
+		// AMD-07's latestVersion recompute (domain.LatestVersion) does NOT
+		// happen here, deliberately -- see MAJOR 1 in the branch report.
+		// This CAS can commit a brand-new or healing version's record
+		// (SHA256, Complete: false) before a single artifact byte for it
+		// exists; setting LatestVersion to the result of a recompute run
+		// against THAT state could name a version domain.LatestVersion
+		// itself would reject as incomplete if the crash landed one CAS
+		// later than that recompute. The recompute instead runs inside
+		// markVersionComplete's CAS, atomically with flipping this entry's
+		// Complete to true, so there is never a moment where LatestVersion
+		// names a version whose artifacts are still missing. See that
+		// function's doc comment.
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
@@ -625,6 +631,22 @@ func upsertObject(ctx context.Context, store storage.ObjectStore, path string, d
 // republish takes the healing branch again, blindly (but harmlessly)
 // re-writes the already-correct bytes, and retries this same CAS. See
 // TestPublishVersionHealsAfterCrashDuringCompletionMarkerWrite.
+//
+// This CAS is also where AMD-07's latestVersion recompute (domain.
+// LatestVersion) happens — MAJOR 1 (branch report). publish()'s own CAS
+// deliberately does NOT set LatestVersion (see its doc comment): it commits
+// a version's record before that version's artifacts exist, so recomputing
+// there could name a version that isn't actually installable yet. Folding
+// the recompute into THIS CAS instead means the pointer and this entry's
+// Complete flip from false to true in the exact same atomic write — there is
+// no intermediate state where LatestVersion could observe "Complete just
+// became true" without also observing the recomputed pointer, or vice versa.
+// That makes the bad state MAJOR 1 fixes structurally unreachable, not just
+// less likely: LatestVersion can never name a version domain.LatestVersion
+// itself would reject as incomplete, because the only place it is ever
+// written is a CAS that runs after — and atomically with — that version (or
+// whichever version domain.LatestVersion selects instead) being marked
+// complete.
 func (s *Service) markVersionComplete(ctx context.Context, pluginID, version string) error {
 	return storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
 		var st domain.PluginState
@@ -639,6 +661,7 @@ func (s *Service) markVersionComplete(ctx context.Context, pluginID, version str
 				break
 			}
 		}
+		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 }

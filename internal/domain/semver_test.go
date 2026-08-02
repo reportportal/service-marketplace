@@ -165,3 +165,66 @@ func TestLatestVersion_AMD07(t *testing.T) {
 		})
 	}
 }
+
+// TestLatestVersion_NeverNamesAnIncompleteVersion is MAJOR 1's domain-level
+// regression test. publish()'s CAS-before-artifacts order (see
+// internal/publish.Service.publish's doc comment) means a version can be
+// present in a plugin's Versions list — the SemVer-maximum among them, even
+// — while its artifacts (jar, manifest, ...) don't exist yet: the plugin.json
+// commit and the artifact writes are separate steps, and a crash in between
+// leaves exactly that state, with the entry's Complete explicitly false.
+// domain.LatestVersion is the single function every writer of the
+// latestVersion pointer (publish, block) goes through, so it is where this
+// invariant must be enforced once, not re-implemented per caller: it must
+// never select a version domain.IsVersionComplete rejects, in any tier —
+// not the primary (unblocked, released) tier, and not either fallback.
+//
+// Mutation this kills: removing the completeness pre-filter from
+// LatestVersion (or checking it only in the primary tier and not the
+// fallbacks) — each subtest below arms a different tier and would then
+// select the higher, incomplete version instead of the lower, complete one.
+func TestLatestVersion_NeverNamesAnIncompleteVersion(t *testing.T) {
+	complete := true
+	incomplete := false
+
+	t.Run("primary tier: unblocked incomplete version loses to a lower complete one", func(t *testing.T) {
+		versions := []VersionMeta{
+			{Version: "1.0.0", Complete: &complete},
+			{Version: "1.1.0", Complete: &incomplete},
+		}
+		if got := LatestVersion(versions, nil); got != "1.0.0" {
+			t.Fatalf("LatestVersion() = %q, want %q (1.1.0 is the SemVer-max but incomplete)", got, "1.0.0")
+		}
+	})
+
+	t.Run("legacy nil is complete: an old record still outranks an explicitly incomplete newer one", func(t *testing.T) {
+		versions := []VersionMeta{
+			{Version: "1.0.0"}, // Complete == nil, i.e. a pre-existing legacy record
+			{Version: "1.1.0", Complete: &incomplete},
+		}
+		if got := LatestVersion(versions, nil); got != "1.0.0" {
+			t.Fatalf("LatestVersion() = %q, want %q (nil means legacy/complete, explicit false means incomplete)", got, "1.0.0")
+		}
+	})
+
+	t.Run("blocked-fallback tier: an incomplete version must not be promoted even when everything complete is blocked", func(t *testing.T) {
+		versions := []VersionMeta{
+			{Version: "1.0.0", Complete: &complete},
+			{Version: "1.1.0", Complete: &incomplete},
+		}
+		blocked := []BlockedVersion{{Version: "1.0.0"}}
+		if got := LatestVersion(versions, blocked); got != "1.0.0" {
+			t.Fatalf("LatestVersion() = %q, want %q (falling back to the semver-max must still exclude the incomplete 1.1.0)", got, "1.0.0")
+		}
+	})
+
+	t.Run("no complete version exists at all: pointer must go empty, never pick an incomplete one", func(t *testing.T) {
+		versions := []VersionMeta{
+			{Version: "1.0.0", Complete: &incomplete},
+			{Version: "1.1.0", Complete: &incomplete},
+		}
+		if got := LatestVersion(versions, nil); got != "" {
+			t.Fatalf("LatestVersion() = %q, want %q (every version is incomplete; the pointer must not name any of them)", got, "")
+		}
+	})
+}
