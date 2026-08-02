@@ -55,6 +55,62 @@ function debounce(fn, ms) {
   };
 }
 
+function setAuthStatus(signedIn) {
+  const el = document.getElementById('auth-status');
+  el.textContent = signedIn ? 'Signed in' : 'Not signed in';
+  el.classList.toggle('is-signed-in', signedIn);
+}
+
+function showBox(id, open = true) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('hidden');
+  if (el.tagName === 'DETAILS') el.open = open;
+}
+
+function hideBox(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add('hidden');
+  if (el.tagName === 'DETAILS') el.open = false;
+}
+
+function setAlert(id, message, visible = true) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('hidden', !visible || !message);
+}
+
+function setBusy(btn, busy, busyLabel, idleLabel) {
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.textContent = busy ? busyLabel : idleLabel;
+}
+
+function syncFileName(inputId) {
+  const input = document.getElementById(inputId);
+  const label = document.querySelector(`.field-file-name[data-for="${inputId}"]`);
+  if (!input || !label) return;
+  const files = Array.from(input.files || []);
+  label.textContent = files.length
+    ? files.map((f) => f.name).join(', ')
+    : '';
+}
+
+function wireFileNameHints(ids) {
+  ids.forEach((id) => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.addEventListener('change', () => syncFileName(id));
+    syncFileName(id);
+  });
+}
+
+function badgeHtml(text, kind = 'neutral') {
+  return ` <span class="badge badge-${kind}">${escapeHtml(text)}</span>`;
+}
+
 async function extractMarketplaceManifest(file) {
   const buf = await file.arrayBuffer();
   const view = new DataView(buf);
@@ -122,7 +178,7 @@ async function previewManifest() {
   const errEl = document.getElementById('publish-error');
   const preview = document.getElementById('manifest-preview');
   errEl.textContent = '';
-  preview.classList.add('hidden');
+  hideBox('manifest-preview-box');
   const jar = document.getElementById('publish-jar').files[0];
   if (!jar) {
     errEl.textContent = 'Choose a plugin JAR first';
@@ -131,7 +187,7 @@ async function previewManifest() {
   try {
     const manifest = await extractMarketplaceManifest(jar);
     preview.textContent = JSON.stringify(manifest, null, 2);
-    preview.classList.remove('hidden');
+    showBox('manifest-preview-box', true);
     if (publishMode() === 'version' && !document.getElementById('publish-plugin-id').value && manifest.id) {
       document.getElementById('publish-plugin-id').value = manifest.id;
     }
@@ -163,9 +219,10 @@ function hideActionForms() {
 }
 
 function showDetailResult(label, data) {
+  setAlert('detail-success', label, true);
   const el = document.getElementById('detail-result');
-  el.textContent = label + '\n' + JSON.stringify(data, null, 2);
-  el.classList.remove('hidden');
+  el.textContent = JSON.stringify(data, null, 2);
+  showBox('detail-result-box', false);
 }
 
 function closePluginDetail() {
@@ -173,18 +230,27 @@ function closePluginDetail() {
   hideActionForms();
   document.getElementById('plugin-detail').classList.add('hidden');
   document.getElementById('detail-error').textContent = '';
-  document.getElementById('detail-result').classList.add('hidden');
+  setAlert('detail-success', '', false);
+  hideBox('detail-result-box');
   document.getElementById('version-list').innerHTML = '';
+  document.getElementById('version-empty').classList.add('hidden');
 }
 
 async function openPluginDetail(plugin) {
   selectedPlugin = plugin;
   hideActionForms();
   document.getElementById('detail-error').textContent = '';
-  document.getElementById('detail-result').classList.add('hidden');
+  setAlert('detail-success', '', false);
+  hideBox('detail-result-box');
   document.getElementById('detail-title').textContent = plugin.name || plugin.id;
-  document.getElementById('detail-sub').textContent =
-    `${plugin.id} · latest ${plugin.latestVersion || '—'} · ${plugin.tier || ''} · ${plugin.access || ''}`;
+  const bits = [
+    plugin.id,
+    plugin.latestVersion ? `latest ${plugin.latestVersion}` : null,
+  ].filter(Boolean);
+  document.getElementById('detail-sub').innerHTML =
+    escapeHtml(bits.join(' · ')) +
+    (plugin.tier ? badgeHtml(plugin.tier, 'info') : '') +
+    (plugin.access ? badgeHtml(plugin.access, 'neutral') : '');
   document.getElementById('plugin-detail').classList.remove('hidden');
   document.getElementById('plugin-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
   await loadVersions();
@@ -193,15 +259,19 @@ async function openPluginDetail(plugin) {
 async function loadVersions() {
   if (!selectedPlugin) return;
   const list = document.getElementById('version-list');
+  const empty = document.getElementById('version-empty');
   const errEl = document.getElementById('detail-error');
   list.innerHTML = '';
+  empty.classList.add('hidden');
   try {
     const data = await api(`/plugins/${encodeURIComponent(selectedPlugin.id)}/versions`);
     const versions = data.versions || [];
     if (!versions.length) {
-      list.innerHTML = '<li class="muted">No versions</li>';
+      empty.classList.remove('hidden');
+      list.classList.add('hidden');
       return;
     }
+    list.classList.remove('hidden');
     for (const v of versions) {
       const li = document.createElement('li');
       li.className = 'version-row';
@@ -210,7 +280,7 @@ async function loadVersions() {
       meta.className = 'plugin-meta';
       let badges = '';
       if (v.blocked) {
-        badges += ' <span class="badge badge-warn">blocked</span>';
+        badges += badgeHtml('blocked', 'warn');
       }
       const published = v.publishedAt ? `<br><small>${escapeHtml(v.publishedAt)}</small>` : '';
       const reason = v.blocked && v.blockReason
@@ -224,7 +294,7 @@ async function loadVersions() {
       if (!v.blocked) {
         const blockBtn = document.createElement('button');
         blockBtn.type = 'button';
-        blockBtn.className = 'linkish';
+        blockBtn.className = 'btn btn-ghost';
         blockBtn.textContent = 'Block';
         blockBtn.addEventListener('click', () => openBlockForm(v.version));
         actions.appendChild(blockBtn);
@@ -232,7 +302,7 @@ async function loadVersions() {
 
       const advBtn = document.createElement('button');
       advBtn.type = 'button';
-      advBtn.className = 'linkish';
+      advBtn.className = 'btn btn-ghost';
       advBtn.textContent = 'Advisory';
       advBtn.addEventListener('click', () => openAdvisoryForm(v.version));
       actions.appendChild(advBtn);
@@ -256,7 +326,9 @@ async function loadVersionAdvisoryHint(version, metaEl) {
     );
     if (detail.advisory) {
       const span = document.createElement('span');
-      span.className = 'badge badge-info';
+      const sev = detail.advisory.severity || 'info';
+      const kind = sev === 'critical' || sev === 'high' ? 'danger' : sev === 'medium' ? 'warn' : 'info';
+      span.className = `badge badge-${kind}`;
       span.textContent = `advisory: ${detail.advisory.severity}`;
       span.title = detail.advisory.text || '';
       metaEl.querySelector('strong')?.after(document.createTextNode(' '), span);
@@ -295,6 +367,17 @@ function openAdvisoryForm(version) {
     .catch(() => {});
 }
 
+function setActiveTab(tabName) {
+  document.querySelectorAll('.console-nav .tab-btn').forEach((b) => {
+    const active = b.dataset.tab === tabName;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('.tab').forEach((t) => t.classList.add('hidden'));
+  document.getElementById('tab-' + tabName).classList.remove('hidden');
+  if (tabName === 'licenses') loadLicenses();
+}
+
 async function init() {
   const auth = await api('/auth/config');
   const loginSection = document.getElementById('login-section');
@@ -306,11 +389,14 @@ async function init() {
     const a = document.createElement('a');
     a.href = API + '/auth/github/login';
     a.textContent = 'Sign in with GitHub';
-    a.className = 'button';
+    a.className = 'btn btn-primary btn-block';
     loginOptions.appendChild(a);
   }
   if (auth.adminLoginEnabled) {
     adminForm.classList.remove('hidden');
+    if (auth.githubEnabled) {
+      document.getElementById('admin-login-divider').classList.remove('hidden');
+    }
   }
   if (!auth.githubEnabled && !auth.adminLoginEnabled) {
     loginOptions.textContent = 'No login methods configured. Enable admin login or GitHub OAuth.';
@@ -321,18 +407,20 @@ async function init() {
     await api('/licenses');
     loginSection.classList.add('hidden');
     consoleSection.classList.remove('hidden');
-    document.getElementById('auth-status').textContent = 'Signed in';
+    setAuthStatus(true);
     await loadPlugins();
   } catch {
     loginSection.classList.remove('hidden');
     consoleSection.classList.add('hidden');
-    document.getElementById('auth-status').textContent = 'Not signed in';
+    setAuthStatus(false);
   }
 
   adminForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = document.getElementById('login-error');
+    const submitBtn = adminForm.querySelector('button[type="submit"]');
     errEl.textContent = '';
+    setBusy(submitBtn, true, 'Signing in…', 'Sign in');
     try {
       await api('/auth/login', {
         method: 'POST',
@@ -344,6 +432,7 @@ async function init() {
       location.reload();
     } catch (err) {
       errEl.textContent = err.data?.message || 'Login failed';
+      setBusy(submitBtn, false, 'Signing in…', 'Sign in');
     }
   });
 
@@ -356,14 +445,8 @@ async function init() {
     location.reload();
   });
 
-  document.querySelectorAll('nav button[data-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('nav button[data-tab]').forEach((b) => b.classList.remove('active'));
-      btn.classList.add('active');
-      document.querySelectorAll('.tab').forEach((t) => t.classList.add('hidden'));
-      document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
-      if (btn.dataset.tab === 'licenses') loadLicenses();
-    });
+  document.querySelectorAll('.console-nav .tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => setActiveTab(btn.dataset.tab));
   });
 
   document.getElementById('refresh-plugins').addEventListener('click', loadPlugins);
@@ -374,6 +457,7 @@ async function init() {
     el.addEventListener('change', syncPublishModeUI);
   });
   syncPublishModeUI();
+  wireFileNameHints(['publish-jar', 'publish-changelog', 'publish-screenshots']);
 
   document.getElementById('preview-manifest').addEventListener('click', () => {
     previewManifest();
@@ -381,7 +465,8 @@ async function init() {
 
   document.getElementById('publish-jar').addEventListener('change', () => {
     document.getElementById('publish-error').textContent = '';
-    document.getElementById('publish-result').classList.add('hidden');
+    setAlert('publish-success', '', false);
+    hideBox('publish-result-box');
     if (document.getElementById('publish-jar').files[0]) previewManifest();
   });
 
@@ -391,7 +476,8 @@ async function init() {
     const resultEl = document.getElementById('publish-result');
     const submitBtn = document.getElementById('publish-submit');
     errEl.textContent = '';
-    resultEl.classList.add('hidden');
+    setAlert('publish-success', '', false);
+    hideBox('publish-result-box');
 
     const manifest = await previewManifest();
     if (!manifest) return;
@@ -419,14 +505,16 @@ async function init() {
       return;
     }
 
-    submitBtn.disabled = true;
+    setBusy(submitBtn, true, 'Publishing…', 'Publish');
     try {
       const res = await api(path, { method: 'POST', body });
-      resultEl.textContent = 'Published:\n' + JSON.stringify(res, null, 2);
-      resultEl.classList.remove('hidden');
+      setAlert('publish-success', `Published ${res.pluginId || manifest.id} v${res.version || ''}`.trim(), true);
+      resultEl.textContent = JSON.stringify(res, null, 2);
+      showBox('publish-result-box', false);
       document.getElementById('publish-form').reset();
       syncPublishModeUI();
-      document.getElementById('manifest-preview').classList.add('hidden');
+      wireFileNameHints(['publish-jar', 'publish-changelog', 'publish-screenshots']);
+      hideBox('manifest-preview-box');
       await loadPlugins();
       if (selectedPlugin && (selectedPlugin.id === res.pluginId || selectedPlugin.id === manifest.id)) {
         await openPluginDetail({ ...selectedPlugin, id: res.pluginId, latestVersion: res.version });
@@ -434,7 +522,7 @@ async function init() {
     } catch (err) {
       errEl.textContent = formatApiError(err);
     } finally {
-      submitBtn.disabled = false;
+      setBusy(submitBtn, false, 'Publishing…', 'Publish');
     }
   });
 
@@ -449,26 +537,32 @@ async function init() {
   document.getElementById('block-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = document.getElementById('detail-error');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
     errEl.textContent = '';
     if (!selectedPlugin || !actionVersion) return;
+    setBusy(submitBtn, true, 'Blocking…', 'Block version');
     try {
       const res = await api(
         `/plugins/${encodeURIComponent(selectedPlugin.id)}/versions/${encodeURIComponent(actionVersion)}/block`,
         { method: 'POST', body: { reason: document.getElementById('block-reason').value.trim() } },
       );
-      showDetailResult('Blocked:', res);
+      showDetailResult('Version blocked', res);
       hideActionForms();
       await loadVersions();
     } catch (err) {
       errEl.textContent = formatApiError(err);
+    } finally {
+      setBusy(submitBtn, false, 'Blocking…', 'Block version');
     }
   });
 
   document.getElementById('advisory-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = document.getElementById('detail-error');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
     errEl.textContent = '';
     if (!selectedPlugin || !actionVersion) return;
+    setBusy(submitBtn, true, 'Saving…', 'Save advisory');
     try {
       const res = await api(
         `/plugins/${encodeURIComponent(selectedPlugin.id)}/versions/${encodeURIComponent(actionVersion)}/advisory`,
@@ -480,17 +574,20 @@ async function init() {
           },
         },
       );
-      showDetailResult('Advisory saved:', res);
+      showDetailResult('Advisory saved', res);
       hideActionForms();
       await loadVersions();
     } catch (err) {
       errEl.textContent = formatApiError(err);
+    } finally {
+      setBusy(submitBtn, false, 'Saving…', 'Save advisory');
     }
   });
 
   document.getElementById('remove-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = document.getElementById('detail-error');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
     errEl.textContent = '';
     if (!selectedPlugin) return;
     const reason = document.getElementById('removal-reason').value.trim();
@@ -498,34 +595,48 @@ async function init() {
       `Remove plugin "${selectedPlugin.id}" permanently?\n\nThis hard-deletes artifacts and cannot be undone.`,
     );
     if (!ok) return;
+    setBusy(submitBtn, true, 'Removing…', 'Remove plugin');
     try {
       const res = await api(`/plugins/${encodeURIComponent(selectedPlugin.id)}`, {
         method: 'DELETE',
         body: { removalReason: reason },
       });
-      showDetailResult('Removed:', res);
       document.getElementById('removal-reason').value = '';
       closePluginDetail();
       await loadPlugins();
-      // Re-show tombstone result briefly above catalogue
-      const pre = document.getElementById('publish-result');
-      pre.textContent = 'Plugin removed:\n' + JSON.stringify(res, null, 2);
-      pre.classList.remove('hidden');
+      setAlert('publish-success', `Plugin removed: ${res.pluginId || ''}`.trim(), true);
+      document.getElementById('publish-result').textContent = JSON.stringify(res, null, 2);
+      showBox('publish-result-box', false);
     } catch (err) {
       errEl.textContent = formatApiError(err);
+    } finally {
+      setBusy(submitBtn, false, 'Removing…', 'Remove plugin');
     }
   });
 
   document.getElementById('create-license-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const submitBtn = document.getElementById('license-submit');
+    const errEl = document.getElementById('license-error');
+    errEl.textContent = '';
+    setAlert('license-success', '', false);
+    hideBox('license-result-box');
     const body = { customerId: document.getElementById('customer-id').value };
     const exp = document.getElementById('expires-at').value;
     if (exp) body.expiresAt = exp;
-    const res = await api('/licenses', { method: 'POST', body });
-    const pre = document.getElementById('license-result');
-    pre.textContent = JSON.stringify(res, null, 2);
-    pre.classList.remove('hidden');
-    loadLicenses();
+    setBusy(submitBtn, true, 'Creating…', 'Create entitlement');
+    try {
+      const res = await api('/licenses', { method: 'POST', body });
+      setAlert('license-success', `Entitlement created for ${res.customerId || body.customerId}`, true);
+      document.getElementById('license-result').textContent = JSON.stringify(res, null, 2);
+      showBox('license-result-box', false);
+      e.target.reset();
+      await loadLicenses();
+    } catch (err) {
+      errEl.textContent = formatApiError(err);
+    } finally {
+      setBusy(submitBtn, false, 'Creating…', 'Create entitlement');
+    }
   });
 }
 
@@ -537,25 +648,35 @@ async function loadPlugins() {
   if (category) params.set('category', category);
   const data = await api('/plugins?' + params.toString());
   const list = document.getElementById('plugin-list');
+  const empty = document.getElementById('plugin-empty');
   list.innerHTML = '';
-  (data.plugins || []).forEach((p) => {
+  const plugins = data.plugins || [];
+  empty.classList.toggle('hidden', plugins.length > 0);
+  list.classList.toggle('hidden', plugins.length === 0);
+
+  plugins.forEach((p) => {
     const li = document.createElement('li');
     const meta = document.createElement('div');
     meta.className = 'plugin-meta';
-    meta.innerHTML = `<strong>${escapeHtml(p.name)}</strong> (${escapeHtml(p.id)}) v${escapeHtml(p.latestVersion)}<br><small>${escapeHtml(p.category)} · ${escapeHtml(p.access)} · ${escapeHtml(p.tier)}</small>`;
+    meta.innerHTML =
+      `<strong>${escapeHtml(p.name)}</strong> <small>(${escapeHtml(p.id)})</small>` +
+      ` <span class="muted">v${escapeHtml(p.latestVersion)}</span><br>` +
+      `<small>${escapeHtml(p.category || '')}</small>` +
+      (p.access ? badgeHtml(p.access, 'neutral') : '') +
+      (p.tier ? badgeHtml(p.tier, 'info') : '');
 
     const actions = document.createElement('div');
     actions.className = 'row-actions';
 
     const manageBtn = document.createElement('button');
     manageBtn.type = 'button';
-    manageBtn.className = 'linkish';
+    manageBtn.className = 'btn btn-ghost';
     manageBtn.textContent = 'Manage';
     manageBtn.addEventListener('click', () => openPluginDetail(p));
 
     const verBtn = document.createElement('button');
     verBtn.type = 'button';
-    verBtn.className = 'linkish';
+    verBtn.className = 'btn btn-ghost';
     verBtn.textContent = 'New version';
     verBtn.addEventListener('click', () => selectPublishVersion(p.id));
 
@@ -570,10 +691,23 @@ async function loadPlugins() {
 async function loadLicenses() {
   const data = await api('/licenses');
   const list = document.getElementById('license-list');
+  const empty = document.getElementById('license-empty');
   list.innerHTML = '';
-  (data.entitlements || []).forEach((e) => {
+  const entitlements = data.entitlements || [];
+  empty.classList.toggle('hidden', entitlements.length > 0);
+  list.classList.toggle('hidden', entitlements.length === 0);
+
+  entitlements.forEach((e) => {
     const li = document.createElement('li');
-    li.textContent = `${e.customerId} — ${e.tier} (${e.publicKeys?.length || 0} keys)`;
+    const meta = document.createElement('div');
+    meta.className = 'plugin-meta';
+    meta.innerHTML =
+      `<strong>${escapeHtml(e.customerId)}</strong>` +
+      (e.tier ? badgeHtml(e.tier, 'info') : '') +
+      `<br><small>${e.publicKeys?.length || 0} keys` +
+      (e.expiresAt ? ` · expires ${escapeHtml(e.expiresAt)}` : '') +
+      `</small>`;
+    li.appendChild(meta);
     list.appendChild(li);
   });
 }
