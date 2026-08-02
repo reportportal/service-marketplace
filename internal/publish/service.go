@@ -314,20 +314,26 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 		}
 		if v.SHA256 == sha {
 			// Branch 2: committed + identical content -> idempotent 200, no
-			// objects written -- PROVIDED the artifact this entry claims to
-			// commit actually exists. publish()'s CAS-before-artifacts order
-			// (see its doc comment) makes plugin.json's commit and the
-			// artifact write two separate steps, so a crash in between can
-			// leave a committed entry with no bytes at its path; this is the
-			// one case that fast path must not short-circuit past, or the
-			// version would be unreachable forever (no PublishVersion call
-			// would ever be allowed to write the missing bytes again).
-			artPath := storage.VersionArtifactPath(pluginID, m.Version, string(m.Access))
-			exists, existsErr := s.Store.Exists(ctx, artPath)
-			if existsErr != nil {
-				return nil, false, existsErr
-			}
-			if exists {
+			// objects written -- PROVIDED every object this entry's commit
+			// claims (jar, manifest, and any changelog/screenshots the
+			// original publish included) actually exists. publish()'s
+			// CAS-before-artifacts order (see its doc comment) makes
+			// plugin.json's commit and those writes separate steps, so a
+			// crash at any point between the commit and the LAST of those
+			// writes can leave a committed entry that is missing some (not
+			// necessarily just the jar) of its objects.
+			//
+			// v.Complete is the authoritative answer to "is this version
+			// whole": it is set true only by a dedicated follow-up
+			// compare-and-swap (markVersionComplete) that runs after every
+			// object write for this version has already succeeded, so it
+			// can never be true while something is still missing. Checking
+			// it here needs no storage round-trip at all, and — unlike a
+			// "does the jar exist" probe — does not depend on the healer
+			// somehow knowing which optional objects (changelog,
+			// screenshots) the ORIGINAL interrupted attempt's bundle
+			// happened to include.
+			if v.Complete {
 				return &Result{PluginID: pluginID, Version: m.Version, SHA256: sha}, true, nil
 			}
 			healIdenticalCommit = true
@@ -378,14 +384,19 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 //     orphaned per-version objects... regardless of byte-equality with the
 //     partial state" case AMD-04 requires, using upsertObject's blind
 //     overwrite exactly as before, just moved after the commit instead of
-//     before it.
+//     before it. The new entry starts with Complete: false; it is only set
+//     true once every write below has succeeded (see markVersionComplete).
 //   - branch 2 (committed, identical content) leaves it false — AMD-04
-//     "no objects are written" — UNLESS the artifact is physically missing,
-//     which can only happen if a previous attempt's own CAS committed the
-//     version but crashed before finishing its artifact writes; healing
-//     that is safe here specifically because this attempt's SHA-256 is
-//     already confirmed equal to the committed one, so it can never be a
-//     route for different content to slip past branch 3 below.
+//     "no objects are written" — UNLESS the committed entry's own
+//     Complete flag is false, which can only happen if a previous attempt's
+//     own CAS committed the version but crashed before every one of its
+//     writes (jar, manifest, changelog, screenshots, AND the follow-up
+//     Complete-marking CAS) finished; healing that is safe here specifically
+//     because this attempt's SHA-256 is already confirmed equal to the
+//     committed one, so it can never be a route for different content to
+//     slip past branch 3 below. See markVersionComplete's doc comment for
+//     why a flag on the commit record, not a storage existence probe,
+//     answers "is this version whole".
 //   - branch 3 (committed, different content) and every ErrPluginExists /
 //     *RemovedError path return an error from WriteWithRetry with no
 //     successful write at all, so writeArtifacts is never consulted.
@@ -468,10 +479,15 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 				// this before ever calling publish(), so reaching it here
 				// means a retry discovered a competing publish of the
 				// exact same content landed in the gap. Idempotent: keep
-				// the entry, just refresh PublishedAt. writeArtifacts stays
-				// false; the caller below only writes if the artifact is
-				// actually missing.
+				// the entry, just refresh PublishedAt. writeArtifacts is
+				// only set here if the entry isn't Complete yet — i.e. a
+				// previous attempt committed this version but crashed
+				// before every one of its writes finished; see
+				// markVersionComplete for what fully clears that flag.
 				st.Versions[i].PublishedAt = now
+				if !st.Versions[i].Complete {
+					writeArtifacts = true
+				}
 				break
 			}
 			// Committed with DIFFERENT content: a competing publish won
@@ -482,7 +498,7 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			return nil, ErrVersionConflict
 		}
 		if !found {
-			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha})
+			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha, Complete: false})
 			writeArtifacts = true
 		}
 		st.LatestVersion = m.Version
@@ -492,20 +508,13 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		return nil, err
 	}
 
+	// writeArtifacts is now exactly "the CAS above found this version's
+	// commit record not yet Complete" (see the mutator), which is the
+	// authoritative answer to "does this version still need its objects
+	// (re)written" — no storage existence probe needed, and no risk of the
+	// probe being wrong about which objects a partial attempt actually
+	// finished (see markVersionComplete's doc comment).
 	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))
-	if !writeArtifacts {
-		// Branch 2 landed: heal a previous attempt's commit whose own
-		// artifact write never completed (e.g. crashed between its CAS
-		// above and its artifact writes below). Only reachable when this
-		// attempt's SHA-256 already matched the committed one, so the bytes
-		// written here can never differ from what's already recorded.
-		exists, existsErr := s.Store.Exists(ctx, artPath)
-		if existsErr != nil {
-			return nil, existsErr
-		}
-		writeArtifacts = !exists
-	}
-
 	if writeArtifacts {
 		if err := upsertObject(ctx, s.Store, artPath, bundle.JAR); err != nil {
 			return nil, err
@@ -533,6 +542,15 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 				return nil, err
 			}
 		}
+		// Every object this version comprises has now been written
+		// successfully. Record that fact on the commit itself so a future
+		// healing decision never again has to guess it from storage state —
+		// see markVersionComplete's doc comment for why this is a separate,
+		// necessary CAS rather than something ordering alone can fold into
+		// the writes above.
+		if err := s.markVersionComplete(ctx, m.ID, m.Version); err != nil {
+			return nil, err
+		}
 	}
 
 	err = s.rebuildIndex(ctx)
@@ -558,6 +576,57 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 func upsertObject(ctx context.Context, store storage.ObjectStore, path string, data []byte) error {
 	return storage.WriteWithRetry(ctx, store, path, func([]byte, int64) ([]byte, error) {
 		return data, nil
+	}, 5)
+}
+
+// markVersionComplete flips the named version's VersionMeta.Complete to true
+// via its own compare-and-swap on plugin.json, run by publish() only after
+// every object that version comprises (jar, manifest, and any changelog/
+// screenshots the bundle included) has already been written successfully.
+//
+// This exists because ordering the writes differently cannot, by itself,
+// close the crash window this function closes. publish() must keep
+// committing plugin.json BEFORE any artifact byte is written — reordering
+// that back is reverting the prior BLOCKING fix (see publish()'s doc
+// comment) and reopens the loser-overwrites-committed-bytes hole. But
+// whichever object is written LAST in the sequence that follows the commit
+// is, by construction, exactly as vulnerable as the jar was before this fix:
+// a crash after it still leaves nothing to distinguish "every object landed"
+// from "the commit merely started" — reordering only relocates the same gap
+// to a different step, and the set of objects a version comprises isn't even
+// fixed (changelog and screenshots are optional per bundle), so a healer
+// can't reliably infer completeness later from "which objects exist" without
+// somehow also knowing what the ORIGINAL interrupted attempt's bundle
+// contained.
+//
+// A durable completion marker sidesteps both problems: it is written once,
+// deliberately, after this attempt's own writes (the only ones it needs to
+// reason about) have all succeeded, and every future healing decision reads
+// it directly instead of re-deriving it from partial, bundle-dependent
+// storage state. See domain.VersionMeta.Complete and this file's use of it
+// in PublishVersion and publish()'s CAS callback.
+//
+// A crash between the last artifact write succeeding and this CAS landing
+// leaves Complete false even though every object is already correct; that is
+// safe and self-healing, not a new failure mode — the next same-content
+// republish takes the healing branch again, blindly (but harmlessly)
+// re-writes the already-correct bytes, and retries this same CAS. See
+// TestPublishVersionHealsAfterCrashDuringCompletionMarkerWrite.
+func (s *Service) markVersionComplete(ctx context.Context, pluginID, version string) error {
+	return storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
+		var st domain.PluginState
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &st); err != nil {
+				return nil, err
+			}
+		}
+		for i := range st.Versions {
+			if st.Versions[i].Version == version {
+				st.Versions[i].Complete = true
+				break
+			}
+		}
+		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 }
 

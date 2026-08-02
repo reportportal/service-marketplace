@@ -136,6 +136,22 @@ type VersionMeta struct {
 	Version     string    `json:"version"`
 	PublishedAt time.Time `json:"publishedAt,omitempty"`
 	SHA256      string    `json:"sha256,omitempty"`
+	// Complete is true once every object this version comprises (jar,
+	// manifest, and any changelog/screenshots the publish included) has been
+	// successfully written -- set by a dedicated compare-and-swap on
+	// plugin.json (internal/publish.Service.markVersionComplete) that runs
+	// only after all of those writes have succeeded. A version can be
+	// present in Versions (i.e. "committed", per AMD-30-commit-point-
+	// granularity) with Complete still false: the plugin.json CAS that
+	// records SHA256 happens BEFORE the artifact writes (see publish()'s doc
+	// comment), so a crash at any point between that CAS and this flag being
+	// set leaves a committed-but-incomplete entry. That state must always be
+	// healable by a same-content republish -- see
+	// internal/publish.Service.PublishVersion's use of this field, which
+	// replaced an earlier, incomplete "does the jar file exist" proxy that
+	// left a version permanently unpublishable if the crash landed after the
+	// jar but before the manifest (or any other object).
+	Complete bool `json:"complete,omitempty"`
 }
 
 type SecurityAdvisory struct {

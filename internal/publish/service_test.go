@@ -836,3 +836,308 @@ func TestPublishVersionObservesRemovalThatCommitsMidPublish(t *testing.T) {
 		}
 	}
 }
+
+// --- Committed-but-incomplete versions must always be healable ------------
+//
+// publish()'s write order, after the BLOCKING fix that made publish() decide
+// AMD-04's branch via plugin.json's compare-and-swap BEFORE touching any
+// artifact byte, is: commit plugin.json, write the jar, write the manifest,
+// write the changelog (if any), write any screenshots. That fix closed the
+// hole where a losing publisher could corrupt an already-committed version's
+// bytes. It opened a narrower one: the healing predicate that decides
+// whether a committed version is safe to overwrite on a same-content retry
+// used to check only "does the jar exist at its path" -- a proxy for "is
+// this version whole" that is only correct if the jar is the LAST thing a
+// publish writes. It never was: the manifest, changelog, and screenshots all
+// land after it. A crash after the jar but before any of those left a
+// version that the old predicate saw as complete (jar present) and refused
+// to heal, forever -- the identical failure mode this whole track began
+// with, just moved one step later in the write sequence.
+//
+// The fix replaces the proxy with an explicit fact recorded on the commit
+// itself: domain.VersionMeta.Complete, set true only by a dedicated
+// follow-up compare-and-swap (markVersionComplete) that runs after every
+// object the version comprises has been written successfully. The tests
+// below inject a crash at each of those write steps in turn (via
+// storagetest.FaultStore) and prove the version is healable from every one
+// of them -- not just the jar step, which is what let the original fix
+// through review with only partial coverage.
+
+// mustScreenshotPath is a small test helper: filenames used in these tests
+// are always sanitize-legal, so the error branch never fires.
+func mustScreenshotPath(t *testing.T, pluginID, version, filename string) string {
+	t.Helper()
+	p, err := storage.VersionScreenshotPath(pluginID, version, filename)
+	if err != nil {
+		t.Fatalf("VersionScreenshotPath(%q, %q, %q): %v", pluginID, version, filename, err)
+	}
+	return p
+}
+
+// TestPublishVersionHealsAfterCrashAtEachArtifactWriteStep is the regression
+// test for the BLOCKING finding. publish() writes a version's objects in a
+// fixed sequence -- jar, manifest, changelog (if present), screenshots (if
+// present) -- after already having committed plugin.json. This test injects
+// a fault (via storagetest.FaultStore) at each of those write steps in turn,
+// so every step but the one under test has already landed successfully when
+// the crash happens, and asserts that a subsequent same-content republish
+// both succeeds and leaves a version with every object present and
+// plugin.json's Complete flag set -- not just for a crash at the jar step
+// (the one case the pre-fix code happened to heal), but for every step a
+// publish can crash after.
+//
+// Mutation that makes every subtest but "jar" fail: replace the
+// Complete-flag check this fix introduces with the pre-fix proxy --
+// storage.Exists(VersionArtifactPath(...)) (jar-only) -- as the healing
+// predicate in both PublishVersion's fast path and publish()'s CAS callback.
+// The jar already exists by the time any of the later steps crash, so that
+// proxy wrongly reports the version whole and skips healing; the subsequent
+// read of the missing manifest/changelog/screenshot then returns
+// storage.ErrNotFound instead of the healed bytes.
+func TestPublishVersionHealsAfterCrashAtEachArtifactWriteStep(t *testing.T) {
+	m := testManifest("plugin-demo", "1.0.0")
+	jar, err := BuildTestJAR(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := storage.HashSHA256(jar)
+
+	bundleFor := func() *Bundle {
+		return &Bundle{
+			JAR:         jar,
+			JARFilename: "p.jar",
+			Changelog:   []byte("## 1.0.0\n- initial release\n"),
+			Screenshots: map[string][]byte{"shot1.png": []byte("fake-png-bytes")},
+		}
+	}
+
+	steps := []struct {
+		name string
+		path string
+	}{
+		{"jar", storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))},
+		{"manifest", storage.VersionManifestPath(m.ID, m.Version)},
+		{"changelog", storage.VersionChangelogPath(m.ID, m.Version)},
+		{"screenshot", mustScreenshotPath(t, m.ID, m.Version, "shot1.png")},
+	}
+
+	for _, step := range steps {
+		t.Run(step.name, func(t *testing.T) {
+			ctx := context.Background()
+			backing := newLocalStore(t)
+			fs := storagetest.Wrap(backing)
+			svc := newTestService(t, fs)
+
+			boom := errors.New("simulated crash writing " + step.name)
+			fs.FailN(storagetest.OpWrite, step.path, boom, 1)
+
+			if _, err := svc.PublishFirst(ctx, bundleFor(), "operator"); !errors.Is(err, boom) {
+				t.Fatalf("expected the injected %s write failure to surface, got %v", step.name, err)
+			}
+
+			// Precondition: plugin.json committed the version (as SHA256),
+			// but must not be marked complete -- the crash happened before
+			// every object landed.
+			stObj, err := backing.Read(ctx, storage.PluginStatePath(m.ID))
+			if err != nil {
+				t.Fatalf("read plugin.json after crash: %v", err)
+			}
+			var st domain.PluginState
+			if err := json.Unmarshal(stObj.Data, &st); err != nil {
+				t.Fatal(err)
+			}
+			var entry *domain.VersionMeta
+			for i := range st.Versions {
+				if st.Versions[i].Version == m.Version {
+					entry = &st.Versions[i]
+				}
+			}
+			if entry == nil {
+				t.Fatalf("plugin.json must still record %s as committed after the crash", m.Version)
+			}
+			if entry.SHA256 != sha {
+				t.Fatalf("committed SHA256 = %q, want %q", entry.SHA256, sha)
+			}
+			if entry.Complete {
+				t.Fatalf("test precondition violated: version must not be Complete after a crash writing %s", step.name)
+			}
+
+			// Heal: a same-content republish must succeed and finish the job.
+			res, idempotent, err := svc.PublishVersion(ctx, m.ID, bundleFor(), "operator", false)
+			if err != nil {
+				t.Fatalf("healing republish after crash writing %s: %v", step.name, err)
+			}
+			if !idempotent {
+				t.Fatalf("idempotent = false, want true: SHA-256 already matched the committed one (crash writing %s)", step.name)
+			}
+			if res.SHA256 != sha {
+				t.Fatalf("SHA256 = %q, want %q (crash writing %s)", res.SHA256, sha, step.name)
+			}
+
+			// Every object this version comprises must now exist with the
+			// right content.
+			artObj, err := backing.Read(ctx, storage.VersionArtifactPath(m.ID, m.Version, string(m.Access)))
+			if err != nil {
+				t.Fatalf("jar missing after heal (crash writing %s): %v", step.name, err)
+			}
+			if got := storage.HashSHA256(artObj.Data); got != sha {
+				t.Fatalf("healed jar SHA256 = %q, want %q (crash writing %s)", got, sha, step.name)
+			}
+			if _, err := backing.Read(ctx, storage.VersionManifestPath(m.ID, m.Version)); err != nil {
+				t.Fatalf("manifest missing after heal (crash writing %s): %v", step.name, err)
+			}
+			if _, err := backing.Read(ctx, storage.VersionChangelogPath(m.ID, m.Version)); err != nil {
+				t.Fatalf("changelog missing after heal (crash writing %s): %v", step.name, err)
+			}
+			if _, err := backing.Read(ctx, mustScreenshotPath(t, m.ID, m.Version, "shot1.png")); err != nil {
+				t.Fatalf("screenshot missing after heal (crash writing %s): %v", step.name, err)
+			}
+
+			// The commit record itself must now say the version is whole.
+			stObj2, err := backing.Read(ctx, storage.PluginStatePath(m.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var st2 domain.PluginState
+			if err := json.Unmarshal(stObj2.Data, &st2); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, v := range st2.Versions {
+				if v.Version == m.Version {
+					found = true
+					if !v.Complete {
+						t.Fatalf("crash writing %s: version must be marked Complete after a successful heal", step.name)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("crash writing %s: version missing from plugin.json after heal", step.name)
+			}
+		})
+	}
+}
+
+// secondWriteFailer fails exactly the SECOND Write call observed for a given
+// path, letting the first succeed. It exists to model a crash during
+// publish()'s follow-up "mark this version's artifacts complete"
+// compare-and-swap: that write lands on the exact same plugin.json path as
+// the earlier commit CAS, so it can't be targeted by
+// storagetest.FaultStore's Fail/FailN alone (those arm by (op, path), not by
+// which occurrence of a repeated path they should fire on).
+type secondWriteFailer struct {
+	*storagetest.FaultStore
+	path  string
+	err   error
+	calls int
+}
+
+func (s *secondWriteFailer) Write(ctx context.Context, objectPath string, data []byte, expectedGen int64) (int64, error) {
+	if objectPath == s.path {
+		s.calls++
+		if s.calls == 2 {
+			return 0, s.err
+		}
+	}
+	return s.FaultStore.Write(ctx, objectPath, data, expectedGen)
+}
+
+// TestPublishVersionHealsAfterCrashDuringCompletionMarkerWrite is the
+// regression test for the crash window the fix itself introduces: marking a
+// version Complete is a second, separate compare-and-swap on plugin.json,
+// run only after every artifact write for that version has already
+// succeeded. A crash between the last artifact write landing and that second
+// CAS succeeding leaves every object physically present on disk, but
+// plugin.json still says Complete: false. This proves that state both heals
+// correctly AND, once healed, does not keep re-healing forever: a further,
+// fully-idempotent republish after the heal must take the no-write fast path
+// (Complete already true), which this test confirms by asserting the
+// plugin.json write count does not change again.
+//
+// Mutation that makes this fail: never calling markVersionComplete (or
+// swallowing its error) leaves Complete permanently false even though every
+// object is correct -- the final fully-idempotent republish in this test
+// would then (wrongly) re-run the whole write sequence again instead of
+// taking the fast path, and the write-count assertion at the end fails.
+func TestPublishVersionHealsAfterCrashDuringCompletionMarkerWrite(t *testing.T) {
+	ctx := context.Background()
+	backing := newLocalStore(t)
+	m := testManifest("plugin-demo", "1.0.0")
+	pluginPath := storage.PluginStatePath(m.ID)
+	fs := storagetest.Wrap(backing)
+	cs := &secondWriteFailer{FaultStore: fs, path: pluginPath, err: errors.New("simulated crash during completion marker write")}
+	svc := newTestService(t, cs)
+
+	jar, err := BuildTestJAR(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := storage.HashSHA256(jar)
+	bundle := &Bundle{JAR: jar, JARFilename: "p.jar", Changelog: []byte("notes")}
+
+	if _, err := svc.PublishFirst(ctx, bundle, "operator"); !errors.Is(err, cs.err) {
+		t.Fatalf("expected the injected completion-marker write failure to surface, got %v", err)
+	}
+
+	// Every artifact object landed; only the completion marker didn't.
+	if _, err := backing.Read(ctx, storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))); err != nil {
+		t.Fatalf("jar missing after crash: %v", err)
+	}
+	if _, err := backing.Read(ctx, storage.VersionManifestPath(m.ID, m.Version)); err != nil {
+		t.Fatalf("manifest missing after crash: %v", err)
+	}
+	if _, err := backing.Read(ctx, storage.VersionChangelogPath(m.ID, m.Version)); err != nil {
+		t.Fatalf("changelog missing after crash: %v", err)
+	}
+	stObj, err := backing.Read(ctx, storage.PluginStatePath(m.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st domain.PluginState
+	if err := json.Unmarshal(stObj.Data, &st); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range st.Versions {
+		if v.Version == m.Version && v.Complete {
+			t.Fatalf("test precondition violated: version must not be Complete after the injected crash")
+		}
+	}
+
+	// Heal.
+	res, idempotent, err := svc.PublishVersion(ctx, m.ID, bundle, "operator", false)
+	if err != nil {
+		t.Fatalf("healing republish: %v", err)
+	}
+	if !idempotent {
+		t.Fatalf("idempotent = false, want true")
+	}
+	if res.SHA256 != sha {
+		t.Fatalf("SHA256 = %q, want %q", res.SHA256, sha)
+	}
+
+	stObj2, err := backing.Read(ctx, storage.PluginStatePath(m.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st2 domain.PluginState
+	if err := json.Unmarshal(stObj2.Data, &st2); err != nil {
+		t.Fatal(err)
+	}
+	complete := false
+	for _, v := range st2.Versions {
+		if v.Version == m.Version {
+			complete = v.Complete
+		}
+	}
+	if !complete {
+		t.Fatalf("version must be marked Complete after a successful heal")
+	}
+
+	writesAfterHeal := cs.calls
+	if _, _, err := svc.PublishVersion(ctx, m.ID, bundle, "operator", false); err != nil {
+		t.Fatalf("fully-idempotent republish after heal: %v", err)
+	}
+	if cs.calls != writesAfterHeal {
+		t.Fatalf("plugin.json write count changed on a fully-idempotent republish (%d -> %d): a Complete version must take the no-write fast path", writesAfterHeal, cs.calls)
+	}
+}
