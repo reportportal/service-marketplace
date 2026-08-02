@@ -775,16 +775,48 @@ func (s *Service) buildIndexData(ctx context.Context) ([]byte, error) {
 			// reference.
 			continue
 		}
-		if st.LatestVersion == "" {
-			if len(st.Versions) == 0 {
-				// Genuinely versionless: nothing published yet, nothing in
-				// storage at risk. Legitimate exclusion.
-				continue
+		if len(st.Versions) == 0 {
+			// Genuinely versionless: nothing published yet, nothing in
+			// storage at risk. Legitimate exclusion.
+			continue
+		}
+		// NOT PUBLISHED YET vs CORRUPT is a real distinction buildIndexData
+		// must not collapse (see this branch's own report, MAJOR finding):
+		// a plugin every one of whose versions is still incomplete --
+		// including the common case of a first publish interrupted before
+		// its completion marker ever landed -- is a plugin with nothing to
+		// list, not damaged data. It reappears here on its own the moment
+		// ANY version's publish actually finishes: markVersionComplete
+		// flips that version's Complete flag AND recomputes LatestVersion
+		// in the same atomic CAS (see that function's doc comment), so
+		// there is no window where this plugin has a complete version yet
+		// still reads as "nothing to list".
+		hasCompleteVersion := false
+		for _, v := range st.Versions {
+			if domain.IsVersionComplete(v) {
+				hasCompleteVersion = true
+				break
 			}
-			// Inconsistent state: versions exist but nothing was ever marked
-			// latest. Can't be resolved -- treat the same as any other
-			// unresolvable plugin.
-			return nil, fmt.Errorf("rebuildIndex: plugin %q has %d version(s) but no latestVersion, refusing to write a partial index", id, len(st.Versions))
+		}
+		if !hasCompleteVersion {
+			// Legitimate exclusion, same rationale as the versionless case
+			// above -- just reached via versions that exist but never
+			// finished, instead of no versions at all.
+			continue
+		}
+		if st.LatestVersion == "" {
+			// This IS the corrupt case, and it is a narrower one than the
+			// old code checked: at least one version above is complete, so
+			// domain.LatestVersion(st.Versions, st.BlockedVersions) -- the
+			// only function that ever writes this field (markVersionComplete
+			// here, and lifecycle.Service.BlockVersion's own recompute) --
+			// is guaranteed to return a non-empty string; its fallback names
+			// the SemVer-max complete version even when every complete
+			// version is blocked. Reaching this with LatestVersion still ""
+			// means the persisted document disagrees with that invariant.
+			// Unlike the exclusion above, this can't be resolved by waiting
+			// for a future publish -- refuse to write a partial index.
+			return nil, fmt.Errorf("rebuildIndex: plugin %q has a complete version but no latestVersion, refusing to write a partial index", id)
 		}
 		mObj, err := s.Store.Read(ctx, storage.VersionManifestPath(id, st.LatestVersion))
 		if err != nil {
