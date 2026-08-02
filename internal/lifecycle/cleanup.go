@@ -97,6 +97,65 @@ type cleanupLease struct {
 // (started once per process, ticks independently of any HTTP request), and
 // keeping it standalone lets tests drive Run directly and synchronously
 // instead of through a goroutine+ticker.
+//
+// # Status: unsupported, ships disabled
+//
+// This job has delete authority over reference data (index.json) that is
+// assembled concurrently with the writes it is judging -- publishes,
+// removals, tier changes -- happening on other replicas at the same time.
+// Three separate review rounds each found a distinct way to defeat the
+// refuse-to-delete guard in sweep below, i.e. to make Run delete a version
+// that was never actually orphaned:
+//
+//  1. Silently-dropped plugins during index rebuild. A full index.json
+//     rebuild that hit an unrelated, transient failure resolving ONE
+//     plugin used to skip that plugin (a bare `continue`) and write the
+//     resulting index anyway. The new document looked completely healthy
+//     -- nonzero plugins, each with a real nonzero Versions list -- while
+//     quietly omitting every version the dropped plugin had ever
+//     legitimately committed. Those versions then read as unreferenced
+//     and were swept once MinAge elapsed. Closed by making
+//     internal/publish.Service.rebuildIndex all-or-nothing: it now either
+//     resolves every known plugin and writes a document it can vouch for
+//     in full, or writes nothing and leaves the previous (older, but
+//     honest) index.json in place. See domain.Index.Complete and this
+//     file's own `!idx.Complete` guard below, which exists specifically
+//     to detect a document not written by that all-or-nothing path.
+//  2. A stale-but-complete index. domain.Index.Complete attests that the
+//     rebuild which produced a document resolved every plugin it saw --
+//     it does not attest that the resulting snapshot was still current by
+//     the time the document landed. rebuildIndex's CAS-retry loop used to
+//     resubmit the SAME already-computed (by then stale) snapshot on
+//     every retry instead of recomputing; a replica that lost the initial
+//     CAS race to a concurrent publish could still win a later retry with
+//     that stale snapshot, silently regressing index.json to a state that
+//     no longer referenced the other replica's just-committed version --
+//     decoding Complete: true throughout, so guard (1) above could not
+//     tell the difference. Closed by re-deriving the snapshot from live
+//     storage state on every retry attempt instead of reusing the first
+//     one.
+//  3. A third, structurally different reproduction, found in the review
+//     round that followed the fix for (2) above. It is real and was
+//     documented in that round's review; this branch does not attempt to
+//     close it. Do not treat "the first two routes are closed" as
+//     evidence this guard is now safe -- treat it as evidence that a
+//     sweeper judging concurrently-written reference data keeps finding
+//     new ways to be wrong, which is the whole reason it ships disabled.
+//
+// The decision taken after round 3: a sweeper that decides what to delete
+// from reference data assembled concurrently with writes needs either real
+// coordination with those writers (which this package does not have -- the
+// lease in this file coordinates replicas of THIS job with each other, not
+// with publishers/removers/tier-changers) or no delete authority at all.
+// Rather than attempt a fourth guard under time pressure, this stage ships
+// the sweeper disabled by contract (CleanupConfig.Enabled, and
+// config.Config.OrphanCleanupEnabled above it -- both default false with no
+// "unset means on" path; see TestLoad_OrphanCleanupDisabledByDefault) while
+// keeping every guard above intact and keeping the dry-run path
+// (CleanupConfig.DryRun) fully working: an operator can run it, see exactly
+// what it would delete, and compare that against what should be. That
+// dry-run comparison is how this guard will eventually be proven -- or
+// proven insufficient again -- not a decorative flag.
 type OrphanCleanup struct {
 	Store  storage.ObjectStore
 	Config CleanupConfig

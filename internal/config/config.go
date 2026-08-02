@@ -50,9 +50,17 @@ type Config struct {
 	// gated by the cross-replica lease's LastRunAt -- see
 	// internal/lifecycle.OrphanCleanup.
 	OrphanCleanupInterval time.Duration
-	// OrphanCleanupEnabled gates the sweep entirely. Defaults to false: it
-	// is a catalogue-wide data-loss hazard (assessment finding
-	// F2-orphan-cleanup) and must be turned on deliberately.
+	// OrphanCleanupEnabled gates the sweep entirely. Defaults to false, and
+	// that default is a contract, not a placeholder default that will
+	// eventually flip: three independent review rounds each found a
+	// distinct way to defeat internal/lifecycle.OrphanCleanup's
+	// refuse-to-delete guard (see the doc comment on
+	// lifecycle.OrphanCleanup for the specifics), and the third was never
+	// closed by a code fix. Enabling this sweeper is UNSUPPORTED pending a
+	// proven guard -- it may delete committed plugin versions. There is no
+	// combination of the other Orphan* settings below that makes enabling
+	// it safe by itself; see TestLoad_OrphanCleanupDisabledByDefault
+	// (config_test.go), which fails if this default is ever flipped.
 	OrphanCleanupEnabled bool
 	// OrphanCleanupDryRun defaults to true even once Enabled is set, so
 	// turning the job on and trusting it to delete are two separate,
