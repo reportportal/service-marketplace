@@ -286,43 +286,109 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 		}}
 	}
 
-	// AMD-04-duplicate-publish-contract three-branch rule. The amendment
-	// defines "committed" as "referenced by index.json", but index.json
-	// (domain.IndexPlugin) only ever carries a plugin's single latestVersion
-	// pointer — it cannot answer "is version 1.4.3 committed" once a later
-	// version is latest, since it never lists more than one version per
-	// plugin. This codebase instead persists the full per-version history in
-	// plugin.json (domain.PluginState.Versions), which index.json is
-	// regenerated from immediately after on every publish; that field is the
-	// durable, always-consultable record a version was fully written, so it
-	// is what "committed" is checked against here.
+	// AMD-04-duplicate-publish-contract three-branch rule, using the
+	// commit-point definition corrected by docs/decisions/AMD-30-commit-
+	// point-granularity.md (proposed as AMD-30 in requirements/
+	// AMENDMENTS-v1.md; not applied there directly because requirements/ is
+	// untracked outside the primary checkout — see that file for why and
+	// for the exact amendment text to paste in). AMD-04's amendment text as
+	// currently written defines "committed" as "referenced by index.json",
+	// but index.json (domain.IndexPlugin) only ever carries a plugin's
+	// single latestVersion pointer — it cannot answer "is version 1.4.3
+	// committed" once a later version is latest, since it never lists more
+	// than one version per plugin. Read literally, every non-latest version
+	// would permanently lose FR-R-05's immutability guarantee the instant a
+	// newer version publishes. This codebase instead persists the full
+	// per-version history in plugin.json (domain.PluginState.Versions),
+	// checked and committed at or before the point index.json would have
+	// been consulted — never later — so it is the durable, always-
+	// consultable record "committed" is checked against here; see
+	// docs/decisions/AMD-30-commit-point-granularity.md for the full
+	// analysis of what breaks under the literal reading and why this is not
+	// merely a comment-argued deviation.
 	sha := storage.HashSHA256(bundle.JAR)
+	healIdenticalCommit := false
 	for _, v := range st.Versions {
 		if v.Version != m.Version {
 			continue
 		}
 		if v.SHA256 == sha {
-			// Branch 2: committed + identical content -> idempotent 200,
-			// no objects written.
-			return &Result{PluginID: pluginID, Version: m.Version, SHA256: sha}, true, nil
+			// Branch 2: committed + identical content -> idempotent 200, no
+			// objects written -- PROVIDED the artifact this entry claims to
+			// commit actually exists. publish()'s CAS-before-artifacts order
+			// (see its doc comment) makes plugin.json's commit and the
+			// artifact write two separate steps, so a crash in between can
+			// leave a committed entry with no bytes at its path; this is the
+			// one case that fast path must not short-circuit past, or the
+			// version would be unreachable forever (no PublishVersion call
+			// would ever be allowed to write the missing bytes again).
+			artPath := storage.VersionArtifactPath(pluginID, m.Version, string(m.Access))
+			exists, existsErr := s.Store.Exists(ctx, artPath)
+			if existsErr != nil {
+				return nil, false, existsErr
+			}
+			if exists {
+				return &Result{PluginID: pluginID, Version: m.Version, SHA256: sha}, true, nil
+			}
+			healIdenticalCommit = true
+			break
 		}
 		// Branch 3: committed + different content -> 409.
 		return nil, false, ErrVersionConflict
 	}
-	// Branch 1: not committed — proceed and overwrite any orphaned
-	// per-version objects left by an interrupted earlier attempt.
+	// Branch 1 (not committed) or a same-content heal of a committed entry
+	// whose artifact write never completed — either way publish()'s own CAS
+	// re-derives the decision fresh; healIdenticalCommit only changes
+	// whether the caller sees this as the AMD-04 branch-2 idempotent
+	// outcome (still true here — identical content) or a fresh branch-1
+	// write.
 	res, err := s.publish(ctx, m, bundle, operator, false)
-	return res, false, err
+	return res, healIdenticalCommit, err
 }
 
-// publish performs the write-order in §6.4 "Publish atomicity": per-version
-// artifacts, then plugin.json, then index.json regeneration. It is only ever
-// invoked once the caller has already established the target version is NOT
-// committed — PublishFirst for a brand-new or tombstoned id, PublishVersion
-// for auto-create or its own branch-1 (not-committed) case — so every write
-// below is an unconditional upsert: AMD-04-duplicate-publish-contract branch
-// 1 requires overwriting any orphaned per-version objects left by an earlier
-// interrupted attempt, "regardless of byte-equality with the partial state".
+// publish decides AMD-04-duplicate-publish-contract's branch — and, for
+// firstPublish, resurrection/already-exists — via the plugin.json
+// compare-and-swap FIRST, and only then writes the per-version artifacts
+// (jar, manifest, changelog, screenshots), then regenerates index.json.
+//
+// The CAS-before-artifacts order is deliberate and is itself the fix for a
+// finding that survived two rounds: this function used to write the
+// artifact bytes unconditionally, before ever consulting plugin.json, on
+// the theory that the caller had already established the version was not
+// committed. That belief can go stale in the gap between the caller's read
+// and this call — a competing publish can commit the same version, with
+// different content, in between — and a losing attempt's blind artifact
+// overwrite could land AFTER the winner's commit, corrupting the
+// supposedly-immutable bytes even though this same CAS then (correctly)
+// discovered the conflict and returned ErrVersionConflict. Asserting only
+// that error/status code let the bug through review twice; the fix is
+// ordering, not the decision logic, which was already correct. Now: every
+// attempt's decision is re-derived from a fresh read (as before), but a
+// losing attempt returns straight out of the CAS — as ErrVersionConflict,
+// ErrPluginExists, or *RemovedError — before this function has touched a
+// single artifact byte, so there is no window left for its content to land
+// on top of an already-committed version. See
+// TestPublishConcurrentLoserNeverOverwritesWinnersCommittedArtifactBytes.
+//
+// writeArtifacts is set by the CAS callback and tells the caller-side code
+// below whether THIS successful CAS attempt is the one that needs the
+// artifacts (re)written:
+//
+//   - branch 1 (not committed) always sets it — this is the "overwrite any
+//     orphaned per-version objects... regardless of byte-equality with the
+//     partial state" case AMD-04 requires, using upsertObject's blind
+//     overwrite exactly as before, just moved after the commit instead of
+//     before it.
+//   - branch 2 (committed, identical content) leaves it false — AMD-04
+//     "no objects are written" — UNLESS the artifact is physically missing,
+//     which can only happen if a previous attempt's own CAS committed the
+//     version but crashed before finishing its artifact writes; healing
+//     that is safe here specifically because this attempt's SHA-256 is
+//     already confirmed equal to the committed one, so it can never be a
+//     route for different content to slip past branch 3 below.
+//   - branch 3 (committed, different content) and every ErrPluginExists /
+//     *RemovedError path return an error from WriteWithRetry with no
+//     successful write at all, so writeArtifacts is never consulted.
 //
 // firstPublish is true only for PublishFirst's two call sites and carries
 // that route's whole contract into the compare-and-swap loop, re-derived
@@ -355,36 +421,11 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 // now-immutable committed version instead of returning ErrVersionConflict.
 func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundle, operator string, firstPublish bool) (*Result, error) {
 	sha := storage.HashSHA256(bundle.JAR)
-	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))
-	if err := upsertObject(ctx, s.Store, artPath, bundle.JAR); err != nil {
-		return nil, err
-	}
-	manifestBytes, _ := json.MarshalIndent(m, "", "  ")
-	if err := upsertObject(ctx, s.Store, storage.VersionManifestPath(m.ID, m.Version), manifestBytes); err != nil {
-		return nil, err
-	}
-	if len(bundle.Changelog) > 0 {
-		if err := upsertObject(ctx, s.Store, storage.VersionChangelogPath(m.ID, m.Version), bundle.Changelog); err != nil {
-			return nil, err
-		}
-	}
-	names := make([]string, 0, len(bundle.Screenshots))
-	for name := range bundle.Screenshots {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		path, err := storage.VersionScreenshotPath(m.ID, m.Version, name)
-		if err != nil {
-			return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: err.Error()}}}
-		}
-		if err := upsertObject(ctx, s.Store, path, bundle.Screenshots[name]); err != nil {
-			return nil, err
-		}
-	}
-
 	now := time.Now().UTC()
+
+	var writeArtifacts bool
 	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(m.ID), func(data []byte, gen int64) ([]byte, error) {
+		writeArtifacts = false
 		var st domain.PluginState
 		if len(data) > 0 {
 			if err := json.Unmarshal(data, &st); err != nil {
@@ -420,15 +461,17 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			if v.Version != m.Version {
 				continue
 			}
+			found = true
 			if v.SHA256 == sha {
 				// Already committed with byte-identical content — the
 				// caller's own AMD-04 branch-2 fast path normally catches
 				// this before ever calling publish(), so reaching it here
 				// means a retry discovered a competing publish of the
 				// exact same content landed in the gap. Idempotent: keep
-				// the entry, just refresh PublishedAt.
+				// the entry, just refresh PublishedAt. writeArtifacts stays
+				// false; the caller below only writes if the artifact is
+				// actually missing.
 				st.Versions[i].PublishedAt = now
-				found = true
 				break
 			}
 			// Committed with DIFFERENT content: a competing publish won
@@ -440,12 +483,56 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		}
 		if !found {
 			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha})
+			writeArtifacts = true
 		}
 		st.LatestVersion = m.Version
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
 		return nil, err
+	}
+
+	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(m.Access))
+	if !writeArtifacts {
+		// Branch 2 landed: heal a previous attempt's commit whose own
+		// artifact write never completed (e.g. crashed between its CAS
+		// above and its artifact writes below). Only reachable when this
+		// attempt's SHA-256 already matched the committed one, so the bytes
+		// written here can never differ from what's already recorded.
+		exists, existsErr := s.Store.Exists(ctx, artPath)
+		if existsErr != nil {
+			return nil, existsErr
+		}
+		writeArtifacts = !exists
+	}
+
+	if writeArtifacts {
+		if err := upsertObject(ctx, s.Store, artPath, bundle.JAR); err != nil {
+			return nil, err
+		}
+		manifestBytes, _ := json.MarshalIndent(m, "", "  ")
+		if err := upsertObject(ctx, s.Store, storage.VersionManifestPath(m.ID, m.Version), manifestBytes); err != nil {
+			return nil, err
+		}
+		if len(bundle.Changelog) > 0 {
+			if err := upsertObject(ctx, s.Store, storage.VersionChangelogPath(m.ID, m.Version), bundle.Changelog); err != nil {
+				return nil, err
+			}
+		}
+		names := make([]string, 0, len(bundle.Screenshots))
+		for name := range bundle.Screenshots {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			path, err := storage.VersionScreenshotPath(m.ID, m.Version, name)
+			if err != nil {
+				return nil, ValidationErrors{Errors: []domain.ValidationError{{Field: "screenshots", Message: err.Error()}}}
+			}
+			if err := upsertObject(ctx, s.Store, path, bundle.Screenshots[name]); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	err = s.rebuildIndex(ctx)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -155,19 +154,29 @@ func TestPublishVersionDifferentContentReturns409VersionAlreadyPublished(t *test
 	}
 }
 
-// TestPublishVersionNotCommittedRetryOverwritesOrphanedArtifact is the
-// regression test for AMD-04 branch 1: a version whose publish was
-// interrupted before plugin.json committed it leaves an orphaned artifact
-// that a retry must overwrite, "regardless of byte-equality with the
-// partial state" — even when the retry's bytes differ from the failed
-// attempt's.
+// TestPublishVersionNotCommittedRetryAfterFailedCASLeavesNothingBehind is the
+// regression test for AMD-04 branch 1 under the CAS-before-artifacts order
+// (see publish()'s doc comment): a publish attempt whose plugin.json CAS
+// itself fails must not have written any artifact bytes either — the CAS is
+// now the first thing publish() does, precisely so a losing/interrupted
+// attempt can never leave bytes behind for a later, unrelated retry to
+// either trust or need to overwrite. A subsequent retry with completely
+// different content then succeeds cleanly against untouched state.
 //
-// Mutation that makes this fail: restoring the old create-only
-// Write(path, data, 0) for the jar (which silently swallowed
-// storage.ErrConflict and kept the orphaned bytes instead of overwriting)
-// makes the final assertion fail: the stored artifact's SHA-256 stays
-// jarA's instead of becoming jarB's.
-func TestPublishVersionNotCommittedRetryOverwritesOrphanedArtifact(t *testing.T) {
+// This supersedes the pre-fix "retry overwrites an orphaned artifact" test:
+// under the old artifacts-before-plugin.json order, an interrupted attempt
+// legitimately could leave an orphaned artifact for a retry to blindly
+// overwrite (upsertObject still does that — see
+// TestPublishVersionHealsMissingArtifactAfterInterruptedArtifactWrite for
+// the case that still exercises it), but a plugin.json-CAS failure
+// specifically can no longer produce that state, because nothing is written
+// before that CAS succeeds.
+//
+// Mutation that makes this fail: writing the artifact before attempting the
+// plugin.json CAS (i.e. reverting the BLOCKING fix) makes the "nothing was
+// written" precondition assertion below fail — the orphaned 2.0.0 artifact
+// would exist after the injected plugin.json failure.
+func TestPublishVersionNotCommittedRetryAfterFailedCASLeavesNothingBehind(t *testing.T) {
 	ctx := context.Background()
 	backing := newLocalStore(t)
 	fs := storagetest.Wrap(backing)
@@ -197,8 +206,8 @@ func TestPublishVersionNotCommittedRetryOverwritesOrphanedArtifact(t *testing.T)
 	}
 
 	artPath := storage.VersionArtifactPath(base.ID, "2.0.0", string(domain.AccessPublic))
-	if ok, _ := backing.Exists(ctx, artPath); !ok {
-		t.Fatalf("test precondition: the orphaned 2.0.0 artifact should exist after the interrupted attempt")
+	if ok, _ := backing.Exists(ctx, artPath); ok {
+		t.Fatalf("the 2.0.0 artifact must not exist: publish() failed at the plugin.json CAS, before ever writing artifact bytes")
 	}
 	stObj, err := backing.Read(ctx, storage.PluginStatePath(base.ID))
 	if err != nil {
@@ -238,10 +247,78 @@ func TestPublishVersionNotCommittedRetryOverwritesOrphanedArtifact(t *testing.T)
 
 	artObj, err := backing.Read(ctx, artPath)
 	if err != nil {
-		t.Fatalf("read overwritten artifact: %v", err)
+		t.Fatalf("read written artifact: %v", err)
 	}
 	if got := storage.HashSHA256(artObj.Data); got != wantSHA {
-		t.Fatalf("stored artifact bytes were not overwritten by the retry: got sha %q, want %q (attempt A's orphaned bytes were kept)", got, wantSHA)
+		t.Fatalf("stored artifact bytes = %q, want %q (retry content)", got, wantSHA)
+	}
+}
+
+// TestPublishVersionHealsMissingArtifactAfterInterruptedArtifactWrite is the
+// regression test for the "healing" branch publish() takes when its
+// plugin.json CAS lands (committing a version+SHA-256) but the artifact
+// write that's supposed to follow never completes — the one legitimate way,
+// under the CAS-before-artifacts order, for a committed version to
+// (temporarily) have no bytes at its artifact path. A same-content republish
+// must still succeed and actually write the missing bytes, exactly as
+// AMD-04 branch 1's "idempotent retry of an interrupted publish... overwrite
+// any orphaned per-version objects" intends — upsertObject's blind overwrite
+// (see its doc comment) is still what performs the write, just reached via
+// the healing path instead of the fresh-commit path.
+//
+// Mutation that makes this fail: making publish() trust a plain "SHA-256
+// already matches" branch-2 result without checking whether the artifact
+// object actually exists leaves the committed version permanently
+// unreachable — no download would ever serve a jar for it again, and this
+// test's final read of the artifact would return storage.ErrNotFound.
+func TestPublishVersionHealsMissingArtifactAfterInterruptedArtifactWrite(t *testing.T) {
+	ctx := context.Background()
+	backing := newLocalStore(t)
+	svc := newTestService(t, backing)
+
+	m := testManifest("plugin-demo", "2.0.0")
+	jar, err := BuildTestJAR(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := storage.HashSHA256(jar)
+
+	// Simulate a crash between publish()'s plugin.json CAS committing 2.0.0
+	// and its own subsequent artifact writes: plugin.json records the
+	// version, but no bytes exist at the artifact path yet.
+	st := domain.PluginState{
+		ID: m.ID, Tier: domain.TierOfficial, LatestVersion: m.Version,
+		Versions: []domain.VersionMeta{{Version: m.Version, PublishedAt: time.Now().UTC(), SHA256: sha}},
+	}
+	body, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backing.Write(ctx, storage.PluginStatePath(m.ID), body, 0); err != nil {
+		t.Fatalf("seed committed-but-artifactless plugin.json: %v", err)
+	}
+	artPath := storage.VersionArtifactPath(m.ID, m.Version, string(domain.AccessPublic))
+	if ok, _ := backing.Exists(ctx, artPath); ok {
+		t.Fatalf("test precondition: artifact must not exist yet")
+	}
+
+	res, idempotent, err := svc.PublishVersion(ctx, m.ID, &Bundle{JAR: jar, JARFilename: "p.jar"}, "operator", false)
+	if err != nil {
+		t.Fatalf("healing republish (identical content): %v", err)
+	}
+	if !idempotent {
+		t.Fatalf("idempotent = false, want true: SHA-256 already matched the committed one")
+	}
+	if res.SHA256 != sha {
+		t.Fatalf("SHA256 = %q, want %q", res.SHA256, sha)
+	}
+
+	artObj, err := backing.Read(ctx, artPath)
+	if err != nil {
+		t.Fatalf("read healed artifact: %v", err)
+	}
+	if got := storage.HashSHA256(artObj.Data); got != sha {
+		t.Fatalf("healed artifact SHA-256 = %q, want %q", got, sha)
 	}
 }
 
@@ -366,6 +443,106 @@ func TestPublishVersionConcurrentSameVersionCommitMidPublishReturnsConflict(t *t
 	}
 	if !found {
 		t.Fatalf("plugin.json must still record the winner's committed 2.0.0 version")
+	}
+}
+
+// TestPublishConcurrentLoserNeverOverwritesWinnersCommittedArtifactBytes is
+// the regression test for the BLOCKING finding: publish() wrote the version
+// artifact (and manifest/changelog/screenshots) BEFORE the plugin.json
+// compare-and-swap that decides which AMD-04 branch applies. The CAS
+// correctly re-derives the decision from a fresh read (see
+// TestPublishVersionConcurrentSameVersionCommitMidPublishReturnsConflict),
+// but by the time it runs the bytes may already be overwritten — a losing
+// publisher's blind artifact write can land AFTER a winning publisher has
+// already committed a different SHA-256 for the same version, corrupting
+// the supposedly-immutable bytes even though the loser's own CAS attempt
+// then (correctly) discovers the conflict and returns 409/ErrVersionConflict.
+// The 409 was never the problem; the bytes were.
+//
+// This calls the unexported publish() directly (same package) with a
+// "loser" bundle for a version the "winner" has already fully, genuinely
+// committed — modelling exactly what PublishVersion's outer pre-check (a
+// plain Read taken once, before publish() is even invoked) cannot prevent
+// by itself: publish() being entered with a "not committed" belief that is
+// already stale.
+//
+// This is deliberately NOT built on the existing versionRaceStore hook
+// (see TestPublishVersionConcurrentSameVersionCommitMidPublishReturnsConflict):
+// that hook only fires the winner once the loser's own first write to
+// plugin.json fails, which — under the pre-fix code, where the artifact
+// write happens unconditionally before that CAS is ever attempted — is
+// always chronologically AFTER the loser has already written its own
+// artifact bytes. The winner's own later, equally unconditional artifact
+// write then papers over the corruption by writing last, which is exactly
+// how this bug survived two rounds of review that asserted only the status
+// code. Constructing the sequence the other way around — winner commits
+// completely first, loser's publish() call lands second — is what actually
+// exercises the corrupting order.
+//
+// Mutation that makes this fail: reordering publish() back to writing
+// artifacts before the plugin.json CAS (i.e. reverting this fix) makes the
+// artifact-bytes assertion below fail — the stored jar and manifest end up
+// holding the loser's bytes even though err is still (correctly)
+// ErrVersionConflict.
+func TestPublishConcurrentLoserNeverOverwritesWinnersCommittedArtifactBytes(t *testing.T) {
+	ctx := context.Background()
+	backing := newLocalStore(t)
+	svc := newTestService(t, backing)
+
+	base := testManifest("plugin-demo", "1.0.0")
+	jar0, err := BuildTestJAR(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.PublishFirst(ctx, &Bundle{JAR: jar0, JARFilename: "p.jar"}, "operator"); err != nil {
+		t.Fatalf("seed PublishFirst: %v", err)
+	}
+
+	mWinner := testManifest("plugin-demo", "2.0.0")
+	mWinner.Description = "winner content, committed first"
+	jarWinner, err := BuildTestJAR(mWinner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := svc.PublishVersion(ctx, base.ID, &Bundle{JAR: jarWinner, JARFilename: "p.jar"}, "ci", false); err != nil {
+		t.Fatalf("winner publish: %v", err)
+	}
+
+	mLoser := testManifest("plugin-demo", "2.0.0")
+	mLoser.Description = "loser content, decided 'not committed' before the winner landed"
+	jarLoser, err := BuildTestJAR(mLoser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storage.HashSHA256(jarWinner) == storage.HashSHA256(jarLoser) {
+		t.Fatalf("test fixture bug: jarWinner and jarLoser hash the same")
+	}
+
+	_, err = svc.publish(ctx, mLoser, &Bundle{JAR: jarLoser, JARFilename: "p.jar"}, "operator", false)
+	if !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("losing publish() = %v, want ErrVersionConflict", err)
+	}
+
+	artPath := storage.VersionArtifactPath(base.ID, "2.0.0", string(domain.AccessPublic))
+	artObj, err := backing.Read(ctx, artPath)
+	if err != nil {
+		t.Fatalf("read artifact after the race: %v", err)
+	}
+	wantSHA := storage.HashSHA256(jarWinner)
+	if got := storage.HashSHA256(artObj.Data); got != wantSHA {
+		t.Fatalf("stored artifact SHA-256 = %q, want winner's %q — the losing publish()'s blind overwrite corrupted the already-committed version's bytes", got, wantSHA)
+	}
+
+	manObj, err := backing.Read(ctx, storage.VersionManifestPath(base.ID, "2.0.0"))
+	if err != nil {
+		t.Fatalf("read manifest after the race: %v", err)
+	}
+	var gotManifest domain.Manifest
+	if err := json.Unmarshal(manObj.Data, &gotManifest); err != nil {
+		t.Fatal(err)
+	}
+	if gotManifest.Description != mWinner.Description {
+		t.Fatalf("stored manifest description = %q, want winner's %q — the losing publish() overwrote the committed manifest too", gotManifest.Description, mWinner.Description)
 	}
 }
 
@@ -550,42 +727,53 @@ func TestPublishFirstResurrectsTombstonedPlugin(t *testing.T) {
 	}
 }
 
-// midPublishRemover wraps a real store and, the moment the first jar object
-// is written, injects a concurrent tombstone commit into plugin.json —
-// modelling lifecycle.Service.RemovePlugin racing in between PublishVersion's
-// own top-level Removed check and publish()'s plugin.json compare-and-swap.
+// midPublishRemover wraps a real store and, on the SECOND read of
+// pluginID's plugin.json, injects a concurrent tombstone commit before
+// returning that read's result — modelling lifecycle.Service.RemovePlugin
+// racing in exactly the window between PublishVersion's own top-level
+// Removed check (the first read) and publish()'s plugin.json
+// compare-and-swap, whose own initial read (via storage.WriteWithRetry) is
+// the second. Under the CAS-before-artifacts order (see publish()'s doc
+// comment), that CAS read is now the very first storage operation
+// publish() performs, so "the second read of plugin.json" is precisely the
+// seam this test needs to hit; hooking the jar write (as a pre-reorder
+// version of this fixture did) would fire far too late, after artifact
+// writes no longer happen before the CAS at all.
 type midPublishRemover struct {
 	storage.ObjectStore
 	t        *testing.T
 	pluginID string
+	reads    int
 	fired    bool
 }
 
-func (m *midPublishRemover) Write(ctx context.Context, objectPath string, data []byte, expectedGen int64) (int64, error) {
-	n, err := m.ObjectStore.Write(ctx, objectPath, data, expectedGen)
-	if err == nil && !m.fired && strings.HasSuffix(objectPath, ".jar") {
-		m.fired = true
-		obj, rerr := m.ObjectStore.Read(ctx, storage.PluginStatePath(m.pluginID))
-		if rerr != nil {
-			m.t.Fatalf("midPublishRemover: read plugin.json: %v", rerr)
-		}
-		var st domain.PluginState
-		if uerr := json.Unmarshal(obj.Data, &st); uerr != nil {
-			m.t.Fatalf("midPublishRemover: unmarshal plugin.json: %v", uerr)
-		}
-		now := time.Now().UTC()
-		st.Removed = &now
-		st.RemovalReason = "raced removal"
-		st.RemovedBy = "operator@example.com"
-		body, merr := json.MarshalIndent(st, "", "  ")
-		if merr != nil {
-			m.t.Fatalf("midPublishRemover: marshal: %v", merr)
-		}
-		if _, werr := m.ObjectStore.Write(ctx, storage.PluginStatePath(m.pluginID), body, obj.Generation); werr != nil {
-			m.t.Fatalf("midPublishRemover: write tombstone: %v", werr)
+func (m *midPublishRemover) Read(ctx context.Context, objectPath string) (*storage.Object, error) {
+	if objectPath == storage.PluginStatePath(m.pluginID) {
+		m.reads++
+		if m.reads == 2 && !m.fired {
+			m.fired = true
+			obj, rerr := m.ObjectStore.Read(ctx, objectPath)
+			if rerr != nil {
+				m.t.Fatalf("midPublishRemover: read plugin.json: %v", rerr)
+			}
+			var st domain.PluginState
+			if uerr := json.Unmarshal(obj.Data, &st); uerr != nil {
+				m.t.Fatalf("midPublishRemover: unmarshal plugin.json: %v", uerr)
+			}
+			now := time.Now().UTC()
+			st.Removed = &now
+			st.RemovalReason = "raced removal"
+			st.RemovedBy = "operator@example.com"
+			body, merr := json.MarshalIndent(st, "", "  ")
+			if merr != nil {
+				m.t.Fatalf("midPublishRemover: marshal: %v", merr)
+			}
+			if _, werr := m.ObjectStore.Write(ctx, objectPath, body, obj.Generation); werr != nil {
+				m.t.Fatalf("midPublishRemover: write tombstone: %v", werr)
+			}
 		}
 	}
-	return n, err
+	return m.ObjectStore.Read(ctx, objectPath)
 }
 
 // TestPublishVersionObservesRemovalThatCommitsMidPublish is the regression
