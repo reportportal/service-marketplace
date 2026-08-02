@@ -1,8 +1,8 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
-	"path"
 	"strings"
 
 	"github.com/reportportal/service-marketplace/internal/storage"
@@ -64,6 +64,42 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 // deliberate behaviour — if a future change enforces completeness here too,
 // that test's failure is the signal to update this comment, not evidence of
 // a regression.
+//
+// Point 4 (byte-serving cost on non-local backends): registering /cdn/*
+// unconditionally (see routes()) is what makes signed-URL enforcement
+// backend-independent — GCS deployments now get the exact same auth/
+// rejection, private/-requires-signature, and signature-verification
+// guarantees a local deployment always had, instead of relying on bucket
+// ACLs to do the equivalent job out of band. That is a real gain and is not
+// being given up here.
+//
+// But it also means a GCS deployment's highest-volume path — a public jar
+// download with no signature attached at all — would otherwise be fully
+// buffered into this process's heap (storage.ObjectStore.Read returns
+// []byte; GCSStore.Read does an io.ReadAll under the hood) and re-served
+// byte-for-byte, something GCS deployments never paid for before (the
+// public bucket/CDN served those bytes directly). Streaming instead of
+// buffering would fix that too, but it would mean changing
+// storage.ObjectStore.Read's signature (internal/storage/store.go) and
+// GCSStore.Read (internal/storage/gcs.go) — both outside this file's
+// ownership for this change, and a large enough interface change to ripple
+// through internal/publish, internal/catalogue, internal/lifecycle and
+// internal/license, none of which this change touches otherwise.
+//
+// The alternative actually taken: keep /cdn/* registered unconditionally
+// (so nothing that needs THIS handler's enforcement — auth/ objects,
+// private/ objects, or any request that presents a signature at all, on any
+// backend — ever skips it) but hand a plain, unsigned request for a public
+// object straight to the backend's own public origin instead of reading it
+// through this process, whenever that origin is something other than this
+// same /cdn route. s.deps.LocalStore == nil is exactly that signal: it is
+// nil if and only if this deployment is not LocalStore (see routes()' and
+// cmd/marketplace/main.go's STORAGE_TYPE wiring) — and LocalStore.PublicURL
+// deliberately points right back into this same /cdn/* route, so this
+// shortcut is naturally a no-op for local deployments (skipped entirely:
+// the condition is false) rather than a redirect loop. See
+// TestHandleCDNProxyPublicObjectRedirectsOnNonLocalBackend and
+// TestHandleCDNProxyLocalStorePublicObjectIsServedDirectly.
 func (s *Server) handleCDNProxy(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimPrefix(r.URL.Path, "/cdn/")
 	raw = strings.TrimPrefix(raw, "/")
@@ -73,22 +109,32 @@ func (s *Server) handleCDNProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	// Canonicalize before any authorization decision. storage.IsAuthObject
 	// and storage.IsPrivateObject must see exactly the path that will
-	// actually be read, not a pre-traversal-collapse alias of it — a
-	// request for "x/../auth/authorized_keys.json" has a raw prefix of
-	// "x/", so a naive IsAuthObject(raw) check never sees "auth/" at all,
-	// even though the object that ends up being read, once the storage
-	// layer resolves "..", is exactly the protected
-	// "auth/authorized_keys.json". path.Clean here, applied BEFORE the
-	// guard checks and used for the guard checks, the signature check and
-	// the read alike, closes that: every one of those four steps now judges
-	// the same canonical string. See
-	// TestHandleCDNProxyGuardCannotBeWalkedAroundByTraversal.
-	objectPath := path.Clean("/" + raw)
-	if objectPath == "/" {
-		http.NotFound(w, r)
+	// actually be read, not a pre-traversal-collapse or pre-case-alias
+	// spelling of it. See storage.CanonicalizeObjectPath's doc comment for
+	// the full reasoning (both the ".." traversal case and the case-alias
+	// case belong to the same class of bug: a string that fails a
+	// case-sensitive/exact-prefix guard but still resolves, once the
+	// storage layer gets hold of it, to the exact protected bytes). Every
+	// downstream step — the guard checks, the signature check and the read
+	// — judges this one canonicalized string, never r.URL.Path or raw
+	// directly.
+	objectPath, err := storage.CanonicalizeObjectPath(raw)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		// storage.ErrReservedNamespaceAlias: raw is a case alias of a
+		// reserved namespace (e.g. "Auth/...", "PRIVATE/..."). Nothing in
+		// this system ever legitimately produces or requests one of these,
+		// so it gets exactly the same response a direct hit on the
+		// namespace does — never a 404, which would (a) suggest the alias
+		// was merely a wrong path rather than a rejected one, and (b) still
+		// leave open the directory-existence oracle this same rejection
+		// closes for the bare-root case (see hasReservedPrefix's comment).
+		writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Object is not publicly accessible"})
 		return
 	}
-	objectPath = strings.TrimPrefix(objectPath, "/")
 
 	// Never expose entitlement / session denylist objects via CDN.
 	if storage.IsAuthObject(objectPath) {
@@ -97,18 +143,26 @@ func (s *Server) handleCDNProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	exp := r.URL.Query().Get("exp")
 	sig := r.URL.Query().Get("sig")
+	private := storage.IsPrivateObject(objectPath)
 	// Private (premium) objects always require a valid signed URL.
-	if storage.IsPrivateObject(objectPath) {
+	if private {
 		if exp == "" || sig == "" || !s.deps.Store.VerifySignedURL(objectPath, exp, sig) {
 			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid signed URL"})
 			return
 		}
 	} else if exp != "" || sig != "" {
 		// If a signature is presented for a public object, it must be valid.
-		if exp == "" || sig == "" || !s.deps.Store.VerifySignedURL(objectPath, exp, sig) {
+		if !s.deps.Store.VerifySignedURL(objectPath, exp, sig) {
 			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid signed URL"})
 			return
 		}
+	} else if s.deps.LocalStore == nil {
+		// Public object, no signature presented, and this deployment's
+		// public origin is not this same /cdn route (see the doc comment
+		// above): hand the client straight to it instead of buffering the
+		// whole object into this process just to re-serve it.
+		http.Redirect(w, r, s.deps.Store.PublicURL(objectPath), http.StatusFound)
+		return
 	}
 	obj, err := s.deps.Store.Read(r.Context(), objectPath)
 	if err != nil {

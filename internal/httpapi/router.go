@@ -60,11 +60,16 @@ func (s *Server) routes() chi.Router {
 	r.Get("/health", s.handleHealth)
 	r.Get("/ready", s.handleReady)
 
-	// /cdn/* is registered unconditionally: handleCDNProxy reads through the
-	// generic storage.ObjectStore (Deps.Store), not the local-filesystem-only
-	// Deps.LocalStore, so signed-URL verification and byte-serving behave
-	// identically whichever backend (local or GCS) the deployment is
-	// configured with. See handleCDNProxy's doc comment.
+	// /cdn/* is registered unconditionally: handleCDNProxy enforces every
+	// auth/private guard and verifies every signature through the generic
+	// storage.ObjectStore (Deps.Store), never bypassing it for
+	// Deps.LocalStore, so those guarantees behave identically whichever
+	// backend (local or GCS) the deployment is configured with.
+	// Deps.LocalStore is still consulted for exactly one, non-authorization
+	// decision — whether a plain, unsigned request for a public object can
+	// be redirected to the backend's own public origin instead of being
+	// buffered through this process, which is only sound when that origin
+	// is not this same /cdn route (see handleCDNProxy's doc comment).
 	r.Get("/cdn/*", s.handleCDNProxy)
 
 	r.Route("/api/v1", func(api chi.Router) {
