@@ -181,13 +181,33 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, catalogue.TombstoneFromState(st))
 		return
 	}
-	for _, bv := range st.BlockedVersions {
-		if bv.Version == version {
-			track("public", analytics.ResultBlocked)
-			writeJSON(w, http.StatusForbidden, BlockedArtifactErrorResponse{
-				Blocked: true, BlockedAt: bv.BlockedAt, Reason: bv.Reason,
-			})
-			return
+	// The blocked branch may only answer for a version that exists as far as a
+	// client is concerned. st.Versions arrives already filtered to complete
+	// versions by catalogue.Service.loadPlugin, whereas st.BlockedVersions is
+	// deliberately never filtered (blocking is a separate axis from
+	// completeness). An operator CAN block a committed-but-incomplete version --
+	// lifecycle.BlockVersion validates against its own unfiltered read of
+	// plugin.json -- and without this guard that version would answer
+	// 403-with-reason here while the version list omitted it and its detail
+	// 404'd: a contradiction that also confirms the existence of a version the
+	// rest of the API denies. "Does not exist" wins over "exists but is
+	// un-installable"; falling through leaves GetVersion below to 404 it.
+	versionVisible := false
+	for _, v := range st.Versions {
+		if v.Version == version {
+			versionVisible = true
+			break
+		}
+	}
+	if versionVisible {
+		for _, bv := range st.BlockedVersions {
+			if bv.Version == version {
+				track("public", analytics.ResultBlocked)
+				writeJSON(w, http.StatusForbidden, BlockedArtifactErrorResponse{
+					Blocked: true, BlockedAt: bv.BlockedAt, Reason: bv.Reason,
+				})
+				return
+			}
 		}
 	}
 	detail, _, err := s.deps.Catalogue.GetVersion(r.Context(), pluginID, version)

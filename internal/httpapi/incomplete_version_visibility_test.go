@@ -512,3 +512,109 @@ func TestGetArtifact_BlockedCompleteVersion_Stays403NotDemotedTo404(t *testing.T
 		}
 	})
 }
+
+// TestGetArtifact_BlockedAndIncompleteVersion_404sLikeEveryOtherPath closes the
+// last residual disagreement in this family, found by review. handleGetArtifact
+// consults st.BlockedVersions BEFORE asking the catalogue whether the version
+// exists at all. BlockedVersions is deliberately never touched by loadPlugin's
+// completeness filter (blocking is a separate axis -- see
+// TestGetArtifact_BlockedCompleteVersion_Stays403NotDemotedTo404), so for a
+// version that is BOTH incomplete AND blocked the 403 branch fired for a
+// version every other read path reports as non-existent.
+//
+// The state is genuinely reachable, not theoretical: lifecycle.BlockVersion
+// validates the version against its own UNFILTERED read of plugin.json, so an
+// operator can successfully block a committed-but-incomplete version.
+//
+// The rule this branch enforces is that such a version does not exist to a
+// client, and "does not exist" must win over "exists but is un-installable":
+// 403-with-reason otherwise both contradicts the 404s and confirms the
+// existence of a version the rest of the API denies.
+//
+// Mutation this kills: removing the st.Versions membership guard in front of
+// handleGetArtifact's BlockedVersions loop restores the 403 and fails this test.
+func TestGetArtifact_BlockedAndIncompleteVersion_404sLikeEveryOtherPath(t *testing.T) {
+	e := newTestEnv(t)
+	const pluginID = "plugin-blocked-incomplete-http"
+
+	// v1.0.0: a clean publish, so the plugin itself exists and is listable.
+	m1 := incompleteVisTestManifest(pluginID, "1.0.0")
+	body1, ct1 := buildPublishMultipart(t, mustBuildJAR(t, m1))
+	if rec := e.do(e.newRequest(http.MethodPost, "/api/v1/plugins", credOperatorSession, body1, ct1)); rec.Code != http.StatusCreated {
+		t.Fatalf("seed publish of 1.0.0: expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// v2.0.0: artifacts land, the completion-marker CAS crashes.
+	m2 := incompleteVisTestManifest(pluginID, "2.0.0")
+	fs := storagetest.Wrap(e.Store)
+	cs := &nthPluginStateWriteFailer{
+		FaultStore:      fs,
+		pluginStatePath: storage.PluginStatePath(pluginID),
+		n:               2,
+		err:             errors.New("simulated crash during completion-marker write"),
+	}
+	body2, ct2 := buildPublishMultipart(t, mustBuildJAR(t, m2))
+	req2 := e.newRequest(http.MethodPost, "/api/v1/plugins/"+pluginID+"/versions", credOperatorSession, body2, ct2)
+	if rec := doOn(e.serverWithFaultedLifecycle(cs), req2); rec.Code == http.StatusCreated || rec.Code == http.StatusOK {
+		t.Fatalf("expected the injected completion-marker failure to surface as an error status, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Precondition: 2.0.0 is committed-but-incomplete, and its jar really is on
+	// disk -- so a 403 here would be pointing at bytes that exist.
+	stObj, err := e.Store.Read(context.Background(), storage.PluginStatePath(pluginID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st domain.PluginState
+	if err := json.Unmarshal(stObj.Data, &st); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range st.Versions {
+		if v.Version == "2.0.0" {
+			found = true
+			if domain.IsVersionComplete(v) {
+				t.Fatalf("test precondition violated: 2.0.0 must not be Complete after the injected crash")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("test precondition violated: 2.0.0 must be committed to plugin.json, got %+v", st.Versions)
+	}
+
+	clean := e.serverWithFaultedLifecycle(e.Store)
+
+	// An operator blocks the invisible version. This is expected to succeed --
+	// BlockVersion reads the unfiltered document -- and is what creates the state.
+	recBlock := doOn(clean, e.newRequest(http.MethodPost, "/api/v1/plugins/"+pluginID+"/versions/2.0.0/block",
+		credOperatorSession, []byte(`{"reason":"cve-test"}`), "application/json"))
+	if recBlock.Code != http.StatusOK {
+		t.Fatalf("test precondition: blocking the incomplete version must succeed to reach this state, got %d body=%s",
+			recBlock.Code, recBlock.Body.String())
+	}
+
+	t.Run("artifact 404s rather than 403-blocked", func(t *testing.T) {
+		req := e.newRequest(http.MethodGet, "/api/v1/plugins/"+pluginID+"/versions/2.0.0/artifact", credNone, nil, "")
+		rec := doOn(clean, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 -- an incomplete version must not exist to a client, "+
+				"and 403-blocked both contradicts the detail/list 404s and confirms it exists: body=%s",
+				rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("detail and list agree it does not exist", func(t *testing.T) {
+		rec := doOn(clean, e.newRequest(http.MethodGet, "/api/v1/plugins/"+pluginID+"/versions/2.0.0", credNone, nil, ""))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("detail status = %d, want 404: body=%s", rec.Code, rec.Body.String())
+		}
+		recList := doOn(clean, e.newRequest(http.MethodGet, "/api/v1/plugins/"+pluginID+"/versions", credNone, nil, ""))
+		var out PluginVersionListResponse
+		if err := json.Unmarshal(recList.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(out.Versions) != 1 || out.Versions[0].Version != "1.0.0" {
+			t.Fatalf("versions = %+v, want exactly [1.0.0]", out.Versions)
+		}
+	})
+}
