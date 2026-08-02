@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -150,6 +152,18 @@ func (s *LocalStore) Read(ctx context.Context, objectPath string) (*Object, erro
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		// An object store has no notion of a directory, so a key that
+		// happens to name one on this filesystem simply holds no object:
+		// EISDIR is "absent", not "broken". Likewise EINVAL, which a key
+		// containing bytes the syscall layer rejects (an embedded NUL)
+		// produces. Passing these through as generic errors made callers
+		// answer an unauthenticated 500 for a key that resolves to an
+		// existing directory while returning 404 for an absent one --
+		// a directory-existence oracle, and a free 5xx generator. Mapping
+		// them here fixes every caller at once rather than per guard.
+		if errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.EINVAL) {
 			return nil, ErrNotFound
 		}
 		return nil, err

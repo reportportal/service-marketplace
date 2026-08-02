@@ -343,44 +343,14 @@ func TestHandleCDNProxyRegisteredRegardlessOfBackend(t *testing.T) {
 	}
 }
 
-// TestHandleCDNProxyPublicObjectRedirectsOnNonLocalBackend pins point 4's
-// resolution: a plain, unsigned request for a PUBLIC object against a
-// non-LocalStore backend (Deps.LocalStore == nil, exactly what a GCS
-// deployment wires) is redirected to that backend's own PublicURL instead
-// of being buffered into this process and re-served — see handleCDNProxy's
-// doc comment. Mutating that branch away (e.g. always falling through to
-// the buffered read) would still return 200 with correct bytes, not fail
-// this test on content — so this test pins the redirect response itself,
-// not just "some successful response".
-func TestHandleCDNProxyPublicObjectRedirectsOnNonLocalBackend(t *testing.T) {
-	env := newTestEnv(t)
-	backend := newFakeObjectStore()
-	backend.objects["index.json"] = []byte(`{"plugins":[]}`)
-
-	d := env.Server.deps
-	d.Store = backend
-	d.LocalStore = nil
-	srv := NewServer(d)
-
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/cdn/index.json", nil))
-
-	if rec.Code != http.StatusFound {
-		t.Fatalf("expected 302 redirect to the backend's public URL, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if got, want := rec.Header().Get("Location"), backend.PublicURL("index.json"); got != want {
-		t.Fatalf("Location = %q, want %q", got, want)
-	}
-}
-
-// TestHandleCDNProxyLocalStorePublicObjectIsServedDirectly proves the
-// non-local-backend redirect shortcut above is a no-op for LocalStore
-// deployments specifically, not merely "conditioned on LocalStore != nil and
-// happens to also work": LocalStore.PublicURL points right back into this
-// same /cdn/* route (cdnBase + "/" + CDNPath(objectPath)), so if the
-// redirect condition were ever accidentally satisfied for a LocalStore
-// deployment (e.g. the LocalStore == nil check were dropped or inverted),
-// this would 302-loop instead of ever returning bytes.
+// TestHandleCDNProxyLocalStorePublicObjectIsServedDirectly pins that a
+// public object is served from this route with its bytes, not handed off
+// anywhere. Together with
+// TestHandleCDNProxy_PublicObjectOnNonLocalBackend_DoesNotRedirectToItself
+// it covers both backend shapes: neither may answer a public, unsigned
+// request with a redirect, because every backend's PublicURL is
+// cdnBase + "/" + CDNPath(objectPath) and cdnBase is this service's own
+// /cdn route — so any such redirect is a loop.
 func TestHandleCDNProxyLocalStorePublicObjectIsServedDirectly(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
@@ -523,13 +493,25 @@ type fakeObjectStore struct {
 	objects map[string][]byte
 	secret  string
 	now     func() time.Time
+	// base overrides the public origin. It exists because the DEFAULT here
+	// ("http://fake-cdn.test/cdn") is a different host from the service under
+	// test, which is NOT production's shape: main.go hands the same
+	// CDN_BASE_URL to the store and to this service's own /cdn route, so a
+	// real backend's PublicURL points straight back here. A test that wants
+	// to observe that must say so explicitly.
+	base string
 }
 
 func newFakeObjectStore() *fakeObjectStore {
 	return &fakeObjectStore{objects: map[string][]byte{}, secret: "fake-store-signing-secret"}
 }
 
-func (f *fakeObjectStore) cdnBase() string { return "http://fake-cdn.test/cdn" }
+func (f *fakeObjectStore) cdnBase() string {
+	if f.base != "" {
+		return f.base
+	}
+	return "http://fake-cdn.test/cdn"
+}
 
 func (f *fakeObjectStore) clock() time.Time {
 	if f.now != nil {
@@ -594,3 +576,99 @@ func (f *fakeObjectStore) VerifySignedURL(objectPath, exp, sig string) bool {
 
 func (f *fakeObjectStore) Ready(ctx context.Context) error { return nil }
 func (f *fakeObjectStore) Type() string                    { return "fake" }
+
+// TestHandleCDNProxy_PublicObjectOnNonLocalBackend_DoesNotRedirectToItself
+// pins the invariant that the "hand the client to the backend's own public
+// origin" shortcut violated: whatever this route does with a plain, unsigned
+// request for a public object, it must not answer with a redirect back to
+// the URL that was just requested.
+//
+// Production shape, which the pre-existing redirect test missed by using a
+// cosmetically different host for the double: cmd/marketplace/main.go passes
+// the SAME cfg.CDNBaseURL to the store constructor and leaves this service
+// serving /cdn, and CDN_BASE_URL defaults to "http://localhost:8080/cdn"
+// (charts ship "http://marketplace.local/cdn"). Both LocalStore.PublicURL
+// and GCSStore.PublicURL are cdnBase + "/" + CDNPath(objectPath), so on a
+// GCS deployment the backend's "public origin" IS this same route, and
+// redirecting to it loops until the client gives up.
+//
+// Asserting Location != the request URL is the point: comparing Location to
+// backend.PublicURL(...) is a tautology that holds for every possible
+// PublicURL implementation, including the self-referential one both real
+// backends have.
+//
+// Mutation this kills: reinstating the `else if s.deps.LocalStore == nil`
+// redirect shortcut in handleCDNProxy.
+func TestHandleCDNProxy_PublicObjectOnNonLocalBackend_DoesNotRedirectToItself(t *testing.T) {
+	env := newTestEnv(t)
+	backend := newFakeObjectStore()
+	// Production shape: the store's public origin is this service's own /cdn.
+	backend.base = "http://localhost:8080/cdn"
+	backend.objects["index.json"] = []byte(`{"plugins":[]}`)
+
+	d := env.Server.deps
+	d.Store = backend
+	d.LocalStore = nil
+	srv := NewServer(d)
+
+	const target = "/cdn/index.json"
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if loc := rec.Header().Get("Location"); loc != "" {
+		if strings.HasSuffix(loc, target) {
+			t.Fatalf("Location = %q redirects back to the requested path %q -- an infinite 302 loop: "+
+				"status=%d", loc, target, rec.Code)
+		}
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with the object's bytes: body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != `{"plugins":[]}` {
+		t.Fatalf("body = %q, want the object's bytes", rec.Body.String())
+	}
+}
+
+// TestHandleCDNProxy_DirectoryPathIs404NotUnauthenticated500 closes the
+// directory-existence oracle at its root rather than one namespace at a
+// time. LocalStore.Read passed os.ReadFile's error through untouched unless
+// it was os.IsNotExist, so reading a path that happens to be a DIRECTORY
+// yielded raw EISDIR, which handleCDNProxy's writeError turned into an
+// unauthenticated 500 INTERNAL_ERROR -- while a genuinely absent key
+// returned a clean 404. An unauthenticated caller could therefore tell
+// existing directories from nonexistent ones purely by status code, and
+// generate 5xx at will.
+//
+// The reserved namespaces (auth/, private/) already refuse these before the
+// read, but every other namespace was open. Fixing it in LocalStore.Read
+// covers all of them at once.
+//
+// Mutation this kills: dropping the EISDIR/EINVAL mapping from
+// LocalStore.Read restores the 500 for the existing-directory cases below.
+func TestHandleCDNProxy_DirectoryPathIs404NotUnauthenticated500(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	const pluginID, version = "acme-oracle", "1.0.0"
+	if _, err := env.Store.Write(ctx, storage.VersionManifestPath(pluginID, version), []byte(`{}`), 0); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Directories that DO exist, and paths that do not: every one must be a
+	// 404, so the two are indistinguishable to an unauthenticated caller.
+	paths := []string{
+		"plugins",
+		"plugins/" + pluginID,
+		"plugins/" + pluginID + "/versions",
+		"plugins/" + pluginID + "/versions/" + version,
+		"plugins/nosuch",
+		"plugins/" + pluginID + "/versions/9.9.9",
+	}
+	for _, p := range paths {
+		rec := env.do(httptest.NewRequest(http.MethodGet, "/cdn/"+p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET /cdn/%s: status = %d, want 404 -- an existing directory must not be "+
+				"distinguishable from an absent key, and must never be an unauthenticated 5xx: body=%s",
+				p, rec.Code, rec.Body.String())
+		}
+	}
+}
