@@ -115,6 +115,10 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"})
 			return
 		}
+		if errors.Is(err, catalogue.ErrVersionNotFound) {
+			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Version not found"})
+			return
+		}
 		writeError(w, err)
 		return
 	}

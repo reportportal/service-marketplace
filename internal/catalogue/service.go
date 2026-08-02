@@ -14,6 +14,18 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// ErrVersionNotFound is returned by GetVersion when the PLUGIN exists (its
+// plugin.json is readable and it is not tombstoned) but the requested
+// version does not exist as far as any client read path is concerned --
+// either because it is genuinely absent from st.Versions, or because it is
+// present but committed-but-incomplete (domain.IsVersionComplete false; see
+// that function's doc comment). It is distinct from ErrNotFound (the plugin
+// itself doesn't exist) so callers can tell "Plugin not found" from "Version
+// not found" apart -- see handlers_plugins.go's handleGetVersion, which used
+// to collapse both into "Plugin not found" for a plugin that demonstrably
+// does exist.
+var ErrVersionNotFound = errors.New("version not found")
+
 type Service struct {
 	Store storage.ObjectStore
 }
@@ -33,6 +45,17 @@ func (s *Service) loadIndex(ctx context.Context) (*domain.Index, error) {
 	return &idx, nil
 }
 
+// loadPlugin is the client read boundary's single chokepoint: internal/
+// catalogue is imported only by cmd/marketplace/main.go and internal/
+// httpapi (never by internal/publish or internal/lifecycle, which each keep
+// their own private, unfiltered loadPlugin reading the same plugin.json), so
+// enforcing "a committed-but-incomplete version does not exist" here -- by
+// dropping every VersionMeta the store's write side committed but never
+// finished (domain.IsVersionComplete false) -- reaches every client-facing
+// read (ListVersions, GetVersion, GetPlugin via st.LatestVersion, and
+// handleGetArtifact, which reaches the store only through those two) without
+// touching publish's or lifecycle's own view of the full, unfiltered
+// history they need for healing and AMD-04 duplicate-publish checks.
 func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.PluginState, error) {
 	obj, err := s.Store.Read(ctx, storage.PluginStatePath(pluginID))
 	if err != nil {
@@ -42,6 +65,13 @@ func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.Plug
 	if err := json.Unmarshal(obj.Data, &st); err != nil {
 		return nil, err
 	}
+	complete := make([]domain.VersionMeta, 0, len(st.Versions))
+	for _, v := range st.Versions {
+		if domain.IsVersionComplete(v) {
+			complete = append(complete, v)
+		}
+	}
+	st.Versions = complete
 	return &st, nil
 }
 
@@ -135,10 +165,26 @@ func (s *Service) GetVersion(ctx context.Context, pluginID, version string) (*Ve
 	if st.Removed != nil {
 		return nil, st, nil
 	}
+	// Visibility is decided by the committed document (st.Versions, already
+	// filtered to complete entries by loadPlugin), not by which bytes happen
+	// to exist in storage: a manifest object can exist for a version that is
+	// committed-but-incomplete (crashed before markVersionComplete) or even
+	// for a stray orphan never recorded in plugin.json at all, and neither
+	// may be served.
+	found := false
+	for _, v := range st.Versions {
+		if v.Version == version {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, st, ErrVersionNotFound
+	}
 	m, err := s.loadManifest(ctx, pluginID, version)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return nil, st, ErrNotFound
+			return nil, st, ErrVersionNotFound
 		}
 		return nil, st, err
 	}
