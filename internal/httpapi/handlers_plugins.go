@@ -272,6 +272,18 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 //     (license.ErrEntitlementExpired, AMD-10). Distinct from the JWT's own
 //     exp above: this is the entitlement's ExpiresAt, checked only after the
 //     signature already verified.
+//   - "JWT valid but entitlement revoked" -> 403 LICENSE_ENTITLEMENT_DENIED
+//     (license.ErrEntitlementRevoked). Whole-entitlement revocation
+//     (DELETE /api/v1/licenses/{customerId}) tombstones the entitlement
+//     instead of deleting it -- see license.Service.Revoke's doc comment --
+//     specifically so this is reachable at all: a deleted entitlement would
+//     be indistinguishable from an unknown customerId and fall into the 401
+//     bucket above instead.
+//   - "JWT valid but entitlement tier is not premium" -> 403
+//     LICENSE_ENTITLEMENT_DENIED (license.ErrEntitlementTierDenied, AMD-12
+//     condition (2)'s tier half). Deliberately the same code as a pluginId
+//     mismatch below: both are "this entitlement, as verified, does not
+//     cover this download", not a JWT problem and not an expiry.
 //   - auth.ErrLicenseTokenMissing is handled by handleGetArtifact's own
 //     empty-bearerToken check before VerifyToken is ever called, so it is not
 //     expected to reach here; mapped defensively to the same missing-token
@@ -295,6 +307,9 @@ func licenseErrorResponse(err error) error {
 		return &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTInvalid, Message: "License JWT is malformed, unsigned by a known key, or expired"}
 	case errors.Is(err, license.ErrEntitlementExpired):
 		return &APIError{Status: http.StatusForbidden, Code: CodeLicenseExpired, Message: "License entitlement has expired"}
+	case errors.Is(err, license.ErrEntitlementRevoked),
+		errors.Is(err, license.ErrEntitlementTierDenied):
+		return &APIError{Status: http.StatusForbidden, Code: CodeLicenseEntitlementDenied, Message: "License entitlement does not cover this plugin"}
 	default:
 		return mapStorageErr(err)
 	}

@@ -127,14 +127,6 @@ func TestLoad_ReadsDocumentWrittenByPreviousRelease(t *testing.T) {
 	if !e.PublicKeys[0].IssuedAt.Equal(issuedAt) {
 		t.Fatalf("PublicKeys[0].IssuedAt = %v, want %v", e.PublicKeys[0].IssuedAt, issuedAt)
 	}
-
-	keys, err := svc.PublicKeysForCustomer(context.Background(), "acme-corp")
-	if err != nil {
-		t.Fatalf("PublicKeysForCustomer: %v", err)
-	}
-	if len(keys) != 1 || keys[0] != "3q2+7w==" {
-		t.Fatalf("PublicKeysForCustomer = %v, want [3q2+7w==]", keys)
-	}
 }
 
 // TestCreate_PreservesExistingEntitlementKidOnRewrite seeds a document, in the

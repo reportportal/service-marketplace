@@ -332,11 +332,12 @@ type PluginTombstone struct {
 // authorization decision.
 //
 // RevokedAt is AMD-11 key-level revocation (set by license.Service.RevokeKey, one key
-// at a time — distinct from whole-entitlement revocation, which removes the
-// LicenseEntitlement entirely via license.Service.Revoke and never sets this field).
-// nil means the key is live. AMD-25 requires revocation to take effect within 30s of
-// the revoking DELETE returning 204; any cache of these keys upstream of a live read of
-// this document must be bounded by that window.
+// at a time — distinct from whole-entitlement revocation, which tombstones the
+// LicenseEntitlement itself via license.Service.Revoke and sets
+// LicenseEntitlement.RevokedAt instead; see that field's doc comment). nil means the
+// key is live. AMD-25 requires revocation to take effect within 30s of the revoking
+// DELETE returning 204; any cache of these keys upstream of a live read of this
+// document must be bounded by that window.
 type LicensePublicKey struct {
 	KID       string     `json:"kid,omitempty"`
 	KeyID     string     `json:"keyId,omitempty"`
@@ -369,11 +370,27 @@ func (k LicensePublicKey) ResolvedKeyID() (string, error) {
 	return DeriveLicenseKeyID(k.PublicKey)
 }
 
+// RevokedAt is whole-entitlement revocation (set by license.Service.Revoke). nil
+// means the entitlement is live. Deliberately a tombstone, not a deletion: before this
+// field existed, Service.Revoke removed the LicenseEntitlement from the document
+// entirely, which made a revoked customerId indistinguishable from one that never had
+// an entitlement at all -- both surfaced as license.ErrNotFound from
+// Service.VerifyToken, which AMD-09 maps to 401 LICENSE_JWT_INVALID, contradicting
+// AMD-09 row 3's requirement that a revoked entitlement return 403
+// LICENSE_ENTITLEMENT_DENIED. Setting this field instead of deleting the record keeps
+// the two cases distinguishable (license.ErrEntitlementRevoked vs license.ErrNotFound)
+// at the cost of retaining revoked entitlements in the document indefinitely; this
+// project accepts that retention cost for the message-quality gain (FR-A-05).
+// A revoked entitlement's PublicKeys are left untouched (not individually revoked) --
+// VerifyToken checks RevokedAt itself before authorizing, so leaving the keys alone
+// costs nothing and keeps Service.Revoke a single-field write instead of a loop over
+// every key.
 type LicenseEntitlement struct {
 	CustomerID string             `json:"customerId"`
 	Tier       string             `json:"tier"`
 	CreatedAt  time.Time          `json:"createdAt,omitempty"`
 	ExpiresAt  *time.Time         `json:"expiresAt,omitempty"`
+	RevokedAt  *time.Time         `json:"revokedAt,omitempty"`
 	PublicKeys []LicensePublicKey `json:"publicKeys"`
 }
 
