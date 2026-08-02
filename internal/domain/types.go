@@ -99,31 +99,64 @@ type Compatibility struct {
 }
 
 type Manifest struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Version       string          `json:"version"`
-	Description   string          `json:"description"`
-	Author        Author          `json:"author"`
-	License       string          `json:"license"`
-	Category      Category        `json:"category"`
-	Compatibility Compatibility   `json:"compatibility"`
-	Homepage      string          `json:"homepage,omitempty"`
-	Access        AccessTier      `json:"access,omitempty"`
-	ContactURL    string          `json:"contactUrl,omitempty"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Version       string        `json:"version"`
+	Description   string        `json:"description"`
+	Author        Author        `json:"author"`
+	License       string        `json:"license"`
+	Category      Category      `json:"category"`
+	Compatibility Compatibility `json:"compatibility"`
+	Homepage      string        `json:"homepage,omitempty"`
+	Access        AccessTier    `json:"access,omitempty"`
+	ContactURL    string        `json:"contactUrl,omitempty"`
 }
 
 type IndexPlugin struct {
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	LatestVersion  string     `json:"latestVersion"`
-	Description    string     `json:"description,omitempty"`
-	Category       Category   `json:"category"`
-	Access         AccessTier `json:"access"`
-	Tier           TrustTier  `json:"tier"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	LatestVersion string     `json:"latestVersion"`
+	Description   string     `json:"description,omitempty"`
+	Category      Category   `json:"category"`
+	Access        AccessTier `json:"access"`
+	Tier          TrustTier  `json:"tier"`
+	// Versions is the plugin's full committed version set (every published
+	// version, including blocked-but-not-removed ones -- blocking makes a
+	// version un-installable, not uncommitted). This is the AMD-27
+	// orphan-cleanup reference set: internal/lifecycle.OrphanCleanup treats a
+	// plugins/{id}/versions/{v}/ (or private/plugins/{id}/versions/{v}/)
+	// directory as a deletion candidate only if v is absent from here.
+	// index.json documents written before this field existed omit it
+	// entirely, decoding to a nil slice -- OrphanCleanup treats a
+	// non-empty index whose entries all decode to zero versions as
+	// reference data that "looks wrong" and refuses to run, rather than
+	// reading every version directory in the registry as unreferenced.
+	Versions []string `json:"versions,omitempty"`
 }
 
 type Index struct {
 	Plugins []IndexPlugin `json:"plugins"`
+	// Complete attests that this document was produced by a rebuild that
+	// successfully read and resolved every known plugin.json (excluding
+	// legitimately-tombstoned plugins, whose artifacts are already deleted by
+	// the time a rebuild runs) -- not that the catalogue happens to look
+	// plausible. internal/publish.Service.rebuildIndex sets this to true only
+	// on the success path; if any plugin.json failed to read, failed to
+	// unmarshal, or its latest version's manifest could not be resolved,
+	// rebuildIndex aborts the whole rebuild and writes nothing at all, so a
+	// document that IS on disk with Complete==false can only be:
+	//   - one written before this field existed (decodes to the zero value,
+	//     false, by construction -- no legacy-format special-casing needed), or
+	//   - one written by hand / by something other than rebuildIndex.
+	// internal/lifecycle.OrphanCleanup treats Complete==false, combined with
+	// storage holding candidate version directories, as reference data it
+	// cannot prove is exhaustive -- and refuses to delete anything on that
+	// basis. This is deliberately a positive attestation ("I verified
+	// everything") rather than a derived plausibility heuristic ("this looks
+	// empty" / "this looks legacy-shaped"): a heuristic only catches the
+	// shapes its author thought of, and a partial index missing one plugin
+	// among many looks exactly as "plausible" as a genuinely complete one.
+	Complete bool `json:"complete"`
 }
 
 type BlockedVersion struct {
@@ -149,14 +182,14 @@ type VersionState struct {
 }
 
 type PluginState struct {
-	ID              string           `json:"id"`
-	Tier            TrustTier        `json:"tier"`
-	LatestVersion   string           `json:"latestVersion"`
-	Versions        []VersionMeta    `json:"versions"`
-	BlockedVersions []BlockedVersion `json:"blockedVersions,omitempty"`
-	Removed         *time.Time       `json:"removed,omitempty"`
-	RemovalReason   string           `json:"removalReason,omitempty"`
-	RemovedBy       string           `json:"removedBy,omitempty"`
+	ID              string                  `json:"id"`
+	Tier            TrustTier               `json:"tier"`
+	LatestVersion   string                  `json:"latestVersion"`
+	Versions        []VersionMeta           `json:"versions"`
+	BlockedVersions []BlockedVersion        `json:"blockedVersions,omitempty"`
+	Removed         *time.Time              `json:"removed,omitempty"`
+	RemovalReason   string                  `json:"removalReason,omitempty"`
+	RemovedBy       string                  `json:"removedBy,omitempty"`
 	VersionStates   map[string]VersionState `json:"versionStates,omitempty"`
 }
 
@@ -164,6 +197,15 @@ type PluginTombstone struct {
 	Removed       time.Time `json:"removed"`
 	RemovalReason string    `json:"removalReason"`
 	RemovedBy     string    `json:"removedBy"`
+	// Warnings is populated only by handleRemovePlugin, only when this
+	// removal's downstream housekeeping (index rebuild, CDN invalidation)
+	// failed after the tombstone itself had already committed. Every other
+	// caller that builds a PluginTombstone (GetPlugin, ListVersions,
+	// GetArtifact -- see catalogue.TombstoneFromState) leaves it empty: this
+	// field describes what happened during a removal, not the tombstone's
+	// persisted shape, and PluginTombstone is not itself a persisted
+	// document (see wire_storage_separation_test.go).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // LicensePublicKey and LicenseEntitlement are dual-purpose: they are marshalled both

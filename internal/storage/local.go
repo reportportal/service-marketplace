@@ -207,6 +207,32 @@ func (s *LocalStore) Delete(ctx context.Context, objectPath string) error {
 	return nil
 }
 
+func (s *LocalStore) Stat(ctx context.Context, objectPath string) (*ObjectMeta, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	p, err := s.abs(objectPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Same rationale as Read(): hold the lock across both the stat and the
+	// generation lookup so this can never observe a torn pre/post-write mix.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	info, err := os.Stat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &ObjectMeta{Path: objectPath, Size: info.Size(), Generation: s.generations[objectPath], CreatedAt: info.ModTime()}, nil
+}
+
 func (s *LocalStore) Exists(ctx context.Context, objectPath string) (bool, error) {
 	select {
 	case <-ctx.Done():
