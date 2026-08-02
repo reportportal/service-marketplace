@@ -301,3 +301,78 @@ func TestRebuildIndex_OnlyVersionRemoved_PluginAbsentFromCatalogue(t *testing.T)
 		t.Fatalf("plugin-removed still in the catalogue after removal: %+v", *p)
 	}
 }
+
+// TestRebuildIndex_MixedCompleteAndIncompleteVersions_OnlyCompleteVersionAdvertised
+// is the direct repro of this round's MAJOR finding: buildIndexData decides
+// whether to LIST a plugin from whether it has any complete version, but
+// still built that plugin's advertised Versions list from every entry in
+// plugin.json, unfiltered by completeness. A plugin with one clean publish
+// and one interrupted one therefore advertised a version whose jar and
+// manifest were never written -- a client that picked it got a 404/500
+// instead of an installable plugin.
+//
+// Reproduces exactly the reviewer's scenario: publish 1.0.0 cleanly, then
+// publish 2.0.0 with a fault on the jar write (so neither its jar nor its
+// manifest ever lands). The catalogue must list the plugin (it has a
+// complete version) at latestVersion 1.0.0, advertising ONLY 1.0.0 -- never
+// the incomplete 2.0.0.
+//
+// Mutation this kills: reverting buildIndexData's versions-collection loop
+// to append every st.Versions entry unconditionally (dropping the
+// domain.IsVersionComplete filter) makes the assertion on Versions below
+// fail, seeing ["1.0.0", "2.0.0"] instead of ["1.0.0"].
+func TestRebuildIndex_MixedCompleteAndIncompleteVersions_OnlyCompleteVersionAdvertised(t *testing.T) {
+	ctx := context.Background()
+	backing := newCatalogueTestStore(t)
+
+	// v1.0.0: a clean, complete publish.
+	pubSvc := &publish.Service{Store: backing, Invalidator: cdn.NoopInvalidator{}}
+	m1 := catalogueManifest("plugin-mixed", "1.0.0")
+	jar1, err := publish.BuildTestJAR(m1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pubSvc.PublishFirst(ctx, &publish.Bundle{JAR: jar1, JARFilename: "p.jar"}, "operator"); err != nil {
+		t.Fatalf("seed publish of 1.0.0: %v", err)
+	}
+
+	// v2.0.0: interrupted before its jar (and therefore its manifest) ever
+	// lands.
+	fs := storagetest.Wrap(backing)
+	svc := &publish.Service{Store: fs, Invalidator: cdn.NoopInvalidator{}}
+	m2 := catalogueManifest("plugin-mixed", "2.0.0")
+	jar2, err := publish.BuildTestJAR(m2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("simulated crash writing 2.0.0's jar")
+	art2 := storage.VersionArtifactPath("plugin-mixed", "2.0.0", string(domain.AccessPublic))
+	fs.FailN(storagetest.OpWrite, art2, boom, 1)
+	if _, _, err := svc.PublishVersion(ctx, "plugin-mixed", &publish.Bundle{JAR: jar2, JARFilename: "p.jar"}, "operator", false); !errors.Is(err, boom) {
+		t.Fatalf("expected the injected 2.0.0 jar write failure to surface, got %v", err)
+	}
+
+	// The interrupted publish call above returns before ever reaching
+	// rebuildIndex (publish() bails out on the artifact-write error), so
+	// index.json is still the one written by the clean 1.0.0 publish above --
+	// it would trivially satisfy this test's assertions without exercising
+	// buildIndexData's filtering at all. Force a fresh rebuild, matching this
+	// package's precedent for observing an interrupted-publish state through
+	// the actual read path (see TestRebuildIndex_FirstPublishInterruptedBeforeCompletion_PluginAbsentNotFailedRebuild).
+	clean := &publish.Service{Store: backing, Invalidator: cdn.NoopInvalidator{}}
+	if err := clean.RebuildIndex(ctx); err != nil {
+		t.Fatalf("RebuildIndex over a plugin with one complete and one incomplete version must succeed: %v", err)
+	}
+
+	plugins := listCatalogue(t, ctx, backing)
+	p := findInCatalogue(plugins, "plugin-mixed")
+	if p == nil {
+		t.Fatalf("plugin-mixed missing from the catalogue: it has a complete version (1.0.0) and must be listed")
+	}
+	if p.LatestVersion != "1.0.0" {
+		t.Fatalf("plugin-mixed latestVersion = %q, want %q", p.LatestVersion, "1.0.0")
+	}
+	if len(p.Versions) != 1 || p.Versions[0] != "1.0.0" {
+		t.Fatalf("plugin-mixed advertised versions = %v, want [\"1.0.0\"] -- 2.0.0 was never fully written and must not be advertised", p.Versions)
+	}
+}

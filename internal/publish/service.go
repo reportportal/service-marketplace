@@ -826,8 +826,27 @@ func (s *Service) buildIndexData(ctx context.Context) ([]byte, error) {
 		if err := json.Unmarshal(mObj.Data, &m); err != nil {
 			return nil, fmt.Errorf("rebuildIndex: plugin %q: latest version %q manifest unparseable, refusing to write a partial index: %w", id, st.LatestVersion, err)
 		}
+		// Advertise only complete versions. st.Versions is plugin.json's full
+		// COMMITTED history (AMD-30-commit-point-granularity: an entry lands
+		// here, with Complete: false, before a single one of its artifact
+		// bytes exists -- see publish()'s doc comment), which is a broader
+		// set than what GET /api/v1/plugins may safely tell a client is
+		// installable. Advertising an incomplete sibling here is this round's
+		// MAJOR finding: a client that requests it gets a 404/500 because
+		// neither its jar nor its manifest was ever written. Filtering here
+		// changes only catalogue-listing visibility, not commitment -- the
+		// duplicate-publish three-branch rule (PublishVersion) and its
+		// healing branch key off st.Versions (plugin.json) directly, never
+		// off this filtered slice or index.json, so an incomplete version
+		// dropped from here remains exactly as committed/immutable/healable
+		// as before. See AMD-30-commit-point-granularity's "index.json
+		// remains the commit point for catalogue-listing visibility... a
+		// distinct guarantee from per-version immutability".
 		versions := make([]string, 0, len(st.Versions))
 		for _, v := range st.Versions {
+			if !domain.IsVersionComplete(v) {
+				continue
+			}
 			versions = append(versions, v.Version)
 		}
 		sort.Strings(versions)
