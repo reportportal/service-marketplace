@@ -220,6 +220,30 @@ func IsAuthObject(objectPath string) bool {
 // reservedNamespaces would re-introduce the exact "over-reaching"
 // canonicalisation risk described above for no security benefit.
 func CanonicalizeObjectPath(raw string) (string, error) {
+	// The NTFS half of the same aliasing class. On Windows the Win32 layer
+	// treats '\' as a path separator and strips trailing dots and spaces
+	// from a component, so "auth\authorized_keys.json" and
+	// "auth./authorized_keys.json" both resolve to the protected object --
+	// while the segment split below (which scans for '/' only) sees a single
+	// segment that matches no reserved namespace, and IsAuthObject's
+	// HasPrefix(p, "auth/") does not match either. LocalStore.abs then
+	// resolves it via filepath.FromSlash/Clean, which DO honour '\' on
+	// Windows.
+	//
+	// Refusing outright rather than normalising, for the same reason the
+	// case aliases are refused: no key this codebase produces ever contains
+	// a backslash or a trailing dot or space (see the path builders above
+	// and SanitizeScreenshotFilename), so there is no compatibility cost,
+	// and a rejected spelling cannot silently become a different object.
+	if strings.ContainsRune(raw, '\\') {
+		return "", ErrReservedNamespaceAlias
+	}
+	for _, seg := range strings.Split(strings.TrimPrefix(raw, "/"), "/") {
+		if seg != strings.TrimRight(seg, ". ") {
+			return "", ErrReservedNamespaceAlias
+		}
+	}
+
 	cleaned := path.Clean("/" + strings.TrimPrefix(raw, "/"))
 	if cleaned == "/" {
 		return "", ErrNotFound
