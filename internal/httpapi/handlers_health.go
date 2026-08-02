@@ -156,14 +156,19 @@ func (s *Server) handleCDNProxy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid signed URL"})
 			return
 		}
-	} else if s.deps.LocalStore == nil {
-		// Public object, no signature presented, and this deployment's
-		// public origin is not this same /cdn route (see the doc comment
-		// above): hand the client straight to it instead of buffering the
-		// whole object into this process just to re-serve it.
-		http.Redirect(w, r, s.deps.Store.PublicURL(objectPath), http.StatusFound)
-		return
 	}
+	// A public object with no signature is served from here, on every
+	// backend. Do NOT "optimise" this by redirecting to
+	// s.deps.Store.PublicURL(objectPath): both LocalStore.PublicURL and
+	// GCSStore.PublicURL are cdnBase + "/" + CDNPath(objectPath), and
+	// cmd/marketplace/main.go hands the same CDN_BASE_URL to the store and
+	// to this service — which serves /cdn. The "public origin" is therefore
+	// this very route, and redirecting to it loops until the client gives
+	// up (pinned by
+	// TestHandleCDNProxy_PublicObjectOnNonLocalBackend_DoesNotRedirectToItself).
+	// Buffering the object is the deliberate cost of registering /cdn/*
+	// unconditionally so signature enforcement does not depend on which
+	// backend is configured.
 	obj, err := s.deps.Store.Read(r.Context(), objectPath)
 	if err != nil {
 		if err == storage.ErrNotFound {
