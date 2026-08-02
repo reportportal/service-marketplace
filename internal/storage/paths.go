@@ -7,6 +7,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -15,6 +16,20 @@ const (
 	PathSessionDeny    = "auth/session-denylist"
 	PathOAuthState     = "auth/oauth-state"
 	PathLoginLockout   = "auth/login-lockout"
+
+	// PathOrphanCleanupLease backs the single-runner CAS lease for
+	// internal/lifecycle.OrphanCleanup, so N replicas do not each run their
+	// own sweep concurrently. Under "private/" so it is routed to the
+	// private bucket on GCS and never CDN-served, the same reasoning as the
+	// auth/ paths above.
+	PathOrphanCleanupLease = "private/system/orphan-cleanup-lease.json"
+
+	// PathHousekeepingFailures is the prefix under which lifecycle mutations
+	// durably record a downstream housekeeping failure (index rebuild or CDN
+	// invalidation) that happened after their primary write already
+	// committed, so it can be found and retried out of band. See
+	// internal/lifecycle.Service.recordHousekeepingFailure.
+	PathHousekeepingFailures = "private/system/housekeeping-failures"
 )
 
 var screenshotNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,126}\.(png|jpg|jpeg)$`)
@@ -88,6 +103,14 @@ func OAuthStatePath(state string) string {
 func LoginLockoutPath(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return path.Join(PathLoginLockout, hex.EncodeToString(sum[:])+".json")
+}
+
+// HousekeepingFailurePath returns a fresh, collision-resistant object key
+// for one recorded housekeeping failure. Each failure gets its own object
+// (rather than an appended list) so concurrent failures never contend on a
+// single CAS write.
+func HousekeepingFailurePath(pluginID, action, step string, at time.Time) string {
+	return path.Join(PathHousekeepingFailures, fmt.Sprintf("%s-%s-%s-%d.json", pluginID, action, step, at.UnixNano()))
 }
 
 func CDNPath(objectPath string) string {

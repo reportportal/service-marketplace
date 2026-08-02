@@ -88,7 +88,23 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 | `GA4_MEASUREMENT_ID` / `GA4_API_SECRET` | Analytics (optional) |
 | `GCP_PROJECT` | GCP project for Cloud CDN invalidation |
 | `HTTP_ADDR` | Listen address (default `:8080`) |
-| `ORPHAN_CLEANUP_INTERVAL` | Orphan artifact cleanup interval |
+| `ORPHAN_CLEANUP_INTERVAL` | How often the orphan-cleanup goroutine wakes up to check whether a sweep is due (default `5m`) — the sweep itself only runs once per `ORPHAN_CLEANUP_RUN_INTERVAL`, and only if enabled; see below |
+
+### Orphan cleanup sweeper — unsupported, ships disabled
+
+**Do not set `ORPHAN_CLEANUP_ENABLED=true` in production.** The orphan-cleanup sweep deletes plugin version directories it decides are unreferenced by `index.json`. Three independent review rounds each found a distinct way to make it delete a version that was never actually orphaned — it **may delete committed, in-use plugin versions**. Two of those three routes are closed in code; the third is documented in review but not closed, and no fourth guard attempt has been made. Enabling it is unsupported pending a proven guard — see the doc comment on `internal/lifecycle.OrphanCleanup` for the full defeat history.
+
+The disabled state is enforced as a contract, not a default that happens to be `false` today: there is no environment value, missing or malformed, that turns the sweep on by accident (`internal/config.TestLoad_OrphanCleanupDisabledByDefault` fails the build if that ever regresses).
+
+What remains safe to use today is the **dry-run path**: with `ORPHAN_CLEANUP_ENABLED=true` and `ORPHAN_CLEANUP_DRY_RUN=true` (the default once enabled), the sweep runs its full decision process and reports exactly what it would delete, without issuing a single delete call, so an operator can compare its output against what should be deleted before anyone trusts it further.
+
+| Variable | Description |
+| ---------- | ------------- |
+| `ORPHAN_CLEANUP_ENABLED` | Gates the sweep entirely. Default `false`. **Unsupported in production** — see above. |
+| `ORPHAN_CLEANUP_DRY_RUN` | Default `true` even once enabled, so enabling and trusting it to delete are two separate, deliberate actions. |
+| `ORPHAN_CLEANUP_MIN_AGE` | Age guard: a version directory is never a deletion candidate until its newest object is at least this old (default `24h`). |
+| `ORPHAN_CLEANUP_RUN_INTERVAL` | Minimum time between sweep attempts (default `24h`). |
+| `ORPHAN_CLEANUP_LEASE_TTL` | How long one replica holds the cross-replica sweep lease (default `15m`). |
 
 ## Layout
 

@@ -37,9 +37,16 @@ func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.Plug
 	return &st, nil
 }
 
-func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.TrustTier) (*domain.PluginState, error) {
+// SetTier changes a plugin's trust tier. Its downstream housekeeping (index
+// rebuild, CDN invalidation) is best-effort and reported via the returned
+// HousekeepingOutcome rather than folded into the error return: by the time
+// housekeeping runs, the tier change has already been durably committed to
+// plugin.json, so a housekeeping failure must never be reported the same
+// way a failure of the primary write would be (see HousekeepingOutcome's
+// doc comment).
+func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.TrustTier) (*domain.PluginState, HousekeepingOutcome, error) {
 	if tier != domain.TierOfficial {
-		return nil, ErrForbidden
+		return nil, HousekeepingOutcome{}, ErrForbidden
 	}
 	var out domain.PluginState
 	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
@@ -57,13 +64,12 @@ func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.Trus
 	}, 5)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			return nil, ErrNotFound
+			return nil, HousekeepingOutcome{}, ErrNotFound
 		}
-		return nil, err
+		return nil, HousekeepingOutcome{}, err
 	}
-	_ = s.Publisher.RebuildIndex(ctx)
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PathIndex})
-	return &out, nil
+	hk := s.runHousekeeping(ctx, pluginID, "set_tier", true, []string{"/" + storage.PathIndex})
+	return &out, hk, nil
 }
 
 func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason string) (*domain.BlockedVersion, error) {
@@ -94,16 +100,49 @@ func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason st
 		}
 		blocked = domain.BlockedVersion{Version: version, BlockedAt: now, Reason: reason}
 		st.BlockedVersions = append(st.BlockedVersions, blocked)
+		// AMD-07: recompute latestVersion on block too, not just on
+		// publish -- otherwise blocking the version currently advertised
+		// as latest leaves it advertised forever even though nobody can
+		// install it.
+		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PluginStatePath(pluginID)})
+	// AMD-07 / §6.4 invalidation matrix (Block version row) names three
+	// paths: /index.json, /plugins/{id}/plugin.json, and
+	// /plugins/{id}/versions/{ver}/*. index.json is among the GCS paths
+	// written and invalidated by a block, not just the plugin's own
+	// plugin.json -- the catalogue listing is composed from index.json, so
+	// without this the blocked-but-still-latest version keeps being
+	// advertised there even after plugin.json is corrected. Mirrors
+	// SetTier/RemovePlugin's call below: best-effort, not treated as fatal
+	// to the block itself (rebuildIndex has its own retry/failure surface).
+	//
+	// The version's own paths must be invalidated too: their manifest and
+	// jar are served with a long, immutable Cache-Control
+	// (max-age=31536000), so without an explicit invalidation a CDN edge
+	// that already cached them keeps serving the blocked version's metadata
+	// and artifact indefinitely -- letting a client resolve and download
+	// exactly the version the registry just blocked, defeating the point of
+	// blocking it.
+	_ = s.Publisher.RebuildIndex(ctx)
+	_ = s.Invalidator.Invalidate(ctx, []string{
+		"/" + storage.PathIndex,
+		"/" + storage.PluginStatePath(pluginID),
+		"/" + storage.VersionPrefix(pluginID, version) + "*",
+	})
 	return &blocked, nil
 }
 
-func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy string) (*domain.PluginTombstone, error) {
+// RemovePlugin tombstones a plugin and hard-deletes its version artifacts.
+// As with SetTier, downstream housekeeping (index rebuild, CDN invalidation)
+// is best-effort and reported via the returned HousekeepingOutcome: the
+// tombstone is already durably committed to plugin.json by the time
+// housekeeping runs, so a housekeeping failure must never make this call
+// report as though the removal itself failed.
+func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy string) (*domain.PluginTombstone, HousekeepingOutcome, error) {
 	now := time.Now().UTC()
 	tomb := domain.PluginTombstone{Removed: now, RemovalReason: reason, RemovedBy: removedBy}
 	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
@@ -120,7 +159,7 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
-		return nil, err
+		return nil, HousekeepingOutcome{}, err
 	}
 
 	files, _ := s.Store.ListPrefix(ctx, storage.PluginPrefix(pluginID))
@@ -131,9 +170,8 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 		_ = s.Store.Delete(ctx, f)
 	}
 
-	_ = s.Publisher.RebuildIndex(ctx)
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PathIndex, "/" + storage.PluginStatePath(pluginID)})
-	return &tomb, nil
+	hk := s.runHousekeeping(ctx, pluginID, "remove_plugin", true, []string{"/" + storage.PathIndex, "/" + storage.PluginStatePath(pluginID)})
+	return &tomb, hk, nil
 }
 
 func (s *Service) AttachAdvisory(ctx context.Context, pluginID, version string, sev domain.AdvisorySeverity, text string) (*domain.SecurityAdvisory, error) {
@@ -168,57 +206,4 @@ func (s *Service) AttachAdvisory(ctx context.Context, pluginID, version string, 
 	}
 	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PluginStatePath(pluginID)})
 	return &adv, nil
-}
-
-func (s *Service) StartOrphanCleanup(ctx context.Context, interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.cleanupOrphans(ctx)
-			}
-		}
-	}()
-}
-
-func (s *Service) cleanupOrphans(ctx context.Context) {
-	files, err := s.Store.ListPrefix(ctx, "plugins/")
-	if err != nil {
-		return
-	}
-	for _, f := range files {
-		if !strings.Contains(f, "/versions/") {
-			continue
-		}
-		parts := strings.Split(f, "/")
-		if len(parts) < 4 {
-			continue
-		}
-		pluginID := parts[1]
-		version := parts[3]
-		st, err := s.loadPlugin(ctx, pluginID)
-		if err != nil {
-			if errors.Is(err, storage.ErrNotFound) {
-				_ = s.Store.Delete(ctx, f)
-			}
-			continue
-		}
-		if st.Removed != nil {
-			continue
-		}
-		listed := false
-		for _, v := range st.Versions {
-			if v.Version == version {
-				listed = true
-				break
-			}
-		}
-		if !listed {
-			_ = s.Store.Delete(ctx, f)
-		}
-	}
 }

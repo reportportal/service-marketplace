@@ -98,6 +98,17 @@ func (s *GCSStore) Delete(ctx context.Context, objectPath string) error {
 	return nil
 }
 
+func (s *GCSStore) Stat(ctx context.Context, objectPath string) (*ObjectMeta, error) {
+	attrs, err := s.obj(objectPath).Attrs(ctx)
+	if err != nil {
+		if err == storage.ErrObjectNotExist {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &ObjectMeta{Path: objectPath, Size: attrs.Size, Generation: attrs.Generation, CreatedAt: attrs.Created}, nil
+}
+
 func (s *GCSStore) Exists(ctx context.Context, objectPath string) (bool, error) {
 	_, err := s.obj(objectPath).Attrs(ctx)
 	if err == storage.ErrObjectNotExist {

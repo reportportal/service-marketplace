@@ -222,4 +222,10 @@ type PluginOperatorStateResponse struct {
 	Tier            domain.TrustTier         `json:"tier"`
 	LatestVersion   string                   `json:"latestVersion"`
 	BlockedVersions []BlockedVersionResponse `json:"blockedVersions,omitempty"`
+	// Warnings is present only when this mutation's downstream housekeeping
+	// (index rebuild, CDN invalidation) failed after the tier change itself
+	// had already committed. Its absence means full success; its presence
+	// never means the tier change failed -- see
+	// lifecycle.HousekeepingOutcome.
+	Warnings []string `json:"warnings,omitempty"`
 }

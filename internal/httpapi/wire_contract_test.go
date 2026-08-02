@@ -49,7 +49,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"Compatibility", domain.Compatibility{ReportPortal: ">=25.1"}},
 		{"BlockedVersion", BlockedVersionResponse{Version: "1.0.0", BlockedAt: now, Reason: "reason"}},
 		{"SecurityAdvisory", SecurityAdvisoryResponse{Severity: domain.SeverityHigh, Text: "text", AttachedAt: now}},
-		{"PluginTombstone", domain.PluginTombstone{Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
+		{"PluginTombstone", domain.PluginTombstone{Removed: now, RemovalReason: "reason", RemovedBy: "operator", Warnings: []string{"index rebuild failed: storage conflict"}}},
 		{"PluginListItem", PluginListItemResponse{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
 			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,
@@ -97,6 +97,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"PluginOperatorState", PluginOperatorStateResponse{
 			ID: "p", Tier: domain.TierOfficial, LatestVersion: "1.0.0",
 			BlockedVersions: []BlockedVersionResponse{{Version: "1.0.0", BlockedAt: now, Reason: "r"}},
+			Warnings:        []string{"index rebuild failed: storage conflict"},
 		}},
 		{"AuthConfigResponse", AuthConfigResponse{GithubEnabled: true, AdminLoginEnabled: true}},
 		{"AuthTokenResponse", AuthTokenResponse{AccessToken: "tok", TokenType: "Bearer", ExpiresIn: 3600}},

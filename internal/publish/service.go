@@ -501,7 +501,12 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha, Complete: false})
 			writeArtifacts = true
 		}
-		st.LatestVersion = m.Version
+		// AMD-07: latestVersion is the SemVer-maximum of the non-blocked,
+		// non-pre-release versions, recomputed here rather than simply set
+		// to the version just published -- publishing a semver-lower
+		// version (e.g. the §6.2 legacy-hotfix patch to an older line)
+		// must never move the pointer.
+		st.LatestVersion = domain.LatestVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
@@ -634,10 +639,79 @@ func (s *Service) RebuildIndex(ctx context.Context) error {
 	return s.rebuildIndex(ctx)
 }
 
+// rebuildIndex recomputes index.json from every plugins/{id}/plugin.json in
+// storage and CAS-writes it via storage.WriteWithRetry. It either writes a
+// document it can vouch for in full (domain.Index.Complete == true, every
+// non-removed plugin represented with its real Versions set) or it writes
+// nothing at all and returns an error -- it never writes a partial index.
+//
+// That "all or nothing" rule is deliberate, not an oversight the old
+// silently-`continue`-past-errors version had: a rebuild that omits a real,
+// non-removed plugin because its plugin.json happened to be unreadable this
+// one tick is indistinguishable, from index.json's own contents, from that
+// plugin having been legitimately removed -- and
+// internal/lifecycle.OrphanCleanup treats "absent from index.json" as proof
+// a version is safe to delete. Writing such a document would be actively
+// worse than writing nothing: leaving the previous (older, but honest)
+// index.json in place keeps protecting that plugin's versions until whatever
+// made its plugin.json unreadable is fixed and a rebuild can complete
+// cleanly. "Carry the plugin through as unresolved" (fabricating an entry
+// from a storage listing instead) was considered and rejected for this exact
+// failure: without a readable plugin.json there is no verified version list
+// for that plugin to carry through, and reconstructing one from a raw
+// directory listing would just be a second, less-audited orphan-detector
+// duplicating what OrphanCleanup itself already does against index.json.
+//
+// Completeness alone is not currency (the BLOCKING fix this comment
+// documents). domain.Index.Complete attests only that the rebuild which
+// PRODUCED a document resolved every plugin *it saw* -- it says nothing
+// about whether that snapshot is still current by the time the document
+// lands, and two replicas' rebuildIndex calls (triggered by two unrelated,
+// concurrent publishes) can legitimately race the same index.json. The
+// previous version called storage.WriteWithRetry with a closure that ignored
+// its (existing, gen) arguments and always resubmitted one already-computed
+// snapshot: on a CAS conflict (another replica's index.json commit already
+// landed) it would retry the write with the SAME stale bytes against the new
+// generation -- and could win that second race, silently regressing
+// index.json to a snapshot that no longer references the other replica's
+// just-committed version. That document still decodes Complete: true, so
+// OrphanCleanup has no way to tell it apart from a genuinely current one:
+// the dropped version reads as unreferenced and, once MinAge elapses, gets
+// swept. That is the in-flight-publish data loss AMD-27 exists to prevent,
+// reached through index.json's own write path instead of past the sweep's
+// age guard -- "the reference data was honest once" is not the same claim as
+// "the reference data is honest now".
+//
+// The fix: buildIndexData below re-lists and re-reads storage from scratch
+// on every WriteWithRetry attempt, not just once before entering the retry
+// loop. A CAS conflict therefore forces a fresh re-derivation of what
+// "complete" means before the next write attempt, so whichever attempt
+// finally wins the CAS race has, by construction, observed the storage state
+// that caused it to need a retry in the first place -- the standard
+// optimistic-concurrency argument that makes the storage layer's existing
+// CAS primitive sufficient here without inventing a second coordination
+// mechanism (a lease-guarded rebuild, option considered and rejected: it
+// would add its own contention/expiry machinery to solve exactly the problem
+// CAS-with-recompute already solves for free). The cost is that a rebuild
+// contended by concurrent writers can re-enumerate and re-read the entire
+// plugins/ tree up to maxAttempts times instead of once; at catalogue scale
+// (~20 plugins, per the plan) that is cheap, and it only happens under
+// genuine contention, not on the uncontended common path.
 func (s *Service) rebuildIndex(ctx context.Context) error {
+	return storage.WriteWithRetry(ctx, s.Store, storage.PathIndex, func(_ []byte, _ int64) ([]byte, error) {
+		return s.buildIndexData(ctx)
+	}, 5)
+}
+
+// buildIndexData scans storage fresh -- every call, not memoized -- and
+// returns the marshalled index.json bytes it can vouch for in full, or an
+// error if any non-removed plugin could not be resolved. See rebuildIndex's
+// doc comment for why it must be re-run on every CAS retry attempt rather
+// than computed once.
+func (s *Service) buildIndexData(ctx context.Context) ([]byte, error) {
 	pluginDirs, err := s.Store.ListPrefix(ctx, "plugins/")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	seen := map[string]struct{}{}
 	var plugins []domain.IndexPlugin
@@ -656,20 +730,44 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 		seen[id] = struct{}{}
 		obj, err := s.Store.Read(ctx, storage.PluginStatePath(id))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("rebuildIndex: plugin %q: plugin.json unreadable, refusing to write a partial index: %w", id, err)
 		}
 		var st domain.PluginState
-		if err := json.Unmarshal(obj.Data, &st); err != nil || st.Removed != nil || st.LatestVersion == "" {
+		if err := json.Unmarshal(obj.Data, &st); err != nil {
+			return nil, fmt.Errorf("rebuildIndex: plugin %q: plugin.json unparseable, refusing to write a partial index: %w", id, err)
+		}
+		if st.Removed != nil {
+			// Legitimate exclusion, not a failure: RemovePlugin already
+			// hard-deletes every non-plugin.json artifact as part of the
+			// primary write, before housekeeping (and therefore this rebuild)
+			// ever runs, so there is nothing left for this plugin to
+			// reference.
 			continue
+		}
+		if st.LatestVersion == "" {
+			if len(st.Versions) == 0 {
+				// Genuinely versionless: nothing published yet, nothing in
+				// storage at risk. Legitimate exclusion.
+				continue
+			}
+			// Inconsistent state: versions exist but nothing was ever marked
+			// latest. Can't be resolved -- treat the same as any other
+			// unresolvable plugin.
+			return nil, fmt.Errorf("rebuildIndex: plugin %q has %d version(s) but no latestVersion, refusing to write a partial index", id, len(st.Versions))
 		}
 		mObj, err := s.Store.Read(ctx, storage.VersionManifestPath(id, st.LatestVersion))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("rebuildIndex: plugin %q: latest version %q manifest unreadable, refusing to write a partial index: %w", id, st.LatestVersion, err)
 		}
 		var m domain.Manifest
 		if err := json.Unmarshal(mObj.Data, &m); err != nil {
-			continue
+			return nil, fmt.Errorf("rebuildIndex: plugin %q: latest version %q manifest unparseable, refusing to write a partial index: %w", id, st.LatestVersion, err)
 		}
+		versions := make([]string, 0, len(st.Versions))
+		for _, v := range st.Versions {
+			versions = append(versions, v.Version)
+		}
+		sort.Strings(versions)
 		plugins = append(plugins, domain.IndexPlugin{
 			ID:            id,
 			Name:          m.Name,
@@ -678,17 +776,12 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			Category:      m.Category,
 			Access:        m.Access,
 			Tier:          st.Tier,
+			Versions:      versions,
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })
-	idx := domain.Index{Plugins: plugins}
-	data, err := json.MarshalIndent(idx, "", "  ")
-	if err != nil {
-		return err
-	}
-	return storage.WriteWithRetry(ctx, s.Store, storage.PathIndex, func(existing []byte, gen int64) ([]byte, error) {
-		return data, nil
-	}, 5)
+	idx := domain.Index{Plugins: plugins, Complete: true}
+	return json.MarshalIndent(idx, "", "  ")
 }
 
 func BuildTestJAR(m *domain.Manifest) ([]byte, error) {

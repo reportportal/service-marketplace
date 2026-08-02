@@ -15,9 +15,9 @@ const (
 	StorageLocal StorageType = "local"
 	StorageGCS   StorageType = "gcs"
 
-	insecureJWTDefault    = "dev-jwt-secret-change-me"
+	insecureJWTDefault     = "dev-jwt-secret-change-me"
 	insecureSigningDefault = "dev-signing-secret"
-	minSecretLen          = 32
+	minSecretLen           = 32
 )
 
 type Config struct {
@@ -44,40 +44,73 @@ type Config struct {
 	GA4MeasurementID          string
 	GA4APISecret              string
 	HTTPAddr                  string
-	OrphanCleanupInterval     time.Duration
-	GCPProject                string
-	TrustedProxyHops          int
-	AllowInsecureDefaults     bool
+	// OrphanCleanupInterval is how often the orphan-cleanup goroutine wakes
+	// up to check whether a sweep is due. The sweep itself only actually
+	// runs once per OrphanCleanupRunInterval (AMD-27's "once per 24h"),
+	// gated by the cross-replica lease's LastRunAt -- see
+	// internal/lifecycle.OrphanCleanup.
+	OrphanCleanupInterval time.Duration
+	// OrphanCleanupEnabled gates the sweep entirely. Defaults to false, and
+	// that default is a contract, not a placeholder default that will
+	// eventually flip: three independent review rounds each found a
+	// distinct way to defeat internal/lifecycle.OrphanCleanup's
+	// refuse-to-delete guard (see the doc comment on
+	// lifecycle.OrphanCleanup for the specifics), and the third was never
+	// closed by a code fix. Enabling this sweeper is UNSUPPORTED pending a
+	// proven guard -- it may delete committed plugin versions. There is no
+	// combination of the other Orphan* settings below that makes enabling
+	// it safe by itself; see TestLoad_OrphanCleanupDisabledByDefault
+	// (config_test.go), which fails if this default is ever flipped.
+	OrphanCleanupEnabled bool
+	// OrphanCleanupDryRun defaults to true even once Enabled is set, so
+	// turning the job on and trusting it to delete are two separate,
+	// deliberate operator actions.
+	OrphanCleanupDryRun bool
+	// OrphanCleanupMinAge is the AMD-27 age guard.
+	OrphanCleanupMinAge time.Duration
+	// OrphanCleanupRunInterval is AMD-27's "once per 24h" schedule.
+	OrphanCleanupRunInterval time.Duration
+	// OrphanCleanupLeaseTTL bounds how long one replica holds the
+	// single-runner lease before another replica may take over.
+	OrphanCleanupLeaseTTL time.Duration
+	GCPProject            string
+	TrustedProxyHops      int
+	AllowInsecureDefaults bool
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		StorageType:             StorageType(strings.ToLower(getEnv("STORAGE_TYPE", "local"))),
-		StorageLocalRoot:        getEnv("STORAGE_LOCAL_ROOT", "./data"),
-		StorageSigningSecret:    getEnv("STORAGE_SIGNING_SECRET", ""),
-		GCSBucket:               getEnv("GCS_BUCKET", ""),
-		GCSPrivateBucket:        getEnv("GCS_PRIVATE_BUCKET", ""),
-		CDNBaseURL:              strings.TrimRight(getEnv("CDN_BASE_URL", "http://localhost:8080/cdn"), "/"),
-		CDNURLMap:               getEnv("CDN_URL_MAP", ""),
-		AdminLoginEnabled:       getEnvBool("ADMIN_LOGIN_ENABLED", true),
-		AdminUsername:           getEnv("ADMIN_USERNAME", "admin"),
-		AdminPasswordHash:       getEnv("ADMIN_PASSWORD_HASH", ""),
-		JWTSecret:               getEnv("JWT_SECRET", ""),
-		JWTIssuer:               getEnv("JWT_ISSUER", "service-marketplace"),
-		JWTTTLSeconds:           getEnvInt("JWT_TTL_SECONDS", 3600),
-		GitHubOAuthClientID:     getEnv("GITHUB_OAUTH_CLIENT_ID", ""),
-		GitHubOAuthClientSecret: getEnv("GITHUB_OAUTH_CLIENT_SECRET", ""),
-		GitHubOAuthOrg:          getEnv("GITHUB_OAUTH_ORG", ""),
-		GitHubOAuthAllowedTeam:  getEnv("GITHUB_OAUTH_ALLOWED_TEAM", ""),
-		GitHubOAuthRedirectURL:  getEnv("GITHUB_OAUTH_REDIRECT_URL", ""),
-		PublishOIDCAudience:     getEnv("PUBLISH_OIDC_AUDIENCE", ""),
-		GA4MeasurementID:        getEnv("GA4_MEASUREMENT_ID", ""),
-		GA4APISecret:            getEnv("GA4_API_SECRET", ""),
-		HTTPAddr:                getEnv("HTTP_ADDR", ":8080"),
-		OrphanCleanupInterval:   getEnvDuration("ORPHAN_CLEANUP_INTERVAL", 5*time.Minute),
-		GCPProject:              getEnv("GCP_PROJECT", ""),
-		TrustedProxyHops:        getEnvInt("TRUSTED_PROXY_HOPS", 0),
-		AllowInsecureDefaults:   getEnvBool("ALLOW_INSECURE_DEFAULTS", false),
+		StorageType:              StorageType(strings.ToLower(getEnv("STORAGE_TYPE", "local"))),
+		StorageLocalRoot:         getEnv("STORAGE_LOCAL_ROOT", "./data"),
+		StorageSigningSecret:     getEnv("STORAGE_SIGNING_SECRET", ""),
+		GCSBucket:                getEnv("GCS_BUCKET", ""),
+		GCSPrivateBucket:         getEnv("GCS_PRIVATE_BUCKET", ""),
+		CDNBaseURL:               strings.TrimRight(getEnv("CDN_BASE_URL", "http://localhost:8080/cdn"), "/"),
+		CDNURLMap:                getEnv("CDN_URL_MAP", ""),
+		AdminLoginEnabled:        getEnvBool("ADMIN_LOGIN_ENABLED", true),
+		AdminUsername:            getEnv("ADMIN_USERNAME", "admin"),
+		AdminPasswordHash:        getEnv("ADMIN_PASSWORD_HASH", ""),
+		JWTSecret:                getEnv("JWT_SECRET", ""),
+		JWTIssuer:                getEnv("JWT_ISSUER", "service-marketplace"),
+		JWTTTLSeconds:            getEnvInt("JWT_TTL_SECONDS", 3600),
+		GitHubOAuthClientID:      getEnv("GITHUB_OAUTH_CLIENT_ID", ""),
+		GitHubOAuthClientSecret:  getEnv("GITHUB_OAUTH_CLIENT_SECRET", ""),
+		GitHubOAuthOrg:           getEnv("GITHUB_OAUTH_ORG", ""),
+		GitHubOAuthAllowedTeam:   getEnv("GITHUB_OAUTH_ALLOWED_TEAM", ""),
+		GitHubOAuthRedirectURL:   getEnv("GITHUB_OAUTH_REDIRECT_URL", ""),
+		PublishOIDCAudience:      getEnv("PUBLISH_OIDC_AUDIENCE", ""),
+		GA4MeasurementID:         getEnv("GA4_MEASUREMENT_ID", ""),
+		GA4APISecret:             getEnv("GA4_API_SECRET", ""),
+		HTTPAddr:                 getEnv("HTTP_ADDR", ":8080"),
+		OrphanCleanupInterval:    getEnvDuration("ORPHAN_CLEANUP_INTERVAL", 5*time.Minute),
+		OrphanCleanupEnabled:     getEnvBool("ORPHAN_CLEANUP_ENABLED", false),
+		OrphanCleanupDryRun:      getEnvBool("ORPHAN_CLEANUP_DRY_RUN", true),
+		OrphanCleanupMinAge:      getEnvDuration("ORPHAN_CLEANUP_MIN_AGE", 24*time.Hour),
+		OrphanCleanupRunInterval: getEnvDuration("ORPHAN_CLEANUP_RUN_INTERVAL", 24*time.Hour),
+		OrphanCleanupLeaseTTL:    getEnvDuration("ORPHAN_CLEANUP_LEASE_TTL", 15*time.Minute),
+		GCPProject:               getEnv("GCP_PROJECT", ""),
+		TrustedProxyHops:         getEnvInt("TRUSTED_PROXY_HOPS", 0),
+		AllowInsecureDefaults:    getEnvBool("ALLOW_INSECURE_DEFAULTS", false),
 	}
 
 	if cfg.GitHubOAuthRedirectURL == "" {
