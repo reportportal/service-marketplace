@@ -178,6 +178,34 @@ func (s *Server) handleRevokeLicense(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleRevokeLicenseKey backs DELETE /api/v1/licenses/{customerId}/keys/{keyId}
+// (AMD-11 per-key revocation, distinct from handleRevokeLicense's whole-entitlement
+// DELETE /api/v1/licenses/{customerId}, which is unchanged). 404 covers both "no
+// entitlement for customerId" and "no key resolves to keyId" -- AMD-11 only
+// distinguishes "absent" (404) from "last active key" (422), not which kind of
+// absence. AMD-25: license.Service.RevokeKey commits the revocation via the same
+// storage.WriteWithRetry CAS path Create/RotateKey use, and license.Service.VerifyToken
+// re-reads storage on every call (no key cache sits in front of it), so this 204 makes
+// the revocation visible to the very next verification -- well inside AMD-25's 30s
+// bound.
+func (s *Server) handleRevokeLicenseKey(w http.ResponseWriter, r *http.Request) {
+	customerID := chiParam(r, "customerId")
+	keyID := chiParam(r, "keyId")
+	if err := s.deps.License.RevokeKey(r.Context(), customerID, keyID); err != nil {
+		if errors.Is(err, license.ErrNotFound) || errors.Is(err, license.ErrKeyNotFound) {
+			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "License key not found"})
+			return
+		}
+		if errors.Is(err, license.ErrLastActiveKey) {
+			writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Cannot revoke the entitlement's last active key; revoke the whole entitlement instead"})
+			return
+		}
+		writeError(w, mapStorageErr(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleRotateLicenseKey(w http.ResponseWriter, r *http.Request) {
 	customerID := chiParam(r, "customerId")
 	res, err := s.deps.License.RotateKey(r.Context(), customerID)

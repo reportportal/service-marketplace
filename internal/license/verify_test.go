@@ -294,6 +294,47 @@ func TestRevokeKey_Idempotent(t *testing.T) {
 	}
 }
 
+// TestRotateKey_ResponseIncludesKeyID is AMD-11: RotateLicenseKeyResponse (built
+// directly from license.RotateResult -- see internal/httpapi/handlers_auth.go's
+// handleRotateLicenseKey, which writes it to the wire unmodified) must carry the new
+// key's keyId so an operator/client can address it with
+// DELETE /api/v1/licenses/{customerId}/keys/{keyId} without recomputing
+// domain.DeriveLicenseKeyID(publicKey) themselves.
+func TestRotateKey_ResponseIncludesKeyID(t *testing.T) {
+	svc := &Service{Store: newVerifyTestStore(t)}
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, "acme-corp", nil); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	res, err := svc.RotateKey(ctx, "acme-corp")
+	if err != nil {
+		t.Fatalf("RotateKey: %v", err)
+	}
+	wantKeyID, err := domain.DeriveLicenseKeyID(res.PublicKey)
+	if err != nil {
+		t.Fatalf("DeriveLicenseKeyID: %v", err)
+	}
+	if res.KeyID != wantKeyID {
+		t.Fatalf("RotateResult.KeyID = %q, want %q (derived from the returned PublicKey)", res.KeyID, wantKeyID)
+	}
+
+	// The stored entitlement's second key must resolve to the same id -- the
+	// response's KeyID is not allowed to be a value invented independently of what
+	// verification (which uses LicensePublicKey.ResolvedKeyID) will actually match.
+	ents, err := svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ents[0].PublicKeys) != 2 {
+		t.Fatalf("want 2 public keys after rotate, got %d", len(ents[0].PublicKeys))
+	}
+	storedKeyID := ents[0].PublicKeys[1].KeyID
+	if storedKeyID != wantKeyID {
+		t.Fatalf("stored PublicKeys[1].KeyID = %q, want %q", storedKeyID, wantKeyID)
+	}
+}
+
 // TestCreate_UsesInjectedClock proves Create's timestamps come from Service.Now, not a
 // hidden time.Now() call -- provable without sleeping.
 func TestCreate_UsesInjectedClock(t *testing.T) {

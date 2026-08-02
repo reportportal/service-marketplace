@@ -88,6 +88,7 @@ func (s *Server) routes() chi.Router {
 		api.With(s.requireSessionRejectOIDC).Post("/licenses", s.handleCreateLicense)
 		api.With(s.requireSessionRejectOIDC).Delete("/licenses/{customerId}", s.handleRevokeLicense)
 		api.With(s.requireSessionRejectOIDC).Post("/licenses/{customerId}/keys", s.handleRotateLicenseKey)
+		api.With(s.requireSessionRejectOIDC).Delete("/licenses/{customerId}/keys/{keyId}", s.handleRevokeLicenseKey)
 	})
 
 	fileServer := http.StripPrefix("/operator/", operatorFileServer())

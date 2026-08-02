@@ -35,6 +35,10 @@ type AuthTokenResponse struct {
 // newLicenseEntitlementResponse; do not marshal the domain types directly onto the
 // wire.
 type LicensePublicKeyResponse struct {
+	// KeyID is AMD-11's keyId: the first 8 hex chars of SHA-256(publicKey), always
+	// re-derived via domain.LicensePublicKey.ResolvedKeyID (never the persisted,
+	// possibly-empty/legacy KeyID field) -- see newLicenseEntitlementResponse.
+	KeyID     string      `json:"keyId"`
 	PublicKey string      `json:"publicKey"`
 	IssuedAt  domain.Date `json:"issuedAt"`
 }
@@ -54,7 +58,14 @@ type LicenseEntitlementResponse struct {
 func newLicenseEntitlementResponse(e domain.LicenseEntitlement) LicenseEntitlementResponse {
 	keys := make([]LicensePublicKeyResponse, len(e.PublicKeys))
 	for i, k := range e.PublicKeys {
-		keys[i] = LicensePublicKeyResponse{PublicKey: k.PublicKey, IssuedAt: domain.Date{Time: k.IssuedAt}}
+		// ResolvedKeyID always re-derives from PublicKey rather than trusting the
+		// persisted KeyID field (see its doc comment) -- a pre-AMD-11 record decodes
+		// with KeyID == "" but must still expose the correct wire keyId. Derivation
+		// only fails for corrupt/non-base64 PublicKey bytes, which storage-layer
+		// validation should never allow; degrade to "" rather than erroring the whole
+		// response in that unreachable case.
+		keyID, _ := k.ResolvedKeyID()
+		keys[i] = LicensePublicKeyResponse{KeyID: keyID, PublicKey: k.PublicKey, IssuedAt: domain.Date{Time: k.IssuedAt}}
 	}
 	var expires *domain.Date
 	if e.ExpiresAt != nil {

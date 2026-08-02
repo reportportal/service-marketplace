@@ -918,6 +918,44 @@ paths:
         - operatorSessionJwt: []
         - operatorSessionCookie: []
 
+  /api/v1/licenses/{customerId}/keys/{keyId}:
+    delete:
+      tags:
+        - Operator — Licenses
+      summary: Revoke a single license key
+      description: |
+        Sets `revokedAt` on exactly this key (AMD-11), leaving the rest of the
+        entitlement's keys and the entitlement itself untouched. Revocation takes
+        effect within 30 seconds (AMD-25): a premium download request authenticated
+        with this key more than 30 seconds after this call returns 204 must be
+        rejected. Refused with 422 if `keyId` is the entitlement's last remaining
+        non-revoked key -- use `DELETE /api/v1/licenses/{customerId}` (unchanged) to
+        revoke the whole entitlement instead.
+      operationId: revokeLicenseKey
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+        - $ref: '#/components/parameters/KeyId'
+      responses:
+        '204':
+          description: Key revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
 components:
   securitySchemes:
     operatorSessionJwt:
@@ -1003,6 +1041,16 @@ components:
         minLength: 2
         maxLength: 64
         example: acme-corp
+
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      description: AMD-11 keyId -- first 8 hex characters of SHA-256(publicKey).
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}$'
+        example: 'a1b2c3d4'
 
     CategoryQuery:
       name: category
@@ -1676,9 +1724,17 @@ components:
     LicensePublicKey:
       type: object
       required:
+        - keyId
         - publicKey
         - issuedAt
       properties:
+        keyId:
+          type: string
+          description: |
+            First 8 hex characters of SHA-256(publicKey) (AMD-11). Identifies this key
+            for DELETE /api/v1/licenses/{customerId}/keys/{keyId} (per-key revocation)
+            and is the value a client's JWT `kid` header must carry to select this key.
+          example: 'a1b2c3d4'
         publicKey:
           type: string
           description: Ed25519 public key (base64)
@@ -1755,11 +1811,18 @@ components:
       type: object
       required:
         - customerId
+        - keyId
         - privateKey
         - publicKey
       properties:
         customerId:
           type: string
+        keyId:
+          type: string
+          description: |
+            First 8 hex characters of SHA-256(publicKey) (AMD-11) for the newly-rotated
+            key, usable with DELETE /api/v1/licenses/{customerId}/keys/{keyId}.
+          example: 'a1b2c3d4'
         privateKey:
           type: string
           description: New Ed25519 private signing key (returned once)

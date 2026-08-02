@@ -43,7 +43,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		value  any
 	}{
 		{"PublishResponse", publish.Result{PluginID: "plugin-jira-cloud", Version: "1.4.2", SHA256: "abc"}},
-		{"RotateLicenseKeyResponse", license.RotateResult{CustomerID: "acme-corp", PrivateKey: "priv", PublicKey: "pub"}},
+		{"RotateLicenseKeyResponse", license.RotateResult{CustomerID: "acme-corp", KeyID: "a1b2c3d4", PrivateKey: "priv", PublicKey: "pub"}},
 
 		{"Author", domain.Author{Name: "ReportPortal Team", Email: "a@b.com", URL: "https://reportportal.io"}},
 		{"Compatibility", domain.Compatibility{ReportPortal: ">=25.1"}},
@@ -60,10 +60,10 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 			Compatibility: domain.Compatibility{ReportPortal: ">=25.1"}, Homepage: "https://reportportal.io",
 			Access: domain.AccessPublic, ContactURL: "https://reportportal.io/pricing",
 		}},
-		{"LicensePublicKey", LicensePublicKeyResponse{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+		{"LicensePublicKey", LicensePublicKeyResponse{KeyID: "a1b2c3d4", PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
 		{"LicenseEntitlement", LicenseEntitlementResponse{
 			CustomerID: "acme-corp", Tier: "premium", IssuedAt: domain.Date{Time: now}, ExpiresAt: &expires,
-			PublicKeys: []LicensePublicKeyResponse{{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
+			PublicKeys: []LicensePublicKeyResponse{{KeyID: "a1b2c3d4", PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
 		}},
 
 		{"PluginListResponse", PluginListResponse{Plugins: []PluginListItemResponse{{

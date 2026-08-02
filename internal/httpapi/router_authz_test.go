@@ -72,6 +72,7 @@ var authzMatrix = []routeCase{
 	{http.MethodPost, "/api/v1/licenses", "/api/v1/licenses", policySessionOnlyRejectOIDC},
 	{http.MethodDelete, "/api/v1/licenses/{customerId}", "/api/v1/licenses/cust-1", policySessionOnlyRejectOIDC},
 	{http.MethodPost, "/api/v1/licenses/{customerId}/keys", "/api/v1/licenses/cust-1/keys", policySessionOnlyRejectOIDC},
+	{http.MethodDelete, "/api/v1/licenses/{customerId}/keys/{keyId}", "/api/v1/licenses/cust-1/keys/a1b2c3d4", policySessionOnlyRejectOIDC},
 
 	{http.MethodGet, "/api/v1/plugins", "/api/v1/plugins", policyPublic},
 	{http.MethodPost, "/api/v1/plugins", "/api/v1/plugins", policySessionOnlyRejectOIDC},

@@ -163,6 +163,11 @@ func (s *Service) Revoke(ctx context.Context, customerID string) error {
 
 type RotateResult struct {
 	CustomerID string `json:"customerId"`
+	// KeyID is AMD-11's keyId for the newly-rotated key: the same value
+	// domain.DeriveLicenseKeyID derives from PublicKey (first 8 hex chars of
+	// SHA-256(publicKey)), returned so the operator/client can address this exact key
+	// with DELETE /api/v1/licenses/{customerId}/keys/{keyId} without recomputing it.
+	KeyID      string `json:"keyId"`
 	PrivateKey string `json:"privateKey"`
 	PublicKey  string `json:"publicKey"`
 }
@@ -205,6 +210,7 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 	}
 	return &RotateResult{
 		CustomerID: customerID,
+		KeyID:      keyID,
 		PrivateKey: base64.StdEncoding.EncodeToString(priv),
 		PublicKey:  pubB64,
 	}, nil
