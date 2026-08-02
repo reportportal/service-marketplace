@@ -2,9 +2,6 @@ package storage
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"strconv"
@@ -21,6 +18,20 @@ type GCSStore struct {
 	privateBucket string
 	cdnBase       string
 	signingSecret string
+
+	// Now returns the current time. nil (the production default) means
+	// time.Now().UTC(). See LocalStore.Now / LocalStore.now — both backends
+	// share the same convention and the same underlying verifySignature so
+	// signed-URL expiry is enforced identically regardless of which one is
+	// configured (internal/httpapi's /cdn edge doesn't special-case either).
+	Now func() time.Time
+}
+
+func (s *GCSStore) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now().UTC()
 }
 
 func NewGCSStore(ctx context.Context, bucket, privateBucket, cdnBase, signingSecret string) (*GCSStore, error) {
@@ -142,16 +153,22 @@ func (s *GCSStore) PublicURL(objectPath string) string {
 }
 
 func (s *GCSStore) SignedURL(ctx context.Context, objectPath string, ttl time.Duration) (string, time.Time, error) {
-	expiresAt := time.Now().UTC().Add(ttl)
 	if s.signingSecret == "" {
 		return "", time.Time{}, fmt.Errorf("STORAGE_SIGNING_SECRET is required for signed URLs")
 	}
+	expiresAt := s.now().Add(ttl)
 	exp := strconv.FormatInt(expiresAt.Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(s.signingSecret))
-	_, _ = mac.Write([]byte(objectPath + "|" + exp))
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := signObjectPath(s.signingSecret, objectPath, exp)
 	url := fmt.Sprintf("%s/%s?exp=%s&sig=%s", s.cdnBase, CDNPath(objectPath), exp, sig)
 	return url, expiresAt, nil
+}
+
+// VerifySignedURL reports whether sig is a valid, unexpired signature for
+// objectPath. It shares its implementation (verifySignature) with
+// LocalStore.VerifySignedURL byte-for-byte — see that function's doc
+// comment for why the two backends deliberately cannot diverge here.
+func (s *GCSStore) VerifySignedURL(objectPath, exp, sig string) bool {
+	return verifySignature(s.signingSecret, objectPath, exp, sig, s.now())
 }
 
 func (s *GCSStore) Ready(ctx context.Context) error {

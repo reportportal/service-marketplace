@@ -27,6 +27,13 @@ type ObjectStore interface {
 	ListPrefix(ctx context.Context, prefix string) ([]string, error)
 	PublicURL(objectPath string) string
 	SignedURL(ctx context.Context, objectPath string, ttl time.Duration) (url string, expiresAt time.Time, err error)
+	// VerifySignedURL reports whether sig is a valid, unexpired signature
+	// for objectPath, as produced by this same store's SignedURL. Both
+	// LocalStore and GCSStore implement this identically (see
+	// verifySignature in signing.go) precisely so that the /cdn edge
+	// (internal/httpapi.handleCDNProxy) enforces signed-URL expiry and
+	// signature the same way regardless of storage backend.
+	VerifySignedURL(objectPath, exp, sig string) bool
 	Ready(ctx context.Context) error
 	Type() string
 }

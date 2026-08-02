@@ -2,12 +2,10 @@ package storage
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,12 +21,27 @@ type LocalStore struct {
 	mu            sync.RWMutex
 	generations   map[string]int64
 
+	// Now returns the current time. nil (the production default) means
+	// time.Now().UTC() — see the now() helper. A test sets this field
+	// directly to move the signed-URL expiry boundary without sleeping,
+	// mirroring internal/lifecycle.OrphanCleanup's Config.Now.
+	Now func() time.Time
+
 	// testAfterReadData and testAfterWriteCommit are test-only seams, nil in
 	// production. They let tests deterministically pause Read between its
 	// byte-read and generation-read steps, and observe the instant a Write
 	// becomes durable, in order to prove the two cannot interleave.
 	testAfterReadData    func()
 	testAfterWriteCommit func()
+}
+
+// now returns s.Now() if set, else time.Now().UTC() — the same nil-safe
+// fallback convention internal/lifecycle.OrphanCleanup.Config.now uses.
+func (s *LocalStore) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now().UTC()
 }
 
 func NewLocalStore(root, cdnBase, signingSecret string) (*LocalStore, error) {
@@ -268,11 +281,9 @@ func (s *LocalStore) PublicURL(objectPath string) string {
 }
 
 func (s *LocalStore) SignedURL(ctx context.Context, objectPath string, ttl time.Duration) (string, time.Time, error) {
-	expiresAt := time.Now().UTC().Add(ttl)
+	expiresAt := s.now().Add(ttl)
 	exp := strconv.FormatInt(expiresAt.Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(s.signingSecret))
-	_, _ = mac.Write([]byte(objectPath + "|" + exp))
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := signObjectPath(s.signingSecret, objectPath, exp)
 	url := fmt.Sprintf("%s/%s?exp=%s&sig=%s", s.cdnBase, CDNPath(objectPath), exp, sig)
 	return url, expiresAt, nil
 }
@@ -294,30 +305,7 @@ func (s *LocalStore) Ready(ctx context.Context) error {
 }
 
 func (s *LocalStore) VerifySignedURL(objectPath, exp, sig string) bool {
-	expUnix, err := strconv.ParseInt(exp, 10, 64)
-	if err != nil || time.Now().UTC().Unix() > expUnix {
-		return false
-	}
-	mac := hmac.New(sha256.New, []byte(s.signingSecret))
-	_, _ = mac.Write([]byte(objectPath + "|" + exp))
-	expected := hex.EncodeToString(mac.Sum(nil))
-	return hmac.Equal([]byte(expected), []byte(sig))
-}
-
-func (s *LocalStore) ServeFile(objectPath string, w io.Writer) error {
-	p, err := s.abs(objectPath)
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ErrNotFound
-		}
-		return err
-	}
-	_, err = w.Write(data)
-	return err
+	return verifySignature(s.signingSecret, objectPath, exp, sig, s.now())
 }
 
 func HashSHA256(data []byte) string {
