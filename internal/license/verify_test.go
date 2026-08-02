@@ -10,6 +10,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -21,6 +22,24 @@ import (
 	"github.com/reportportal/service-marketplace/internal/domain"
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
+
+// seedEntitlementDirect writes a single-entitlement authorized_keys.json document
+// directly to store, bypassing Service.Create, so a test can construct an entitlement
+// shape Create itself would never produce (e.g. a non-"premium" tier) -- exactly the
+// AMD-12 gap this proves: Create hardcodes Tier: tierPremium today, but the field is
+// a normal persisted string an operator or a future migration can set to anything,
+// and VerifyToken must check its VALUE, not merely that an entitlement exists.
+func seedEntitlementDirect(t *testing.T, store storage.ObjectStore, ent domain.LicenseEntitlement) {
+	t.Helper()
+	ak := domain.AuthorizedKeys{Entitlements: []domain.LicenseEntitlement{ent}}
+	data, err := json.MarshalIndent(ak, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed entitlement: %v", err)
+	}
+	if _, err := store.Write(context.Background(), storage.PathAuthorizedKeys, data, 0); err != nil {
+		t.Fatalf("write seed entitlement: %v", err)
+	}
+}
 
 type verifyTestKey struct {
 	priv   ed25519.PrivateKey
@@ -351,5 +370,203 @@ func TestCreate_UsesInjectedClock(t *testing.T) {
 	}
 	if !res.Entitlement.PublicKeys[0].IssuedAt.Equal(fixed) {
 		t.Fatalf("IssuedAt = %v, want %v", res.Entitlement.PublicKeys[0].IssuedAt, fixed)
+	}
+}
+
+// TestVerifyToken_NonPremiumTier_Denied is AMD-12 condition (2)'s tier half: an
+// entitlement whose Tier is not "premium" must never authorize a download, even
+// though its JWT signature verifies cleanly and it is neither revoked nor expired.
+// Service.Create hardcodes Tier: tierPremium (so this shape can never come from
+// Create itself today), but Tier is a normal persisted document field an operator or
+// a future migration can set directly -- seedEntitlementDirect constructs exactly
+// that document, bypassing Create, to prove VerifyToken checks the field's value
+// instead of assuming presence of an entitlement means premium.
+func TestVerifyToken_NonPremiumTier_Denied(t *testing.T) {
+	store := newVerifyTestStore(t)
+	svc := &Service{Store: store}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+
+	k := newVerifyTestKey(t)
+	seedEntitlementDirect(t, store, domain.LicenseEntitlement{
+		CustomerID: "acme-corp",
+		Tier:       "basic",
+		CreatedAt:  now,
+		PublicKeys: []domain.LicensePublicKey{{
+			KeyID:     k.keyID,
+			PublicKey: k.pubB64,
+			IssuedAt:  now,
+		}},
+	})
+
+	token := signToken(t, k, "acme-corp", "plugin-jira-cloud", now.Add(time.Hour))
+
+	_, err := svc.VerifyToken(context.Background(), token)
+	if !errors.Is(err, ErrEntitlementTierDenied) {
+		t.Fatalf("err = %v, want ErrEntitlementTierDenied", err)
+	}
+}
+
+// TestVerifyToken_PremiumTier_Allowed is the control for the tier check above: an
+// otherwise-identical entitlement whose Tier IS "premium" must still succeed, proving
+// the tier check discriminates on the field's value rather than rejecting everything.
+func TestVerifyToken_PremiumTier_Allowed(t *testing.T) {
+	store := newVerifyTestStore(t)
+	svc := &Service{Store: store}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+
+	k := newVerifyTestKey(t)
+	seedEntitlementDirect(t, store, domain.LicenseEntitlement{
+		CustomerID: "acme-corp",
+		Tier:       "premium",
+		CreatedAt:  now,
+		PublicKeys: []domain.LicensePublicKey{{
+			KeyID:     k.keyID,
+			PublicKey: k.pubB64,
+			IssuedAt:  now,
+		}},
+	})
+
+	token := signToken(t, k, "acme-corp", "plugin-jira-cloud", now.Add(time.Hour))
+
+	if _, err := svc.VerifyToken(context.Background(), token); err != nil {
+		t.Fatalf("VerifyToken: %v, want success for a premium-tier entitlement", err)
+	}
+}
+
+// TestVerifyToken_RevokedEntitlement_Distinguishable is design choice (b) for the
+// revoked-vs-unknown-customer split: whole-entitlement revocation (Service.Revoke)
+// must leave a customer distinguishable from one that never existed, so a token that
+// verified successfully before revocation gets a different, more specific error
+// afterward (ErrEntitlementRevoked) than the "unknown customerId" bucket
+// (ErrNotFound) -- see the doc comment on ErrEntitlementRevoked and on
+// domain.LicenseEntitlement.RevokedAt for why this project chose a tombstone over a
+// hard delete.
+func TestVerifyToken_RevokedEntitlement_Distinguishable(t *testing.T) {
+	svc := &Service{Store: newVerifyTestStore(t)}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+	ctx := context.Background()
+
+	res, err := svc.Create(ctx, "acme-corp", nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	priv, err := base64.StdEncoding.DecodeString(res.PrivateKey)
+	if err != nil {
+		t.Fatalf("decode private key: %v", err)
+	}
+	k := verifyTestKey{priv: ed25519.PrivateKey(priv)}
+	token := signToken(t, k, "acme-corp", "plugin-jira-cloud", now.Add(time.Hour))
+
+	// Sanity: the token verifies before revocation.
+	if _, err := svc.VerifyToken(ctx, token); err != nil {
+		t.Fatalf("VerifyToken before revoke: %v", err)
+	}
+
+	if err := svc.Revoke(ctx, "acme-corp"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	_, err = svc.VerifyToken(ctx, token)
+	if !errors.Is(err, ErrEntitlementRevoked) {
+		t.Fatalf("err = %v, want ErrEntitlementRevoked", err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("a revoked customer must not be indistinguishable from an unknown one: err = %v also satisfies ErrNotFound", err)
+	}
+}
+
+// TestRevoke_Idempotent proves a second whole-entitlement revoke of an
+// already-revoked customer succeeds without error -- matching RevokeKey's existing
+// idempotent-revoke convention in this package (TestRevokeKey_Idempotent above)
+// -- rather than returning ErrNotFound merely because the tombstoned record no
+// longer matches "found and not yet revoked".
+func TestRevoke_Idempotent(t *testing.T) {
+	svc := &Service{Store: newVerifyTestStore(t)}
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, "acme-corp", nil); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := svc.Revoke(ctx, "acme-corp"); err != nil {
+		t.Fatalf("Revoke (1st): %v", err)
+	}
+	if err := svc.Revoke(ctx, "acme-corp"); err != nil {
+		t.Fatalf("Revoke (2nd, idempotent): %v", err)
+	}
+}
+
+// TestRevoke_UnknownCustomer_ErrNotFound proves Revoke still refuses a customerId
+// that never had an entitlement at all, unchanged from before the tombstone rewrite --
+// including on a store that has never held any entitlement document yet.
+func TestRevoke_UnknownCustomer_ErrNotFound(t *testing.T) {
+	svc := &Service{Store: newVerifyTestStore(t)}
+	if err := svc.Revoke(context.Background(), "nobody-corp"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestList_ExcludesRevokedEntitlements proves the tombstone rewrite of Revoke did not
+// regress GET /api/v1/licenses (backed by Service.List): before this change, a
+// revoked entitlement was deleted outright and so necessarily absent from List's
+// result; List must still omit it now that Revoke keeps the record on disk, since
+// LicenseEntitlementResponse (internal/httpapi/responses.go) has no wire field that
+// would let a caller tell a listed revoked entitlement apart from a live one.
+func TestList_ExcludesRevokedEntitlements(t *testing.T) {
+	svc := &Service{Store: newVerifyTestStore(t)}
+	ctx := context.Background()
+	if _, err := svc.Create(ctx, "acme-corp", nil); err != nil {
+		t.Fatalf("Create acme-corp: %v", err)
+	}
+	if _, err := svc.Create(ctx, "globex-corp", nil); err != nil {
+		t.Fatalf("Create globex-corp: %v", err)
+	}
+	if err := svc.Revoke(ctx, "acme-corp"); err != nil {
+		t.Fatalf("Revoke acme-corp: %v", err)
+	}
+
+	ents, err := svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(ents) != 1 {
+		t.Fatalf("List returned %d entitlements, want 1 (revoked acme-corp must be excluded): %+v", len(ents), ents)
+	}
+	if ents[0].CustomerID != "globex-corp" {
+		t.Fatalf("List returned %q, want only globex-corp", ents[0].CustomerID)
+	}
+}
+
+// TestRevoke_DoesNotDisturbOtherEntitlements proves Revoke's tombstone write only
+// touches the target customer's RevokedAt: a second, unrelated entitlement in the same
+// document must still verify successfully afterward.
+func TestRevoke_DoesNotDisturbOtherEntitlements(t *testing.T) {
+	svc := &Service{Store: newVerifyTestStore(t)}
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	svc.Now = func() time.Time { return now }
+	ctx := context.Background()
+
+	if _, err := svc.Create(ctx, "acme-corp", nil); err != nil {
+		t.Fatalf("Create acme-corp: %v", err)
+	}
+	globexRes, err := svc.Create(ctx, "globex-corp", nil)
+	if err != nil {
+		t.Fatalf("Create globex-corp: %v", err)
+	}
+
+	if err := svc.Revoke(ctx, "acme-corp"); err != nil {
+		t.Fatalf("Revoke acme-corp: %v", err)
+	}
+
+	priv, err := base64.StdEncoding.DecodeString(globexRes.PrivateKey)
+	if err != nil {
+		t.Fatalf("decode private key: %v", err)
+	}
+	k := verifyTestKey{priv: ed25519.PrivateKey(priv)}
+	token := signToken(t, k, "globex-corp", "plugin-jira-cloud", now.Add(time.Hour))
+
+	if _, err := svc.VerifyToken(ctx, token); err != nil {
+		t.Fatalf("VerifyToken for globex-corp after acme-corp was revoked: %v", err)
 	}
 }

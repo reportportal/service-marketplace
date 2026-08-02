@@ -26,7 +26,37 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwt"
 
 	"github.com/reportportal/service-marketplace/internal/domain"
+	"github.com/reportportal/service-marketplace/internal/storage"
 )
+
+// seedNonPremiumEntitlement writes a license entitlement directly to storage with an
+// arbitrary Tier, bypassing license.Service.Create (which hardcodes a "premium"
+// tier for every entitlement it issues) -- exactly the shape AMD-12 condition (2)
+// must reject: a stored document whose tier is not "premium", reachable by an
+// operator editing the document directly or by a future migration/import path even
+// though no code path in this release ever produces it via Create.
+func (e *testEnv) seedNonPremiumEntitlement(t *testing.T, customerID, tier string, priv ed25519.PrivateKey, pub ed25519.PublicKey) {
+	t.Helper()
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	keyID, err := domain.DeriveLicenseKeyID(pubB64)
+	if err != nil {
+		t.Fatalf("DeriveLicenseKeyID: %v", err)
+	}
+	now := time.Now().UTC()
+	ak := domain.AuthorizedKeys{Entitlements: []domain.LicenseEntitlement{{
+		CustomerID: customerID,
+		Tier:       tier,
+		CreatedAt:  now,
+		PublicKeys: []domain.LicensePublicKey{{KeyID: keyID, PublicKey: pubB64, IssuedAt: now}},
+	}}}
+	data, err := json.MarshalIndent(ak, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed entitlement: %v", err)
+	}
+	if _, err := e.Store.Write(context.Background(), storage.PathAuthorizedKeys, data, 0); err != nil {
+		t.Fatalf("write seed entitlement: %v", err)
+	}
+}
 
 // --- fixtures ----------------------------------------------------------------
 
@@ -288,6 +318,66 @@ func TestGetArtifact_PluginIDMismatch_403EntitlementDenied(t *testing.T) {
 	token := amd09Token(t, k, "", "acme-corp", otherPluginID, time.Now().Add(time.Hour))
 
 	rec := e.do(bearerArtifactRequest(pluginID, "1.0.0", token))
+	assertLicenseError(t, rec, http.StatusForbidden, CodeLicenseEntitlementDenied)
+}
+
+// TestGetArtifact_NonPremiumTier_403EntitlementDenied is AMD-12 condition (2)'s tier
+// half reaching the client-visible artifact endpoint: an entitlement whose Tier is
+// not "premium" must be refused with 403 LICENSE_ENTITLEMENT_DENIED (AMD-09 row 3)
+// even though the token's signature verifies cleanly against a real, non-revoked,
+// non-expired entitlement. license.Service.Create cannot produce this shape itself
+// (it hardcodes tierPremium), so this seeds the document directly -- see
+// seedNonPremiumEntitlement's doc comment for why that is still a real, reachable
+// document shape and not an untestable hypothetical.
+func TestGetArtifact_NonPremiumTier_403EntitlementDenied(t *testing.T) {
+	e := newTestEnv(t)
+	const pluginID = "plugin-premium-nonprem-tier"
+	e.publishPremiumPlugin(t, pluginID, "1.0.0")
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	e.seedNonPremiumEntitlement(t, "acme-corp", "basic", priv, pub)
+	k := amd09Key{priv: priv}
+	token := amd09Token(t, k, "", "acme-corp", pluginID, time.Now().Add(time.Hour))
+
+	rec := e.do(bearerArtifactRequest(pluginID, "1.0.0", token))
+	assertLicenseError(t, rec, http.StatusForbidden, CodeLicenseEntitlementDenied)
+}
+
+// TestGetArtifact_RevokedEntitlement_403EntitlementDenied is AMD-09 row 3's other
+// half, and the specific gap this task exists to close: "JWT valid but entitlement
+// revoked" -> 403 LICENSE_ENTITLEMENT_DENIED, not 401. Whole-entitlement revocation
+// (DELETE /api/v1/licenses/{customerId}) tombstones rather than deletes the
+// entitlement (see license.Service.Revoke's doc comment) precisely so this case is
+// distinguishable, at the HTTP layer, from
+// TestGetArtifact_UnknownCustomerId_401JWTInvalid above -- both requests use a
+// customerId this endpoint currently refuses, but only one of them ever had a real,
+// working entitlement.
+func TestGetArtifact_RevokedEntitlement_403EntitlementDenied(t *testing.T) {
+	e := newTestEnv(t)
+	const pluginID = "plugin-premium-revoked-whole"
+	e.publishPremiumPlugin(t, pluginID, "1.0.0")
+	created := e.createLicense("acme-corp")
+	k := decodeAMD09PrivateKey(t, created.PrivateKey)
+	token := amd09Token(t, k, "", "acme-corp", pluginID, time.Now().Add(time.Hour))
+
+	// Sanity: valid before revocation -- without this, the 403 below could just be
+	// this token never having worked in the first place.
+	rec := e.do(bearerArtifactRequest(pluginID, "1.0.0", token))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("before revoke: status = %d, want 200: body=%s", rec.Code, rec.Body.String())
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/licenses/acme-corp", nil)
+	delReq.Header.Set("Authorization", "Bearer "+e.operatorSessionToken())
+	delRec := e.do(delReq)
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("revoke entitlement: status = %d, body = %s", delRec.Code, delRec.Body.String())
+	}
+
+	rec = e.do(bearerArtifactRequest(pluginID, "1.0.0", token))
 	assertLicenseError(t, rec, http.StatusForbidden, CodeLicenseEntitlementDenied)
 }
 

@@ -33,7 +33,32 @@ var (
 	// whole-entitlement revocation (Service.Revoke) is the correct operation for
 	// that, not key rotation.
 	ErrLastActiveKey = errors.New("cannot revoke the entitlement's last active key")
+	// ErrEntitlementRevoked is AMD-09 row 3's "JWT valid but entitlement revoked"
+	// case: the token's signature verifies against a real, known entitlement, but
+	// that entitlement has been revoked via Service.Revoke. Service.Revoke tombstones
+	// the entitlement (sets RevokedAt) instead of deleting it -- see Revoke's doc
+	// comment for why -- specifically so this is a distinct Go error from ErrNotFound
+	// (no entitlement ever existed for that customer): AMD-09 puts unknown-customerId
+	// at 401 LICENSE_JWT_INVALID but revoked-entitlement at 403
+	// LICENSE_ENTITLEMENT_DENIED, and a client/operator being unable to tell "your
+	// licence was revoked" apart from "your licence never existed" is precisely the
+	// FR-A-05 message-quality gap AMD-09 exists to close.
+	ErrEntitlementRevoked = errors.New("entitlement revoked")
+	// ErrEntitlementTierDenied is AMD-12 condition (2)'s tier half: the matching
+	// entitlement's Tier field is not "premium". Service.Create hardcodes
+	// Tier: "premium" for every entitlement it issues today, but Tier is an ordinary
+	// persisted document field -- an operator editing authorized_keys.json directly,
+	// or a future migration/import path, can set it to anything, and a stored
+	// document with a non-premium tier must not authorize a premium download just
+	// because an entitlement happens to exist and its signature verifies.
+	ErrEntitlementTierDenied = errors.New("entitlement tier does not grant premium access")
 )
+
+// tierPremium is the only Tier value Service.VerifyToken authorizes for a premium
+// artifact download (AMD-12 condition (2)). Shared with Service.Create so the value
+// an entitlement is stamped with at issuance and the value VerifyToken requires can
+// never drift apart into two different literals.
+const tierPremium = "premium"
 
 type Service struct {
 	Store storage.ObjectStore
@@ -68,22 +93,27 @@ func (s *Service) load(ctx context.Context) (*domain.AuthorizedKeys, int64, erro
 	return &ak, obj.Generation, nil
 }
 
-func (s *Service) save(ctx context.Context, ak *domain.AuthorizedKeys) error {
-	data, err := json.MarshalIndent(ak, "", "  ")
-	if err != nil {
-		return err
-	}
-	return storage.WriteWithRetry(ctx, s.Store, storage.PathAuthorizedKeys, func(existing []byte, gen int64) ([]byte, error) {
-		return data, nil
-	}, 5)
-}
-
+// List returns every LIVE entitlement (GET /api/v1/licenses). Revoked entitlements
+// are deliberately excluded: Service.Revoke tombstones rather than deletes them (see
+// its doc comment), and the wire response built from this (internal/httpapi's
+// LicenseEntitlementResponse) has no field that would let a caller distinguish a
+// listed revoked entitlement from a live one, so surfacing one here would silently
+// resurrect it in the operator-facing listing. VerifyToken deliberately does NOT go
+// through List/this filtering -- it reads the raw document via s.load so it can still
+// see (and reject) a revoked entitlement's tombstone.
 func (s *Service) List(ctx context.Context) ([]domain.LicenseEntitlement, error) {
 	ak, _, err := s.load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return ak.Entitlements, nil
+	out := make([]domain.LicenseEntitlement, 0, len(ak.Entitlements))
+	for _, e := range ak.Entitlements {
+		if e.RevokedAt != nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 type CreateResult struct {
@@ -107,7 +137,7 @@ func (s *Service) Create(ctx context.Context, customerID string, expiresAt *time
 	}
 	ent := domain.LicenseEntitlement{
 		CustomerID: customerID,
-		Tier:       "premium",
+		Tier:       tierPremium,
 		CreatedAt:  now,
 		ExpiresAt:  expiresAt,
 		PublicKeys: []domain.LicensePublicKey{{
@@ -138,26 +168,41 @@ func (s *Service) Create(ctx context.Context, customerID string, expiresAt *time
 	return &CreateResult{Entitlement: ent, PrivateKey: base64.StdEncoding.EncodeToString(priv)}, nil
 }
 
+// Revoke implements whole-entitlement revocation (DELETE
+// /api/v1/licenses/{customerId}) as a tombstone: it sets RevokedAt on customerID's
+// entitlement rather than removing the entitlement from the document. Before this,
+// Revoke deleted the record outright, which made a revoked customer indistinguishable
+// from one that never had an entitlement at all -- both produced ErrNotFound from
+// VerifyToken, which AMD-09 maps to 401 LICENSE_JWT_INVALID, contradicting AMD-09 row
+// 3's requirement that a revoked (but real) entitlement return 403
+// LICENSE_ENTITLEMENT_DENIED. See domain.LicenseEntitlement.RevokedAt's doc comment
+// for the retention-cost tradeoff this accepts.
+//
+// Returns ErrNotFound if there is no entitlement for customerID at all (unchanged
+// from before this rewrite). Revoking an already-revoked entitlement is idempotent:
+// it succeeds without changing RevokedAt again, matching RevokeKey's existing
+// idempotent-revoke convention below.
 func (s *Service) Revoke(ctx context.Context, customerID string) error {
+	now := s.now()
 	return storage.WriteWithRetry(ctx, s.Store, storage.PathAuthorizedKeys, func(data []byte, gen int64) ([]byte, error) {
 		var ak domain.AuthorizedKeys
-		if err := json.Unmarshal(data, &ak); err != nil {
-			return nil, err
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &ak); err != nil {
+				return nil, err
+			}
 		}
-		out := make([]domain.LicenseEntitlement, 0, len(ak.Entitlements))
-		found := false
-		for _, e := range ak.Entitlements {
-			if e.CustomerID == customerID {
-				found = true
+		for i, e := range ak.Entitlements {
+			if e.CustomerID != customerID {
 				continue
 			}
-			out = append(out, e)
+			if e.RevokedAt != nil {
+				// Already revoked: idempotent no-op success.
+				return json.MarshalIndent(ak, "", "  ")
+			}
+			ak.Entitlements[i].RevokedAt = &now
+			return json.MarshalIndent(ak, "", "  ")
 		}
-		if !found {
-			return nil, ErrNotFound
-		}
-		ak.Entitlements = out
-		return json.MarshalIndent(ak, "", "  ")
+		return nil, ErrNotFound
 	}, 5)
 }
 
@@ -214,36 +259,6 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 		PrivateKey: base64.StdEncoding.EncodeToString(priv),
 		PublicKey:  pubB64,
 	}, nil
-}
-
-// PublicKeysForCustomer returns customerID's raw public key strings (no key metadata:
-// this is a display/listing helper, not part of the verification path — see
-// VerifyToken for that). Returns ErrNotFound if there is no entitlement for
-// customerID, or ErrEntitlementExpired (AMD-10) if there is one but its ExpiresAt has
-// passed as of s.now().
-func (s *Service) PublicKeysForCustomer(ctx context.Context, customerID string) ([]string, error) {
-	ak, _, err := s.load(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, e := range ak.Entitlements {
-		if e.CustomerID != customerID {
-			continue
-		}
-		if e.ExpiresAt != nil && e.ExpiresAt.Before(s.now()) {
-			return nil, ErrEntitlementExpired
-		}
-		keys := make([]string, 0, len(e.PublicKeys))
-		for _, k := range e.PublicKeys {
-			keys = append(keys, k.PublicKey)
-		}
-		return keys, nil
-	}
-	return nil, ErrNotFound
-}
-
-func (s *Service) FindCustomerByPlugin(ctx context.Context, customerID, pluginID string) ([]string, error) {
-	return s.PublicKeysForCustomer(ctx, customerID)
 }
 
 // VerifyToken is the sanctioned, single entry point for verifying a premium-artifact
@@ -303,10 +318,20 @@ func (s *Service) VerifyToken(ctx context.Context, token string) (*auth.LicenseC
 		return nil, err
 	}
 
-	// AMD-10, flow step 7a: entitlement expiry is checked only AFTER signature
-	// verification succeeds, against the now-trusted token — an unverified token
-	// gets ErrLicenseTokenInvalid/ErrLicenseKeyInvalid above, never a chance to
-	// reach this "is the entitlement itself still current" check.
+	// AMD-12 condition (2) and AMD-10, flow step 7a: revocation, tier and expiry are
+	// all entitlement STATE (never client-controlled JWT claims), but every one of
+	// them is withheld until AFTER signature verification succeeds — nothing about a
+	// real entitlement's state is exposed to a caller who has not proven possession
+	// of a live private key for it, matching this function's overall "nothing is
+	// authorized before the signature verifies" guarantee (see the package doc
+	// comment above). An unverified token gets ErrLicenseTokenInvalid/
+	// ErrLicenseKeyInvalid above and never reaches any of these checks.
+	if ent.RevokedAt != nil {
+		return nil, ErrEntitlementRevoked
+	}
+	if ent.Tier != tierPremium {
+		return nil, ErrEntitlementTierDenied
+	}
 	if ent.ExpiresAt != nil && ent.ExpiresAt.Before(s.now()) {
 		return nil, ErrEntitlementExpired
 	}
