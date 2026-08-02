@@ -8,8 +8,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/reportportal/service-marketplace/internal/analytics"
+	"github.com/reportportal/service-marketplace/internal/auth"
 	"github.com/reportportal/service-marketplace/internal/catalogue"
 	"github.com/reportportal/service-marketplace/internal/domain"
+	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/lifecycle"
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
@@ -221,19 +223,22 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r)
 		if token == "" {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "License JWT required"})
+			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTMissing, Message: "License JWT is missing"})
 			return
 		}
-		keys, err := s.publicKeysForLicense(r, token)
+		claims, err := s.deps.License.VerifyToken(r.Context(), token)
 		if err != nil {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid license"})
+			writeError(w, licenseErrorResponse(err))
 			return
 		}
-		claims, err := authVerifyLicense(token, keys)
-		if err != nil || claims.PluginID != pluginID {
+		// AMD-12: authorization succeeds only if the verified pluginId claim
+		// string-equals the URL-path pluginId. This is checked AFTER
+		// VerifyToken has already confirmed the signature and AMD-10's
+		// entitlement expiry -- claims.PluginID is trustworthy here.
+		if claims.PluginID != pluginID {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid license"})
+			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeLicenseEntitlementDenied, Message: "License entitlement does not cover this plugin"})
 			return
 		}
 		url, expiresAt, err := s.deps.Store.SignedURL(r.Context(), artPath, 60*time.Second)
@@ -249,12 +254,50 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.deps.Store.PublicURL(artPath), http.StatusFound)
 }
 
-func (s *Server) publicKeysForLicense(r *http.Request, token string) ([]string, error) {
-	claims, err := authVerifyLicenseUnverifiedCustomer(token)
-	if err != nil {
-		return nil, err
+// licenseErrorResponse renders AMD-09's premium-artifact license error table
+// (requirements/AMENDMENTS-v1.md) for an error returned by
+// license.Service.VerifyToken. The single most likely defect here is putting
+// a row on the wrong side of the 401/403 split, so each case below is
+// annotated with the exact table row it implements:
+//
+//   - "JWT unparseable, bad signature, expired exp, or unknown customerId"
+//     -> 401 LICENSE_JWT_INVALID. This covers auth.ErrLicenseTokenInvalid
+//     (malformed/bad-signature/missing-claim), auth.ErrLicenseTokenExpired
+//     (the JWT's own short-lived exp), auth.ErrLicenseKeyInvalid (AMD-11:
+//     unknown or revoked kid -- deliberately the SAME bucket as a bad
+//     signature, since a kid that doesn't resolve to a usable key is just
+//     another shape of "this token doesn't verify"), and license.ErrNotFound
+//     (no entitlement at all for the token's customerId).
+//   - "JWT valid but entitlement ... expired" -> 403 LICENSE_EXPIRED
+//     (license.ErrEntitlementExpired, AMD-10). Distinct from the JWT's own
+//     exp above: this is the entitlement's ExpiresAt, checked only after the
+//     signature already verified.
+//   - auth.ErrLicenseTokenMissing is handled by handleGetArtifact's own
+//     empty-bearerToken check before VerifyToken is ever called, so it is not
+//     expected to reach here; mapped defensively to the same missing-token
+//     code rather than falling through to the generic default.
+//
+// pluginId-mismatch (403 LICENSE_ENTITLEMENT_DENIED) is NOT handled here --
+// it is only decidable from the verified claims VerifyToken returns on
+// success, so handleGetArtifact checks it itself after a nil error.
+//
+// Any other error (e.g. storage failures VerifyToken propagates) is not an
+// AMD-09 row at all; the caller falls back to writeError's generic mapping
+// via mapStorageErr.
+func licenseErrorResponse(err error) error {
+	switch {
+	case errors.Is(err, auth.ErrLicenseTokenMissing):
+		return &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTMissing, Message: "License JWT is missing"}
+	case errors.Is(err, auth.ErrLicenseTokenExpired),
+		errors.Is(err, auth.ErrLicenseKeyInvalid),
+		errors.Is(err, auth.ErrLicenseTokenInvalid),
+		errors.Is(err, license.ErrNotFound):
+		return &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTInvalid, Message: "License JWT is malformed, unsigned by a known key, or expired"}
+	case errors.Is(err, license.ErrEntitlementExpired):
+		return &APIError{Status: http.StatusForbidden, Code: CodeLicenseExpired, Message: "License entitlement has expired"}
+	default:
+		return mapStorageErr(err)
 	}
-	return s.deps.License.PublicKeysForCustomer(r.Context(), claims.CustomerID)
 }
 
 // handlePublishFirst backs POST /api/v1/plugins (FR-OP-01). It is gated by

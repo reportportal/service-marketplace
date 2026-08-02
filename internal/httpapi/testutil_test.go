@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/reportportal/service-marketplace/internal/config"
 	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/lifecycle"
+	"github.com/reportportal/service-marketplace/internal/openapispec"
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
@@ -128,6 +130,18 @@ func newTestEnv(t *testing.T) *testEnv {
 func (e *testEnv) serverWithStore(store storage.ObjectStore) *Server {
 	d := e.Server.deps
 	d.Store = store
+	return NewServer(d)
+}
+
+// serverWithLicenseClock returns a fresh Server sharing every dependency with
+// e.Server except Deps.License, which is replaced with a *license.Service
+// backed by the same store but an injected clock. Lets AMD-10's entitlement-
+// expiry boundary ("a token presented one second after expiresAt is
+// rejected") be tested deterministically instead of by sleeping past a real
+// deadline.
+func (e *testEnv) serverWithLicenseClock(now func() time.Time) *Server {
+	d := e.Server.deps
+	d.License = &license.Service{Store: d.Store, Now: now}
 	return NewServer(d)
 }
 
@@ -327,20 +341,40 @@ func (e *testEnv) do(req *http.Request) *httptest.ResponseRecorder {
 
 // --- response / schema assertions ---------------------------------------
 
-// openAPIErrorCodes mirrors components.schemas.ErrorResponse.code.enum in
-// docs/openapi/service-marketplace-v1.yaml. There is no YAML dependency in
-// this module (see go.mod — deliberately kept minimal), so this enum is
-// hand-kept in sync with the spec rather than loaded from it; a mismatch
-// here is exactly the kind of drift a future contract test should close by
-// parsing the spec directly once a YAML/JSON-schema dependency is justified.
-var openAPIErrorCodes = map[ErrorCode]bool{
-	"NOT_FOUND": true, "UNAUTHORIZED": true, "FORBIDDEN": true, "CONFLICT": true,
-	"GONE": true, "VALIDATION_ERROR": true, "SERVICE_UNAVAILABLE": true,
-	"TOO_MANY_REQUESTS": true, "PAYLOAD_TOO_LARGE": true, "BAD_REQUEST": true,
-	"METHOD_NOT_ALLOWED": true, "UNSUPPORTED_MEDIA_TYPE": true, "NOT_ACCEPTABLE": true,
-	"INTERNAL_ERROR": true, "STORED_DOCUMENT_UNREADABLE": true, "SIGNING_UNAVAILABLE": true,
-	"STORAGE_CONFLICT": true, "STORAGE_UNAVAILABLE": true, "CSRF_TOKEN_INVALID": true,
-	"TOKEN_TYPE_NOT_PERMITTED": true, "PLUGIN_ALREADY_EXISTS": true, "VERSION_ALREADY_PUBLISHED": true,
+// openAPIErrorCodes loads components.schemas.ErrorResponse.code.enum straight out of
+// docs/openapi/service-marketplace-v1.yaml via internal/openapispec, so this check can
+// never drift from the spec the way a hand-kept copy of the enum would -- adding a code
+// in Go without adding it to the YAML (or vice versa) fails here instead of silently
+// passing. Loaded once and cached: every call in a test binary reads the same file.
+var (
+	openAPIErrorCodesOnce  sync.Once
+	openAPIErrorCodesCache map[ErrorCode]bool
+	openAPIErrorCodesErr   error
+)
+
+func openAPIErrorCodes(t *testing.T) map[ErrorCode]bool {
+	t.Helper()
+	openAPIErrorCodesOnce.Do(func() {
+		schemas, err := openapispec.Load(openAPISpecPath)
+		if err != nil {
+			openAPIErrorCodesErr = err
+			return
+		}
+		enum, err := openapispec.PropertyEnum(schemas, "ErrorResponse", "code")
+		if err != nil {
+			openAPIErrorCodesErr = err
+			return
+		}
+		m := make(map[ErrorCode]bool, len(enum))
+		for _, v := range enum {
+			m[ErrorCode(v)] = true
+		}
+		openAPIErrorCodesCache = m
+	})
+	if openAPIErrorCodesErr != nil {
+		t.Fatalf("loading OpenAPI ErrorResponse.code enum: %v", openAPIErrorCodesErr)
+	}
+	return openAPIErrorCodesCache
 }
 
 // decodeErrorEnvelope decodes rec's body as an ErrorResponse and checks it
@@ -364,7 +398,7 @@ func assertOpenAPIErrorSchema(t *testing.T, body ErrorResponse) {
 	if body.Message == "" {
 		t.Fatalf("error envelope missing required field \"message\" per OpenAPI ErrorResponse schema")
 	}
-	if !openAPIErrorCodes[body.Code] {
+	if !openAPIErrorCodes(t)[body.Code] {
 		t.Fatalf("error code %q is not in the OpenAPI ErrorResponse.code enum (docs/openapi/service-marketplace-v1.yaml)", body.Code)
 	}
 }

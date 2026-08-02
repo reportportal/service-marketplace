@@ -450,6 +450,21 @@ paths:
         forwarded to CDN or pre-signed URLs.
 
         Emits a `plugin_artifact_request` GA event asynchronously (FR-R-08, Phase 4).
+
+        **Premium license errors (AMD-09)** — a client must branch on `ErrorResponse.code`,
+        never on the presence/absence of a field:
+
+        | Condition                                                                             | Status | code                                             |
+        |----------------------------------------------------------------------------------------|--------|--------------------------------------------------|
+        | `Authorization` header absent or blank                                                 | 401    | `LICENSE_JWT_MISSING`                             |
+        | JWT unparseable, bad signature, expired `exp`, unknown/revoked `kid`, or unknown `customerId` | 401 | `LICENSE_JWT_INVALID`                       |
+        | JWT valid but the entitlement's `expiresAt` has passed (AMD-10)                        | 403    | `LICENSE_EXPIRED`                                 |
+        | JWT valid but its `pluginId` claim does not match the URL path `pluginId` (AMD-12)      | 403    | `LICENSE_ENTITLEMENT_DENIED`                      |
+        | Version blocked (FR-OP-03)                                                              | 403    | n/a — `BlockedArtifactError` (`blocked: true`), not an `ErrorResponse` |
+
+        The three `ErrorResponse`-shaped 401/403 bodies above never carry a `blocked` field;
+        only `BlockedArtifactError` does, so a client can always tell a license denial apart
+        from a blocked version by `code` alone (or, equivalently, by the presence of `blocked`).
       operationId: getPluginArtifact
       parameters:
         - $ref: '#/components/parameters/PluginId'
@@ -474,9 +489,25 @@ paths:
                 type: string
                 format: uri
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: |
+            No or unusable license JWT. `code` is `LICENSE_JWT_MISSING` when the
+            `Authorization` header is absent or blank, otherwise `LICENSE_JWT_INVALID`
+            (unparseable, bad signature, expired `exp`, unknown/revoked `kid`, or unknown
+            `customerId` — see this operation's AMD-09 table above).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing:
+                  $ref: '#/components/examples/LicenseJWTMissingExample'
+                invalid:
+                  $ref: '#/components/examples/LicenseJWTInvalidExample'
         '403':
-          description: Blocked version or invalid license
+          description: |
+            Blocked version, or a license JWT that verified but does not authorize this
+            download — see this operation's AMD-09 table above for the three distinct
+            `code` values this status can carry.
           content:
             application/json:
               schema:
@@ -486,6 +517,10 @@ paths:
               examples:
                 blocked:
                   $ref: '#/components/examples/BlockedArtifactExample'
+                licenseExpired:
+                  $ref: '#/components/examples/LicenseExpiredExample'
+                entitlementDenied:
+                  $ref: '#/components/examples/LicenseEntitlementDeniedExample'
         '404':
           $ref: '#/components/responses/NotFound'
         '410':
@@ -1865,6 +1900,10 @@ components:
             - TOKEN_TYPE_NOT_PERMITTED
             - PLUGIN_ALREADY_EXISTS
             - VERSION_ALREADY_PUBLISHED
+            - LICENSE_JWT_MISSING
+            - LICENSE_JWT_INVALID
+            - LICENSE_ENTITLEMENT_DENIED
+            - LICENSE_EXPIRED
         message:
           type: string
 
@@ -1957,6 +1996,26 @@ components:
         blocked: true
         blockedAt: '2026-02-15T10:00:00Z'
         reason: CVE-2026-1234 in jackson-databind
+
+    LicenseJWTMissingExample:
+      value:
+        code: LICENSE_JWT_MISSING
+        message: License JWT is missing
+
+    LicenseJWTInvalidExample:
+      value:
+        code: LICENSE_JWT_INVALID
+        message: License JWT is malformed, unsigned by a known key, or expired
+
+    LicenseExpiredExample:
+      value:
+        code: LICENSE_EXPIRED
+        message: License entitlement has expired
+
+    LicenseEntitlementDeniedExample:
+      value:
+        code: LICENSE_ENTITLEMENT_DENIED
+        message: License entitlement does not cover this plugin
 
     PremiumArtifactExample:
       value:

@@ -40,6 +40,21 @@ const (
 	// ErrorResponse.code = VERSION_ALREADY_PUBLISHED".
 	CodePluginAlreadyExists     ErrorCode = "PLUGIN_ALREADY_EXISTS"
 	CodeVersionAlreadyPublished ErrorCode = "VERSION_ALREADY_PUBLISHED"
+	// The four codes below are AMD-09's premium-artifact license error table
+	// (requirements/AMENDMENTS-v1.md), rendered by handleGetArtifact's premium
+	// branch via licenseErrorResponse:
+	//   Authorization header absent/blank                          -> 401 CodeLicenseJWTMissing
+	//   JWT unparseable, bad signature, expired exp, unknown kid,
+	//     or unknown customerId                                    -> 401 CodeLicenseJWTInvalid
+	//   JWT valid but entitlement revoked/expired/not covering the
+	//     plugin (pluginId claim != URL path id)                   -> 403 CodeLicenseEntitlementDenied or CodeLicenseExpired
+	// Clients branch on this code, never on field absence -- see
+	// BlockedArtifactErrorResponse, whose 403 body carries a 'blocked' field
+	// these three error bodies deliberately never have.
+	CodeLicenseJWTMissing        ErrorCode = "LICENSE_JWT_MISSING"
+	CodeLicenseJWTInvalid        ErrorCode = "LICENSE_JWT_INVALID"
+	CodeLicenseEntitlementDenied ErrorCode = "LICENSE_ENTITLEMENT_DENIED"
+	CodeLicenseExpired           ErrorCode = "LICENSE_EXPIRED"
 )
 
 type ErrorResponse struct {

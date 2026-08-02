@@ -81,6 +81,50 @@ func properties(schemas map[string]Schema, s Schema) (map[string]bool, error) {
 	return out, nil
 }
 
+// PropertyEnum resolves the declared enum values of a single PROPERTY within the named
+// schema (e.g. ErrorResponse's "code" field), following $ref and allOf composition the
+// same way Properties does. Unlike Enum, which reads a schema's own top-level enum
+// (a schema that IS an enum, like PluginCategory), this is for a schema that HAS a
+// property whose value is constrained to an enum.
+func PropertyEnum(schemas map[string]Schema, schemaName, propertyName string) ([]string, error) {
+	s, ok := schemas[schemaName]
+	if !ok {
+		return nil, fmt.Errorf("openapispec: schema %q not found", schemaName)
+	}
+	enum, err := propertyEnum(schemas, s, propertyName)
+	if err != nil {
+		return nil, err
+	}
+	if enum == nil {
+		return nil, fmt.Errorf("openapispec: property %q not found on schema %q", propertyName, schemaName)
+	}
+	return enum, nil
+}
+
+func propertyEnum(schemas map[string]Schema, s Schema, propertyName string) ([]string, error) {
+	if s.Ref != "" {
+		refName := strings.TrimPrefix(s.Ref, "#/components/schemas/")
+		sub, ok := schemas[refName]
+		if !ok {
+			return nil, fmt.Errorf("openapispec: $ref %q not found", s.Ref)
+		}
+		return propertyEnum(schemas, sub, propertyName)
+	}
+	if p, ok := s.Properties[propertyName]; ok {
+		return p.Enum, nil
+	}
+	for _, sub := range s.AllOf {
+		enum, err := propertyEnum(schemas, sub, propertyName)
+		if err != nil {
+			return nil, err
+		}
+		if enum != nil {
+			return enum, nil
+		}
+	}
+	return nil, nil
+}
+
 // Enum resolves the declared enum values of the named schema, following $ref.
 func Enum(schemas map[string]Schema, name string) ([]string, error) {
 	s, ok := schemas[name]
