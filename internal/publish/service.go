@@ -323,17 +323,19 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 			// writes can leave a committed entry that is missing some (not
 			// necessarily just the jar) of its objects.
 			//
-			// v.Complete is the authoritative answer to "is this version
-			// whole": it is set true only by a dedicated follow-up
-			// compare-and-swap (markVersionComplete) that runs after every
-			// object write for this version has already succeeded, so it
-			// can never be true while something is still missing. Checking
-			// it here needs no storage round-trip at all, and — unlike a
-			// "does the jar exist" probe — does not depend on the healer
-			// somehow knowing which optional objects (changelog,
+			// domain.IsVersionComplete is the authoritative answer to "is
+			// this version whole": Complete is set true only by a dedicated
+			// follow-up compare-and-swap (markVersionComplete) that runs
+			// after every object write for this version has already
+			// succeeded, so it can never be true while something is still
+			// missing -- and nil (a legacy record predating this field) is
+			// provably whole by construction, per VersionMeta.Complete's doc
+			// comment. Checking it here needs no storage round-trip at all,
+			// and — unlike a "does the jar exist" probe — does not depend on
+			// the healer somehow knowing which optional objects (changelog,
 			// screenshots) the ORIGINAL interrupted attempt's bundle
 			// happened to include.
-			if v.Complete {
+			if domain.IsVersionComplete(v) {
 				return &Result{PluginID: pluginID, Version: m.Version, SHA256: sha}, true, nil
 			}
 			healIdenticalCommit = true
@@ -485,7 +487,7 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 				// before every one of its writes finished; see
 				// markVersionComplete for what fully clears that flag.
 				st.Versions[i].PublishedAt = now
-				if !st.Versions[i].Complete {
+				if !domain.IsVersionComplete(st.Versions[i]) {
 					writeArtifacts = true
 				}
 				break
@@ -498,7 +500,7 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			return nil, ErrVersionConflict
 		}
 		if !found {
-			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha, Complete: false})
+			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha, Complete: boolPtr(false)})
 			writeArtifacts = true
 		}
 		// AMD-07: latestVersion is the SemVer-maximum of the non-blocked,
@@ -578,6 +580,12 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 // swallowed storage.ErrConflict for the jar only, which kept stale/possibly
 // truncated bytes on a retry while the manifest write below it had no such
 // swallow and just failed outright).
+// boolPtr returns a pointer to b. Used for domain.VersionMeta.Complete,
+// which is a tri-state *bool (nil/true/false all mean different things —
+// see its doc comment) so every write this package makes must produce an
+// explicit, non-nil pointer rather than the field's nil zero value.
+func boolPtr(b bool) *bool { return &b }
+
 func upsertObject(ctx context.Context, store storage.ObjectStore, path string, data []byte) error {
 	return storage.WriteWithRetry(ctx, store, path, func([]byte, int64) ([]byte, error) {
 		return data, nil
@@ -627,7 +635,7 @@ func (s *Service) markVersionComplete(ctx context.Context, pluginID, version str
 		}
 		for i := range st.Versions {
 			if st.Versions[i].Version == version {
-				st.Versions[i].Complete = true
+				st.Versions[i].Complete = boolPtr(true)
 				break
 			}
 		}

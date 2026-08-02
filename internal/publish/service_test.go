@@ -355,10 +355,15 @@ func TestPublishVersionHealsMissingArtifactAfterInterruptedArtifactWrite(t *test
 
 	// Simulate a crash between publish()'s plugin.json CAS committing 2.0.0
 	// and its own subsequent artifact writes: plugin.json records the
-	// version, but no bytes exist at the artifact path yet.
+	// version, but no bytes exist at the artifact path yet. Complete is
+	// explicitly false here -- not left nil -- because nil now means "legacy
+	// record, provably complete" (see domain.VersionMeta.Complete's doc
+	// comment); this seed is simulating exactly the opposite: this branch's
+	// own commit-then-write-artifacts protocol caught mid-flight, which only
+	// ever produces an explicit false.
 	st := domain.PluginState{
 		ID: m.ID, Tier: domain.TierOfficial, LatestVersion: m.Version,
-		Versions: []domain.VersionMeta{{Version: m.Version, PublishedAt: time.Now().UTC(), SHA256: sha}},
+		Versions: []domain.VersionMeta{{Version: m.Version, PublishedAt: time.Now().UTC(), SHA256: sha, Complete: boolPtr(false)}},
 	}
 	body, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -1028,7 +1033,7 @@ func TestPublishVersionHealsAfterCrashAtEachArtifactWriteStep(t *testing.T) {
 			if entry.SHA256 != sha {
 				t.Fatalf("committed SHA256 = %q, want %q", entry.SHA256, sha)
 			}
-			if entry.Complete {
+			if domain.IsVersionComplete(*entry) {
 				t.Fatalf("test precondition violated: version must not be Complete after a crash writing %s", step.name)
 			}
 
@@ -1076,7 +1081,7 @@ func TestPublishVersionHealsAfterCrashAtEachArtifactWriteStep(t *testing.T) {
 			for _, v := range st2.Versions {
 				if v.Version == m.Version {
 					found = true
-					if !v.Complete {
+					if !domain.IsVersionComplete(v) {
 						t.Fatalf("crash writing %s: version must be marked Complete after a successful heal", step.name)
 					}
 				}
@@ -1168,7 +1173,7 @@ func TestPublishVersionHealsAfterCrashDuringCompletionMarkerWrite(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, v := range st.Versions {
-		if v.Version == m.Version && v.Complete {
+		if v.Version == m.Version && domain.IsVersionComplete(v) {
 			t.Fatalf("test precondition violated: version must not be Complete after the injected crash")
 		}
 	}
@@ -1196,7 +1201,7 @@ func TestPublishVersionHealsAfterCrashDuringCompletionMarkerWrite(t *testing.T) 
 	complete := false
 	for _, v := range st2.Versions {
 		if v.Version == m.Version {
-			complete = v.Complete
+			complete = domain.IsVersionComplete(v)
 		}
 	}
 	if !complete {

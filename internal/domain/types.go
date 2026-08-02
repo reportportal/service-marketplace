@@ -169,22 +169,61 @@ type VersionMeta struct {
 	Version     string    `json:"version"`
 	PublishedAt time.Time `json:"publishedAt,omitempty"`
 	SHA256      string    `json:"sha256,omitempty"`
-	// Complete is true once every object this version comprises (jar,
-	// manifest, and any changelog/screenshots the publish included) has been
-	// successfully written -- set by a dedicated compare-and-swap on
-	// plugin.json (internal/publish.Service.markVersionComplete) that runs
-	// only after all of those writes have succeeded. A version can be
-	// present in Versions (i.e. "committed", per AMD-30-commit-point-
-	// granularity) with Complete still false: the plugin.json CAS that
-	// records SHA256 happens BEFORE the artifact writes (see publish()'s doc
-	// comment), so a crash at any point between that CAS and this flag being
-	// set leaves a committed-but-incomplete entry. That state must always be
-	// healable by a same-content republish -- see
-	// internal/publish.Service.PublishVersion's use of this field, which
-	// replaced an earlier, incomplete "does the jar file exist" proxy that
-	// left a version permanently unpublishable if the crash landed after the
-	// jar but before the manifest (or any other object).
-	Complete bool `json:"complete,omitempty"`
+	// Complete is a tri-state flag, not a plain bool: nil, true, and false
+	// (explicitly written) all mean different things, and collapsing nil and
+	// false together is exactly the bug this field's history warns against.
+	//
+	//   - true means every object this version comprises (jar, manifest, and
+	//     any changelog/screenshots the publish included) has been
+	//     successfully written -- set by a dedicated compare-and-swap on
+	//     plugin.json (internal/publish.Service.markVersionComplete) that
+	//     runs only after all of those writes have succeeded.
+	//   - false is written ONLY by this branch's own code, the moment the
+	//     plugin.json CAS that records a version's SHA256 lands -- which
+	//     happens BEFORE the artifact writes (see publish()'s doc comment).
+	//     A version can therefore be present in Versions (i.e. "committed",
+	//     per AMD-30-commit-point-granularity) with Complete explicitly
+	//     false: a crash at any point between that CAS and markVersionComplete
+	//     leaves exactly this state. It must always be healable by a
+	//     same-content republish -- see
+	//     internal/publish.Service.PublishVersion's use of this field, which
+	//     replaced an earlier, incomplete "does the jar file exist" proxy
+	//     that left a version permanently unpublishable if the crash landed
+	//     after the jar but before the manifest (or any other object).
+	//   - nil (absent from the JSON entirely) means no code that understands
+	//     this field ever touched this entry -- which, for every plugin.json
+	//     written before this field existed, means "committed" already
+	//     implied "complete": the old write protocol wrote every object
+	//     before ever committing plugin.json, so there was no crash window
+	//     that could leave a committed-but-partial entry in the first place.
+	//     nil is therefore provably complete, not merely "unknown" -- see
+	//     IsVersionComplete.
+	//
+	// A plain bool cannot express this: its zero value (false) is what an
+	// old document decodes to, which is indistinguishable from "explicitly
+	// marked incomplete by this branch's own code". That made the FIRST
+	// same-content republish of an already-whole legacy version take the
+	// healing branch instead of AMD-04 branch 2's no-write fast path --
+	// silently refreshing PublishedAt and overwriting its changelog and
+	// screenshots with whatever the new bundle happened to carry, while
+	// still reporting 200 idempotent, in violation of AMD-04 branch 2's "no
+	// objects are written" promise. domain.Index.Complete does not have this
+	// problem with a plain bool because the action IT guards is "refuse to
+	// delete" -- false-by-default is the safe default there. Here the
+	// guarded action is "overwrite", so false-by-default is unsafe, and only
+	// a representation that can tell "absent" from "explicitly false" (this
+	// pointer) closes it.
+	Complete *bool `json:"complete,omitempty"`
+}
+
+// IsVersionComplete reports whether v's artifacts should be treated as fully
+// present: true if Complete is nil (a legacy record predating this field,
+// provably whole by construction -- see VersionMeta.Complete's doc comment)
+// or if Complete points to true. Only an explicit Complete == false -- which
+// only internal/publish.Service's own CAS callbacks ever write -- means
+// "known incomplete, needs healing".
+func IsVersionComplete(v VersionMeta) bool {
+	return v.Complete == nil || *v.Complete
 }
 
 type SecurityAdvisory struct {
