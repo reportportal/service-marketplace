@@ -55,7 +55,7 @@ func publishVersion(t *testing.T, svc *Service, pluginID, version string, first 
 		}
 		return
 	}
-	if _, err := svc.PublishVersion(ctx, pluginID, bundle, "operator", false); err != nil {
+	if _, _, err := svc.PublishVersion(ctx, pluginID, bundle, "operator", false); err != nil {
 		t.Fatalf("PublishVersion(%s): %v", version, err)
 	}
 }

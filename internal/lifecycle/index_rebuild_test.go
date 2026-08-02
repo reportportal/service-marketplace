@@ -52,7 +52,7 @@ func publishForBlockTest(t *testing.T, svc *Service, pluginID, version string, f
 		}
 		return
 	}
-	if _, err := svc.Publisher.PublishVersion(ctx, pluginID, bundle, "operator", false); err != nil {
+	if _, _, err := svc.Publisher.PublishVersion(ctx, pluginID, bundle, "operator", false); err != nil {
 		t.Fatalf("PublishVersion(%s): %v", version, err)
 	}
 }

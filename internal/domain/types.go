@@ -120,12 +120,36 @@ type IndexPlugin struct {
 	Category      Category   `json:"category"`
 	Access        AccessTier `json:"access"`
 	Tier          TrustTier  `json:"tier"`
-	// Versions is the plugin's full committed version set (every published
-	// version, including blocked-but-not-removed ones -- blocking makes a
-	// version un-installable, not uncommitted). This is the AMD-27
-	// orphan-cleanup reference set: internal/lifecycle.OrphanCleanup treats a
-	// plugins/{id}/versions/{v}/ (or private/plugins/{id}/versions/{v}/)
-	// directory as a deletion candidate only if v is absent from here.
+	// Versions is the plugin's advertised, INSTALLABLE version set: every
+	// COMPLETE version (domain.IsVersionComplete), including
+	// blocked-but-not-removed ones -- blocking makes a version
+	// un-installable, not incomplete. It is deliberately narrower than
+	// plugin.json's full committed history (domain.PluginState.Versions,
+	// which includes entries still mid-publish with Complete: false --
+	// see VersionMeta.Complete's doc comment): a version that has not
+	// finished writing its jar/manifest has nothing here to serve, so
+	// advertising it here (the pre-fix behaviour this comment now
+	// documents the correction of) hands a client a version ID that
+	// 404s/500s on every other endpoint. index.json remains the commit
+	// point for catalogue-listing VISIBILITY only (whether the plugin
+	// appears at all, at its latest complete version) -- per
+	// docs/decisions/AMD-30-commit-point-granularity.md, per-version
+	// IMMUTABILITY (AMD-04's duplicate-publish three-branch rule) is
+	// checked against plugin.json's full Versions instead and is
+	// unaffected by what this field advertises.
+	//
+	// internal/lifecycle.OrphanCleanup currently reads this field as its
+	// AMD-27 reference set (a directory is a deletion candidate only if its
+	// version is absent from here), which was written when this field still
+	// carried the full committed set: as of this field narrowing to
+	// complete-only, a committed-but-still-incomplete version's stray
+	// objects read as unreferenced here and become sweep-eligible once
+	// MinAge elapses. That is consistent with AMD-30's own text for orphan
+	// cleanup (the per-version reference set should be plugin.json's
+	// Versions, not this field) and is currently inert either way --
+	// OrphanCleanup ships disabled by contract (see its doc comment) -- but
+	// whoever enables it should re-point its reference set at plugin.json
+	// rather than rely on this field for that purpose.
 	// index.json documents written before this field existed omit it
 	// entirely, decoding to a nil slice -- OrphanCleanup treats a
 	// non-empty index whose entries all decode to zero versions as
@@ -169,6 +193,61 @@ type VersionMeta struct {
 	Version     string    `json:"version"`
 	PublishedAt time.Time `json:"publishedAt,omitempty"`
 	SHA256      string    `json:"sha256,omitempty"`
+	// Complete is a tri-state flag, not a plain bool: nil, true, and false
+	// (explicitly written) all mean different things, and collapsing nil and
+	// false together is exactly the bug this field's history warns against.
+	//
+	//   - true means every object this version comprises (jar, manifest, and
+	//     any changelog/screenshots the publish included) has been
+	//     successfully written -- set by a dedicated compare-and-swap on
+	//     plugin.json (internal/publish.Service.markVersionComplete) that
+	//     runs only after all of those writes have succeeded.
+	//   - false is written ONLY by this branch's own code, the moment the
+	//     plugin.json CAS that records a version's SHA256 lands -- which
+	//     happens BEFORE the artifact writes (see publish()'s doc comment).
+	//     A version can therefore be present in Versions (i.e. "committed",
+	//     per AMD-30-commit-point-granularity) with Complete explicitly
+	//     false: a crash at any point between that CAS and markVersionComplete
+	//     leaves exactly this state. It must always be healable by a
+	//     same-content republish -- see
+	//     internal/publish.Service.PublishVersion's use of this field, which
+	//     replaced an earlier, incomplete "does the jar file exist" proxy
+	//     that left a version permanently unpublishable if the crash landed
+	//     after the jar but before the manifest (or any other object).
+	//   - nil (absent from the JSON entirely) means no code that understands
+	//     this field ever touched this entry -- which, for every plugin.json
+	//     written before this field existed, means "committed" already
+	//     implied "complete": the old write protocol wrote every object
+	//     before ever committing plugin.json, so there was no crash window
+	//     that could leave a committed-but-partial entry in the first place.
+	//     nil is therefore provably complete, not merely "unknown" -- see
+	//     IsVersionComplete.
+	//
+	// A plain bool cannot express this: its zero value (false) is what an
+	// old document decodes to, which is indistinguishable from "explicitly
+	// marked incomplete by this branch's own code". That made the FIRST
+	// same-content republish of an already-whole legacy version take the
+	// healing branch instead of AMD-04 branch 2's no-write fast path --
+	// silently refreshing PublishedAt and overwriting its changelog and
+	// screenshots with whatever the new bundle happened to carry, while
+	// still reporting 200 idempotent, in violation of AMD-04 branch 2's "no
+	// objects are written" promise. domain.Index.Complete does not have this
+	// problem with a plain bool because the action IT guards is "refuse to
+	// delete" -- false-by-default is the safe default there. Here the
+	// guarded action is "overwrite", so false-by-default is unsafe, and only
+	// a representation that can tell "absent" from "explicitly false" (this
+	// pointer) closes it.
+	Complete *bool `json:"complete,omitempty"`
+}
+
+// IsVersionComplete reports whether v's artifacts should be treated as fully
+// present: true if Complete is nil (a legacy record predating this field,
+// provably whole by construction -- see VersionMeta.Complete's doc comment)
+// or if Complete points to true. Only an explicit Complete == false -- which
+// only internal/publish.Service's own CAS callbacks ever write -- means
+// "known incomplete, needs healing".
+func IsVersionComplete(v VersionMeta) bool {
+	return v.Complete == nil || *v.Complete
 }
 
 type SecurityAdvisory struct {
