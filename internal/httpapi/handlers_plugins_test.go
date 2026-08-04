@@ -86,3 +86,20 @@ func TestGetVersionResponseMatchesPluginVersionDetailSchema(t *testing.T) {
 		t.Errorf("screenshotUrls is not a JSON array: %v (%s)", err, raw)
 	}
 }
+
+func TestPathParamsRejectUnsafeIDs(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// These still reach the handler as single path segments (no "/").
+	cases := []string{
+		"/api/v1/plugins/Bad_ID",
+		"/api/v1/plugins/plugin-demo/versions/not-semver",
+	}
+	for _, path := range cases {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: expected 422, got %d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}

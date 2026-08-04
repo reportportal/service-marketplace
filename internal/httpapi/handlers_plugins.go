@@ -19,6 +19,28 @@ func chiParam(r *http.Request, key string) string {
 	return chi.URLParam(r, key)
 }
 
+func requirePluginID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := chiParam(r, "pluginId")
+	if ve := domain.ValidatePluginID(id); ve != nil {
+		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "pluginId", Message: ve.Message}}})
+		return "", false
+	}
+	return id, true
+}
+
+func requirePluginVersion(w http.ResponseWriter, r *http.Request) (pluginID, version string, ok bool) {
+	pluginID, ok = requirePluginID(w, r)
+	if !ok {
+		return "", "", false
+	}
+	version = chiParam(r, "version")
+	if ve := domain.ValidateVersion(version); ve != nil {
+		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "version", Message: ve.Message}}})
+		return "", "", false
+	}
+	return pluginID, version, true
+}
+
 func mapStorageErr(err error) error {
 	if errors.Is(err, storage.ErrConflict) {
 		return &APIError{Status: http.StatusConflict, Code: CodeStorageConflict, Message: "The stored object changed while this request was being applied; retry", Headers: map[string]string{"Retry-After": "1"}}
@@ -42,7 +64,10 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	m, st, err := s.deps.Catalogue.GetPlugin(r.Context(), pluginID)
 	if err != nil {
 		if errors.Is(err, catalogue.ErrNotFound) {
@@ -69,7 +94,10 @@ func pluginDetailResponse(m domain.Manifest, st *domain.PluginState) PluginDetai
 }
 
 func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	st, err := s.deps.Catalogue.ListVersions(r.Context(), pluginID)
 	if err != nil {
 		if errors.Is(err, catalogue.ErrNotFound) {
@@ -106,8 +134,10 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	detail, st, err := s.deps.Catalogue.GetVersion(r.Context(), pluginID, version)
 	if err != nil {
 		if errors.Is(err, catalogue.ErrNotFound) {
@@ -152,8 +182,10 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	clientID := r.Header.Get("X-RP-Instance-Id")
 	track := func(access, result string) {
 		s.deps.Analytics.TrackArtifactRequest(r.Context(), pluginID, version, access, result, clientID)
@@ -256,7 +288,10 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 // operator-session call never auto-creates: first publish via the Operator
 // UI goes through POST /api/v1/plugins (handlePublishFirst) instead.
 func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	oidcPlugin := oidcPluginFrom(r.Context())
 	if oidcPlugin != "" && oidcPlugin != pluginID {
 		writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allowed to publish this pluginId"})
@@ -322,7 +357,10 @@ func mapPublishErr(err error) error {
 }
 
 func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Tier domain.TrustTier `json:"tier"`
 	}
@@ -349,7 +387,10 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		RemovalReason string `json:"removalReason"`
 	}
@@ -378,8 +419,10 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Reason string `json:"reason"`
 	}
@@ -408,8 +451,10 @@ func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAttachAdvisory(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Severity domain.AdvisorySeverity `json:"severity"`
 		Text     string                  `json:"text"`
