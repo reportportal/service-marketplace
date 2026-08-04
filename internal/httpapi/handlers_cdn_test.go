@@ -551,14 +551,6 @@ func (f *fakeObjectStore) ListPrefix(ctx context.Context, prefix string) ([]stri
 	return out, nil
 }
 
-func (f *fakeObjectStore) Stat(ctx context.Context, objectPath string) (*storage.ObjectMeta, error) {
-	data, ok := f.objects[objectPath]
-	if !ok {
-		return nil, storage.ErrNotFound
-	}
-	return &storage.ObjectMeta{Path: objectPath, Size: int64(len(data))}, nil
-}
-
 func (f *fakeObjectStore) PublicURL(objectPath string) string {
 	return f.cdnBase() + "/" + objectPath
 }
