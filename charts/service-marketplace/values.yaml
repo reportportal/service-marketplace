@@ -27,7 +27,8 @@ env:
   GCP_PROJECT: ""
   ADMIN_LOGIN_ENABLED: "true"
   JWT_ISSUER: service-marketplace
-  TRUSTED_PROXY_HOPS: "1"
+  # Set to "1" only behind an ingress that strips/forwards X-Forwarded-For.
+  TRUSTED_PROXY_HOPS: "0"
   PUBLISH_OIDC_AUDIENCE: "marketplace.reportportal.io"
   PUBLISH_OIDC_ALLOWED_SOURCES: "{}"
   GA4_MEASUREMENT_ID: ""
