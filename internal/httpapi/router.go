@@ -150,27 +150,7 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 	})
 }
 
-// requireSessionOrPublishOIDC is the credential gate for
-// POST /api/v1/plugins/{pluginId}/versions — the single route AMD-02 and
-// AMD-15 designate for GitHub Actions OIDC publish tokens. It accepts an
-// operator session (bearer or cookie) exactly like requireSession, or a
-// GitHub Actions OIDC bearer token verified against publishOidcTrust:
-// success carries both the token's allow-listed plugin id (ctxOIDCPlugin,
-// checked against the URL pluginId by handlePublishVersion) and its verified
-// subject (ctxOIDCSubject, so operatorIdentity can record who actually
-// published — see ADR-014 accountability) into the request context.
-//
-// An OIDC token whose repo claim has no entry in publishOidcTrust at all
-// (auth.ErrForbidden) is refused with 403, not the generic 401 an absent or
-// garbage credential gets — AMD-15: "non-allow-listed callers ... receive
-// 403 regardless of whether the plugin exists".
-//
-// There is deliberately no boolean parameter here (contrast the old
-// requireSessionOrOIDC(publishOnly bool), whose publishOnly was accepted and
-// never read — finding F1). This middleware has exactly one caller and does
-// exactly one thing; a route that should not accept OIDC uses
-// requireSessionRejectOIDC or plain requireSession instead, not this
-// function with an argument nobody checks.
+// requireSessionOrPublishOIDC: operator session or allow-listed publish OIDC.
 func (s *Server) requireSessionOrPublishOIDC(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if bearer := bearerToken(r); bearer != "" {
@@ -211,22 +191,7 @@ func (s *Server) requireSessionOrPublishOIDC(next http.Handler) http.Handler {
 	})
 }
 
-// requireSessionRejectOIDC is the credential gate for every operator route
-// AMD-02 scopes GitHub Actions OIDC tokens OUT of: POST /api/v1/plugins
-// (the first-publish route AMD-15/D-05 reserves for operator sessions only
-// — first publish via CI auto-creates through POST .../versions instead;
-// see requireSessionOrPublishOIDC), PATCH /api/v1/plugins/{pluginId},
-// DELETE /api/v1/plugins/{pluginId}, POST .../versions/{version}/block,
-// POST .../versions/{version}/advisory, and every /api/v1/licenses/*
-// route.
-//
-// A bearer token that verifies as a well-formed, correctly-signed GitHub
-// Actions OIDC token — whether or not its repo claim is allow-listed for
-// some plugin — is a recognized credential, just the wrong type for these
-// routes, so it is refused with 403 TOKEN_TYPE_NOT_PERMITTED
-// (AMD-02-oidc-token-scope: "... regardless of allow-list membership").
-// Anything else (no credential, garbage bearer value, expired/revoked
-// session) falls through to the ordinary requireSession 401 handling.
+// requireSessionRejectOIDC: operator session only; OIDC gets 403 TOKEN_TYPE_NOT_PERMITTED.
 func (s *Server) requireSessionRejectOIDC(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if bearer := bearerToken(r); bearer != "" {
@@ -251,20 +216,6 @@ func (s *Server) authenticateSession(r *http.Request) (*auth.SessionClaims, erro
 	}
 	claims, err := s.deps.Sessions.Verify(r.Context(), bearer)
 	if err != nil {
-		// Sessions.Verify returns unwrapped auth-package sentinel errors
-		// (auth.ErrUnauthorized) for an expired, revoked, or malformed
-		// token. writeError's fallback for anything that isn't an *APIError
-		// is 500 INTERNAL_ERROR, which would otherwise report a rejected
-		// credential as a server fault instead of 401.
-		//
-		// Finding F2-invalid-session-returns-500-not-401 (RECURS). Governed
-		// by AMD-13-session-jwt-lifetime (requirements/AMENDMENTS-v1.md:
-		// "any operator request with an expired token returns 401") and the
-		// 401 Unauthorized response declared on every operator-session
-		// route in docs/openapi/service-marketplace-v1.yaml. See
-		// TestAuthenticateSessionRejectedCredentialReturns401 for the
-		// regression test. WS-AUTHZ: this mapping already ships — do not
-		// re-implement it.
 		return nil, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "Invalid or missing bearer token"}
 	}
 	return claims, nil
@@ -297,15 +248,6 @@ func sessionFrom(ctx context.Context) *auth.SessionClaims {
 	return v
 }
 
-// operatorIdentity returns the identity of the authenticated caller for
-// whatever records the actor (currently domain.PluginTombstone.RemovedBy via
-// lifecycle.RemovePlugin). Finding F2-oidc-identity-not-recorded
-// (go-assessment.json, RECURS): this used to fall back to the fixed literal
-// "github-actions" for every OIDC-authenticated call because the verified
-// subject was read and discarded with `_` in the router (ADR-014 requires
-// accountability — a specific repo/workflow, not an unconditional constant).
-// It now returns the token's own `sub` claim (e.g.
-// "repo:org/plugin-jira:ref:refs/heads/main") via ctxOIDCSubject.
 func operatorIdentity(ctx context.Context) string {
 	if s := sessionFrom(ctx); s != nil {
 		return s.Subject
@@ -313,12 +255,6 @@ func operatorIdentity(ctx context.Context) string {
 	if sub := oidcSubjectFrom(ctx); sub != "" {
 		return sub
 	}
-	// Unreachable in practice: every route that calls operatorIdentity is
-	// gated by requireSession or requireSessionOrPublishOIDC, both of which
-	// populate ctxSession or ctxOIDCSubject before the handler runs. Kept as
-	// an explicit, greppable marker rather than silently returning "" so a
-	// future caller wired without one of those gates fails loudly instead of
-	// recording an empty actor.
 	return "unknown-caller"
 }
 

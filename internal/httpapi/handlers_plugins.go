@@ -261,10 +261,7 @@ func (s *Server) publicKeysForLicense(r *http.Request, token string) ([]string, 
 	return s.deps.License.PublicKeysForCustomer(r.Context(), claims.CustomerID)
 }
 
-// handlePublishFirst backs POST /api/v1/plugins (FR-OP-01). It is gated by
-// requireSessionRejectOIDC (AMD-02/AMD-15: this route is operator-session
-// only), so r.Context() never carries an OIDC plugin id here — unlike the
-// old code, there is no OIDC branch to keep in sync with that guarantee.
+// handlePublishFirst: operator session only (no OIDC).
 func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 	bundle, err := s.parsePublishBundle(r)
 	if err != nil {
@@ -279,14 +276,7 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
-// handlePublishVersion backs POST /api/v1/plugins/{pluginId}/versions
-// (FR-OP-02), gated by requireSessionOrPublishOIDC. An OIDC-authenticated
-// call (oidcPlugin != "") has already been confirmed allow-listed for this
-// exact URL pluginId by the check below, so PublishVersion is told to
-// auto-create the plugin entry (tier: official) when it doesn't exist yet
-// instead of 404ing — AMD-15-ci-first-publish / D-05 ("auto-create"). An
-// operator-session call never auto-creates: first publish via the Operator
-// UI goes through POST /api/v1/plugins (handlePublishFirst) instead.
+// handlePublishVersion: session or publish OIDC; OIDC may auto-create the plugin.
 func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	pluginID, ok := requirePluginID(w, r)
 	if !ok {
