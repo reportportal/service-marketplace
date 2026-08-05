@@ -11,20 +11,20 @@ import (
 type ErrorCode string
 
 const (
-	CodeNotFound              ErrorCode = "NOT_FOUND"
-	CodeUnauthorized          ErrorCode = "UNAUTHORIZED"
-	CodeForbidden             ErrorCode = "FORBIDDEN"
-	CodeConflict              ErrorCode = "CONFLICT"
-	CodeValidation            ErrorCode = "VALIDATION_ERROR"
-	CodeInternal              ErrorCode = "INTERNAL_ERROR"
-	CodeStorageConflict       ErrorCode = "STORAGE_CONFLICT"
-	CodeStorageUnavailable    ErrorCode = "STORAGE_UNAVAILABLE"
-	CodeServiceUnavailable    ErrorCode = "SERVICE_UNAVAILABLE"
-	CodePayloadTooLarge       ErrorCode = "PAYLOAD_TOO_LARGE"
-	CodeBadRequest            ErrorCode = "BAD_REQUEST"
-	CodeUnsupportedMediaType  ErrorCode = "UNSUPPORTED_MEDIA_TYPE"
-	CodeTooManyRequests       ErrorCode = "TOO_MANY_REQUESTS"
-	CodeCSRFInvalid           ErrorCode = "CSRF_TOKEN_INVALID"
+	CodeNotFound             ErrorCode = "NOT_FOUND"
+	CodeUnauthorized         ErrorCode = "UNAUTHORIZED"
+	CodeForbidden            ErrorCode = "FORBIDDEN"
+	CodeConflict             ErrorCode = "CONFLICT"
+	CodeValidation           ErrorCode = "VALIDATION_ERROR"
+	CodeInternal             ErrorCode = "INTERNAL_ERROR"
+	CodeStorageConflict      ErrorCode = "STORAGE_CONFLICT"
+	CodeStorageUnavailable   ErrorCode = "STORAGE_UNAVAILABLE"
+	CodeServiceUnavailable   ErrorCode = "SERVICE_UNAVAILABLE"
+	CodePayloadTooLarge      ErrorCode = "PAYLOAD_TOO_LARGE"
+	CodeBadRequest           ErrorCode = "BAD_REQUEST"
+	CodeUnsupportedMediaType ErrorCode = "UNSUPPORTED_MEDIA_TYPE"
+	CodeTooManyRequests      ErrorCode = "TOO_MANY_REQUESTS"
+	CodeCSRFInvalid          ErrorCode = "CSRF_TOKEN_INVALID"
 	// CodeTokenTypeNotPermitted is returned when a GitHub Actions OIDC bearer
 	// token — a recognized credential type, just not one this route accepts —
 	// is presented on an operator-session-only route. AMD-02-oidc-token-scope

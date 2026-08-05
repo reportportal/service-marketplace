@@ -19,8 +19,20 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # -race, because a torn (data, generation) read in LocalStore was a real
+      # bug here and a plain `go test` cannot see its return.
       - name: Test
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Build
         run: go build -o bin/marketplace ./cmd/marketplace
