@@ -77,7 +77,8 @@ func (d *Denylist) IsRevoked(ctx context.Context, jti string) bool {
 	}
 	obj, err := d.Store.Read(ctx, storage.SessionDenylistPath(jti))
 	if err != nil {
-		return false
+		// Fail closed: unknown store errors must not revive a revoked session.
+		return !errors.Is(err, storage.ErrNotFound)
 	}
 	var meta struct {
 		Exp string `json:"exp"`

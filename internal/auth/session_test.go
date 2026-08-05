@@ -10,6 +10,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/reportportal/service-marketplace/internal/storage"
+	"github.com/reportportal/service-marketplace/internal/storage/storagetest"
 )
 
 func TestSessionManagerIssueVerify(t *testing.T) {
@@ -32,6 +34,27 @@ func TestSessionManagerIssueVerify(t *testing.T) {
 	m.Revoke(ctx, claims.JTI, claims.Exp)
 	if _, err := m.Verify(ctx, token); err != ErrUnauthorized {
 		t.Fatalf("expected unauthorized after revoke, got %v", err)
+	}
+}
+
+func TestDenylistIsRevokedFailsClosedOnStoreError(t *testing.T) {
+	root := t.TempDir()
+	store, err := storage.NewLocalStore(root, "http://cdn.test", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	faulty := storagetest.Wrap(store)
+	faulty.Fail(storagetest.OpRead, storagetest.AnyKey, storage.ErrUnavailable)
+
+	d := NewDenylist(faulty)
+	if !d.IsRevoked(context.Background(), "any-jti") {
+		t.Fatal("store read error must be treated as revoked")
+	}
+
+	// Not-found remains not-revoked.
+	d2 := NewDenylist(store)
+	if d2.IsRevoked(context.Background(), "missing-jti") {
+		t.Fatal("missing denylist entry must not be treated as revoked")
 	}
 }
 

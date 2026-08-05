@@ -21,6 +21,28 @@ func chiParam(r *http.Request, key string) string {
 	return chi.URLParam(r, key)
 }
 
+func requirePluginID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := chiParam(r, "pluginId")
+	if ve := domain.ValidatePluginID(id); ve != nil {
+		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "pluginId", Message: ve.Message}}})
+		return "", false
+	}
+	return id, true
+}
+
+func requirePluginVersion(w http.ResponseWriter, r *http.Request) (pluginID, version string, ok bool) {
+	pluginID, ok = requirePluginID(w, r)
+	if !ok {
+		return "", "", false
+	}
+	version = chiParam(r, "version")
+	if ve := domain.ValidateVersion(version); ve != nil {
+		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "version", Message: ve.Message}}})
+		return "", "", false
+	}
+	return pluginID, version, true
+}
+
 func mapStorageErr(err error) error {
 	if errors.Is(err, storage.ErrConflict) {
 		return &APIError{Status: http.StatusConflict, Code: CodeStorageConflict, Message: "The stored object changed while this request was being applied; retry", Headers: map[string]string{"Retry-After": "1"}}
@@ -45,7 +67,10 @@ func (s *Server) handleListPlugins(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	m, st, err := s.deps.Catalogue.GetPlugin(r.Context(), pluginID)
 	if err != nil {
 		if errors.Is(err, catalogue.ErrNotFound) {
@@ -72,7 +97,10 @@ func pluginDetailResponse(m domain.Manifest, st *domain.PluginState) PluginDetai
 }
 
 func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	st, err := s.deps.Catalogue.ListVersions(r.Context(), pluginID)
 	if err != nil {
 		if errors.Is(err, catalogue.ErrNotFound) {
@@ -109,8 +137,10 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	detail, st, err := s.deps.Catalogue.GetVersion(r.Context(), pluginID, version)
 	if err != nil {
 		if errors.Is(err, catalogue.ErrNotFound) {
@@ -162,8 +192,10 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	clientID := r.Header.Get("X-RP-Instance-Id")
 	track := func(access, result string) {
 		s.deps.Analytics.TrackArtifactRequest(r.Context(), pluginID, version, access, result, clientID)
@@ -183,17 +215,10 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, catalogue.TombstoneFromState(st))
 		return
 	}
-	// The blocked branch may only answer for a version that exists as far as a
-	// client is concerned. st.Versions arrives already filtered to complete
-	// versions by catalogue.Service.loadPlugin, whereas st.BlockedVersions is
-	// deliberately never filtered (blocking is a separate axis from
-	// completeness). An operator CAN block a committed-but-incomplete version --
-	// lifecycle.BlockVersion validates against its own unfiltered read of
-	// plugin.json -- and without this guard that version would answer
-	// 403-with-reason here while the version list omitted it and its detail
-	// 404'd: a contradiction that also confirms the existence of a version the
-	// rest of the API denies. "Does not exist" wins over "exists but is
-	// un-installable"; falling through leaves GetVersion below to 404 it.
+	// "Does not exist" wins over "exists but is un-installable": st.Versions is
+	// already filtered to complete versions by catalogue.loadPlugin while
+	// st.BlockedVersions deliberately is not, so an operator-blocked incomplete
+	// version falls through to GetVersion's 404 instead of answering 403 here.
 	versionVisible := false
 	for _, v := range st.Versions {
 		if v.Version == version {
@@ -315,10 +340,7 @@ func licenseErrorResponse(err error) error {
 	}
 }
 
-// handlePublishFirst backs POST /api/v1/plugins (FR-OP-01). It is gated by
-// requireSessionRejectOIDC (AMD-02/AMD-15: this route is operator-session
-// only), so r.Context() never carries an OIDC plugin id here — unlike the
-// old code, there is no OIDC branch to keep in sync with that guarantee.
+// handlePublishFirst: operator session only (no OIDC).
 func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 	bundle, err := s.parsePublishBundle(r)
 	if err != nil {
@@ -333,24 +355,14 @@ func (s *Server) handlePublishFirst(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
-// handlePublishVersion backs POST /api/v1/plugins/{pluginId}/versions
-// (FR-OP-02), gated by requireSessionOrPublishOIDC. An OIDC-authenticated
-// call (oidcPlugin != "") has already been confirmed allow-listed for this
-// exact URL pluginId by the check below, so PublishVersion is told to
-// auto-create the plugin entry (tier: official) when it doesn't exist yet
-// instead of 404ing — AMD-15-ci-first-publish / D-05 ("auto-create"). An
-// operator-session call never auto-creates: first publish via the Operator
-// UI goes through POST /api/v1/plugins (handlePublishFirst) instead.
-//
-// AMD-04-duplicate-publish-contract: idempotent is true when this call
-// resolved a byte-identical republish of an already-committed version,
-// which maps to 200 instead of 201 with no objects written.
-//
-// AMD-06-removal-lifecycle: a tombstoned plugin.json makes PublishVersion
-// return *publish.RemovedError regardless of autoCreate — this route never
-// resurrects (D-06 explicitly reserves that to POST /api/v1/plugins).
+// handlePublishVersion: session or publish OIDC; OIDC may auto-create the plugin.
+// AMD-04: idempotent is true for a byte-identical republish (200, nothing written).
+// AMD-06: a tombstoned plugin.json is never resurrected by this route.
 func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	oidcPlugin := oidcPluginFrom(r.Context())
 	if oidcPlugin != "" && oidcPlugin != pluginID {
 		writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "OIDC token is not allowed to publish this pluginId"})
@@ -428,7 +440,10 @@ func mapPublishErr(err error) error {
 }
 
 func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Tier domain.TrustTier `json:"tier"`
 	}
@@ -467,7 +482,10 @@ func (s *Server) handleUpdatePlugin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		RemovalReason string `json:"removalReason"`
 	}
@@ -503,8 +521,10 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Reason string `json:"reason"`
 	}
@@ -533,8 +553,10 @@ func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAttachAdvisory(w http.ResponseWriter, r *http.Request) {
-	pluginID := chiParam(r, "pluginId")
-	version := chiParam(r, "version")
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Severity domain.AdvisorySeverity `json:"severity"`
 		Text     string                  `json:"text"`
