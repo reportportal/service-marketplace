@@ -107,19 +107,55 @@ func TestEnabled(t *testing.T) {
 
 // Pins that an unconfigured client (the default deployment) never makes an
 // HTTP call. Kills a mutant that drops or inverts the Enabled() guard.
+//
+// The negative is proven against a positive control rather than a sleep: a
+// CONFIGURED client is called through the same transport afterwards, and the
+// assertion runs once that request has arrived. Waiting a fixed duration would
+// make the proof depend on scheduler load.
 func TestTrackArtifactRequest_NotEnabledMakesNoRequest(t *testing.T) {
-	var called atomic.Bool
+	var ids []string
+	var mu sync.Mutex
+	arrived := make(chan struct{}, 1)
 	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		called.Store(true)
+		body, _ := io.ReadAll(req.Body)
+		var payload struct {
+			Events []struct {
+				Params struct {
+					PluginID string `json:"plugin_id"`
+				} `json:"params"`
+			} `json:"events"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		mu.Lock()
+		if len(payload.Events) > 0 {
+			ids = append(ids, payload.Events[0].Params.PluginID)
+		}
+		mu.Unlock()
+		select {
+		case arrived <- struct{}{}:
+		default:
+		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header)}, nil
 	})
-	c := &GA4Client{HTTPClient: &http.Client{Transport: transport}}
 
-	c.TrackArtifactRequest(context.Background(), "plugin-x", "1.0.0", "free", ResultSuccess, "")
+	unconfigured := &GA4Client{HTTPClient: &http.Client{Transport: transport}}
+	unconfigured.TrackArtifactRequest(context.Background(), "must-not-be-sent", "1.0.0", "free", ResultSuccess, "")
 
-	time.Sleep(50 * time.Millisecond)
-	if called.Load() {
-		t.Error("unconfigured client made an HTTP request")
+	control := &GA4Client{MeasurementID: "M1", APISecret: "S1", HTTPClient: &http.Client{Transport: transport}}
+	control.TrackArtifactRequest(context.Background(), "control", "1.0.0", "free", ResultSuccess, "")
+
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the control request never arrived; the transport is not being reached at all")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, id := range ids {
+		if id == "must-not-be-sent" {
+			t.Fatalf("unconfigured client made an HTTP request; ids seen: %v", ids)
+		}
 	}
 }
 
@@ -275,6 +311,9 @@ func TestTrackArtifactRequest_TransportErrorNoLoggerDoesNotPanic(t *testing.T) {
 // Pins that a nil HTTPClient falls back to http.DefaultClient rather than
 // panicking. Kills a mutant that drops the `client == nil` fallback.
 func TestTrackArtifactRequest_NilHTTPClientUsesDefault(t *testing.T) {
+	// Swapping the process-global transport is the only way to observe the
+	// http.DefaultClient fallback. Safe only while no test in this package
+	// calls t.Parallel() -- do not add it here without changing this.
 	transport := newCapturingTransport()
 	origTransport := http.DefaultTransport
 	http.DefaultTransport = transport
