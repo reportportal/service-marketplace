@@ -15,9 +15,9 @@ const (
 	StorageLocal StorageType = "local"
 	StorageGCS   StorageType = "gcs"
 
-	insecureJWTDefault    = "dev-jwt-secret-change-me"
+	insecureJWTDefault     = "dev-jwt-secret-change-me"
 	insecureSigningDefault = "dev-signing-secret"
-	minSecretLen          = 32
+	minSecretLen           = 32
 )
 
 type Config struct {
@@ -51,6 +51,27 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	adminLoginEnabled, err := getEnvBoolE("ADMIN_LOGIN_ENABLED", true)
+	if err != nil {
+		return nil, err
+	}
+	jwtTTLSeconds, err := getEnvIntE("JWT_TTL_SECONDS", 3600)
+	if err != nil {
+		return nil, err
+	}
+	orphanCleanupInterval, err := getEnvDurationE("ORPHAN_CLEANUP_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	trustedProxyHops, err := getEnvIntE("TRUSTED_PROXY_HOPS", 0)
+	if err != nil {
+		return nil, err
+	}
+	allowInsecureDefaults, err := getEnvBoolE("ALLOW_INSECURE_DEFAULTS", false)
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
 		StorageType:             StorageType(strings.ToLower(getEnv("STORAGE_TYPE", "local"))),
 		StorageLocalRoot:        getEnv("STORAGE_LOCAL_ROOT", "./data"),
@@ -59,12 +80,12 @@ func Load() (*Config, error) {
 		GCSPrivateBucket:        getEnv("GCS_PRIVATE_BUCKET", ""),
 		CDNBaseURL:              strings.TrimRight(getEnv("CDN_BASE_URL", "http://localhost:8080/cdn"), "/"),
 		CDNURLMap:               getEnv("CDN_URL_MAP", ""),
-		AdminLoginEnabled:       getEnvBool("ADMIN_LOGIN_ENABLED", true),
+		AdminLoginEnabled:       adminLoginEnabled,
 		AdminUsername:           getEnv("ADMIN_USERNAME", "admin"),
 		AdminPasswordHash:       getEnv("ADMIN_PASSWORD_HASH", ""),
 		JWTSecret:               getEnv("JWT_SECRET", ""),
 		JWTIssuer:               getEnv("JWT_ISSUER", "service-marketplace"),
-		JWTTTLSeconds:           getEnvInt("JWT_TTL_SECONDS", 3600),
+		JWTTTLSeconds:           jwtTTLSeconds,
 		GitHubOAuthClientID:     getEnv("GITHUB_OAUTH_CLIENT_ID", ""),
 		GitHubOAuthClientSecret: getEnv("GITHUB_OAUTH_CLIENT_SECRET", ""),
 		GitHubOAuthOrg:          getEnv("GITHUB_OAUTH_ORG", ""),
@@ -74,10 +95,10 @@ func Load() (*Config, error) {
 		GA4MeasurementID:        getEnv("GA4_MEASUREMENT_ID", ""),
 		GA4APISecret:            getEnv("GA4_API_SECRET", ""),
 		HTTPAddr:                getEnv("HTTP_ADDR", ":8080"),
-		OrphanCleanupInterval:   getEnvDuration("ORPHAN_CLEANUP_INTERVAL", 5*time.Minute),
+		OrphanCleanupInterval:   orphanCleanupInterval,
 		GCPProject:              getEnv("GCP_PROJECT", ""),
-		TrustedProxyHops:        getEnvInt("TRUSTED_PROXY_HOPS", 0),
-		AllowInsecureDefaults:   getEnvBool("ALLOW_INSECURE_DEFAULTS", false),
+		TrustedProxyHops:        trustedProxyHops,
+		AllowInsecureDefaults:   allowInsecureDefaults,
 	}
 
 	if cfg.GitHubOAuthRedirectURL == "" {
@@ -86,7 +107,7 @@ func Load() (*Config, error) {
 
 	raw := getEnv("PUBLISH_OIDC_ALLOWED_SOURCES", "{}")
 	cfg.PublishOIDCAllowedSources = map[string]string{}
-	if err := json.Unmarshal([]byte(raw), &cfg.PublishOIDCAllowedSources); err != nil {
+	if err = json.Unmarshal([]byte(raw), &cfg.PublishOIDCAllowedSources); err != nil {
 		return nil, fmt.Errorf("PUBLISH_OIDC_ALLOWED_SOURCES: %w", err)
 	}
 
@@ -100,7 +121,7 @@ func Load() (*Config, error) {
 		cfg.JWTTTLSeconds = 60
 	}
 	if cfg.TrustedProxyHops < 0 {
-		cfg.TrustedProxyHops = 0
+		return nil, fmt.Errorf("TRUSTED_PROXY_HOPS: %d is negative", cfg.TrustedProxyHops)
 	}
 
 	if err := cfg.validateSecrets(); err != nil {
@@ -159,38 +180,47 @@ func getEnv(key, def string) string {
 	return def
 }
 
-func getEnvBool(key string, def bool) bool {
+// The getEnv*E helpers below deliberately return an error for a value that is
+// present but unparseable, rather than standing in the default. A default is
+// the right answer for an UNSET variable; for a misspelt one it silently
+// contradicts what the operator asked for. That was fail-open on an
+// authentication control: ADMIN_LOGIN_ENABLED="flase" left password login
+// ENABLED, and TRUSTED_PROXY_HOPS="one" became 0, which stops isHTTPS trusting
+// X-Forwarded-Proto and drops Secure from the session cookie behind a
+// TLS-terminating ingress.
+
+func getEnvBoolE(key string, def bool) (bool, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		return def
+		return false, fmt.Errorf("%s: %q is not a boolean", key, v)
 	}
-	return b
+	return b, nil
 }
 
-func getEnvInt(key string, def int) int {
+func getEnvIntE(key string, def int) (int, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("%s: %q is not an integer", key, v)
 	}
-	return n
+	return n, nil
 }
 
-func getEnvDuration(key string, def time.Duration) time.Duration {
+func getEnvDurationE(key string, def time.Duration) (time.Duration, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		return def
+		return def, nil
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("%s: %q is not a duration (e.g. 30s, 5m)", key, v)
 	}
-	return d
+	return d, nil
 }

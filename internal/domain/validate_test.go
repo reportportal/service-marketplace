@@ -4,15 +4,15 @@ import "testing"
 
 func TestValidateManifest(t *testing.T) {
 	m := &Manifest{
-		ID:          "plugin-test",
-		Name:        "Test Plugin",
-		Version:     "1.0.0",
-		Description: "desc",
-		Author:      Author{Name: "Author"},
-		License:     "Apache-2.0",
-		Category:    CategoryBugTracking,
+		ID:            "plugin-test",
+		Name:          "Test Plugin",
+		Version:       "1.0.0",
+		Description:   "desc",
+		Author:        Author{Name: "Author"},
+		License:       "Apache-2.0",
+		Category:      CategoryBugTracking,
 		Compatibility: Compatibility{ReportPortal: ">=25.1"},
-		Access:      AccessPublic,
+		Access:        AccessPublic,
 	}
 	if errs := ValidateManifest(m); len(errs) != 0 {
 		t.Fatalf("expected valid manifest, got %v", errs)

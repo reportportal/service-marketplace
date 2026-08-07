@@ -206,7 +206,7 @@ func (e *testEnv) expiredSessionToken() string {
 		Issuer(testIssuer).
 		Subject("operator@example.com").
 		JwtID("expired-test-jti").
-		IssuedAt(time.Now().Add(-2 * time.Hour)).
+		IssuedAt(time.Now().Add(-2*time.Hour)).
 		Expiration(time.Now().Add(-time.Hour)).
 		Claim("typ", "session").
 		Build()
@@ -230,7 +230,7 @@ func (e *testEnv) oidcToken(repo string) string {
 		Audience([]string{testOIDCAudience}).
 		Claim("repository", repo).
 		IssuedAt(time.Now()).
-		Expiration(time.Now().Add(10*time.Minute)).
+		Expiration(time.Now().Add(10 * time.Minute)).
 		Build()
 	if err != nil {
 		e.t.Fatalf("build oidc token: %v", err)

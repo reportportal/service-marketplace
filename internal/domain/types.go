@@ -42,11 +42,11 @@ func (d *Date) UnmarshalJSON(b []byte) error {
 type Category string
 
 const (
-	CategoryBugTracking    Category = "bug-tracking"
-	CategoryNotifications  Category = "notifications"
-	CategoryAuthorization  Category = "authorization"
-	CategoryImport         Category = "import"
-	CategoryOther          Category = "other"
+	CategoryBugTracking   Category = "bug-tracking"
+	CategoryNotifications Category = "notifications"
+	CategoryAuthorization Category = "authorization"
+	CategoryImport        Category = "import"
+	CategoryOther         Category = "other"
 )
 
 func ValidCategory(c Category) bool {
@@ -92,27 +92,27 @@ type Compatibility struct {
 }
 
 type Manifest struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name"`
-	Version       string          `json:"version"`
-	Description   string          `json:"description"`
-	Author        Author          `json:"author"`
-	License       string          `json:"license"`
-	Category      Category        `json:"category"`
-	Compatibility Compatibility   `json:"compatibility"`
-	Homepage      string          `json:"homepage,omitempty"`
-	Access        AccessTier      `json:"access,omitempty"`
-	ContactURL    string          `json:"contactUrl,omitempty"`
+	ID            string        `json:"id"`
+	Name          string        `json:"name"`
+	Version       string        `json:"version"`
+	Description   string        `json:"description"`
+	Author        Author        `json:"author"`
+	License       string        `json:"license"`
+	Category      Category      `json:"category"`
+	Compatibility Compatibility `json:"compatibility"`
+	Homepage      string        `json:"homepage,omitempty"`
+	Access        AccessTier    `json:"access,omitempty"`
+	ContactURL    string        `json:"contactUrl,omitempty"`
 }
 
 type IndexPlugin struct {
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	LatestVersion  string     `json:"latestVersion"`
-	Description    string     `json:"description,omitempty"`
-	Category       Category   `json:"category"`
-	Access         AccessTier `json:"access"`
-	Tier           TrustTier  `json:"tier"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	LatestVersion string     `json:"latestVersion"`
+	Description   string     `json:"description,omitempty"`
+	Category      Category   `json:"category"`
+	Access        AccessTier `json:"access"`
+	Tier          TrustTier  `json:"tier"`
 }
 
 type Index struct {
@@ -142,14 +142,14 @@ type VersionState struct {
 }
 
 type PluginState struct {
-	ID              string           `json:"id"`
-	Tier            TrustTier        `json:"tier"`
-	LatestVersion   string           `json:"latestVersion"`
-	Versions        []VersionMeta    `json:"versions"`
-	BlockedVersions []BlockedVersion `json:"blockedVersions,omitempty"`
-	Removed         *time.Time       `json:"removed,omitempty"`
-	RemovalReason   string           `json:"removalReason,omitempty"`
-	RemovedBy       string           `json:"removedBy,omitempty"`
+	ID              string                  `json:"id"`
+	Tier            TrustTier               `json:"tier"`
+	LatestVersion   string                  `json:"latestVersion"`
+	Versions        []VersionMeta           `json:"versions"`
+	BlockedVersions []BlockedVersion        `json:"blockedVersions,omitempty"`
+	Removed         *time.Time              `json:"removed,omitempty"`
+	RemovalReason   string                  `json:"removalReason,omitempty"`
+	RemovedBy       string                  `json:"removedBy,omitempty"`
 	VersionStates   map[string]VersionState `json:"versionStates,omitempty"`
 }
 

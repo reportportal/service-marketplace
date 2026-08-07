@@ -7,9 +7,9 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("object not found")
-	ErrConflict          = errors.New("storage conflict")
-	ErrUnavailable       = errors.New("storage unavailable")
+	ErrNotFound           = errors.New("object not found")
+	ErrConflict           = errors.New("storage conflict")
+	ErrUnavailable        = errors.New("storage unavailable")
 	ErrGenerationMismatch = errors.New("generation mismatch")
 )
 

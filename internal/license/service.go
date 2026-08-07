@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrConflict  = errors.New("conflict")
+	ErrNotFound = errors.New("not found")
+	ErrConflict = errors.New("conflict")
 )
 
 type Service struct {
