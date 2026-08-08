@@ -10,6 +10,7 @@ on:
       - actions/**
       - docs/**
       - charts/**
+    workflow_dispatch:
 
 jobs:
   variables-setup:
@@ -26,17 +27,56 @@ jobs:
     outputs:
       date: ${{ steps.vars.outputs.date }}
 
-  call-docker-build:
-    name: Call develop Docker build
+  build-and-push:
+    name: Build and push develop image to GCR
     needs: variables-setup
-    uses: reportportal/.github/.github/workflows/build-docker-image.yaml@main
-    with:
-      aws-region: ${{ vars.AWS_REGION }}
-      build-platforms: ${{ vars.BUILD_PLATFORMS || 'linux/amd64,linux/arm64' }}
-      image-tag: 'develop-${{ github.run_number }}'
-      additional-tag: 'develop-latest'
-      version: 'develop-${{ github.run_number }}'
-      date: ${{ needs.variables-setup.outputs.date }}
-      runs-on: ubuntu-latest
-    secrets:
-      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      GCR_REGION: ${{ secrets.GCR_DEV_REGION }}
+      GCP_PROJECT: ${{ secrets.GCP_DEV_PROJECT }}
+      IMAGE_REPO: service-marketplace
+      IMAGE_TAG: develop-${{ github.run_number }}
+      ADDITIONAL_TAG: develop-latest
+      PLATFORMS: ${{ vars.BUILD_PLATFORMS || 'linux/amd64,linux/arm64' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Authenticate to GCP
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_DEV_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEV_SERVICE_ACCOUNT }}
+          token_format: access_token
+          create_credentials_file: false
+
+      - name: Login to GCP Artifact Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.GCR_DEV_REGION }}
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: ${{ env.PLATFORMS }}
+          build-args: |
+            APP_VERSION=develop-${{ github.run_number }}
+            BUILD_BRANCH=${{ github.ref_name }}
+            BUILD_DATE=${{ needs.variables-setup.outputs.date }}
+          tags: |
+            ${{ env.GCR_DEV_REGION }}/${{ env.GCP_DEV_PROJECT }}/reportportal/${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+            ${{ env.GCR_DEV_REGION }}/${{ env.GCP_DEV_PROJECT }}/reportportal/${{ env.IMAGE_REPO }}:${{ env.ADDITIONAL_TAG }}
