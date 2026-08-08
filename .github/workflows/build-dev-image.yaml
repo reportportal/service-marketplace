@@ -10,7 +10,7 @@ on:
       - actions/**
       - docs/**
       - charts/**
-    workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   variables-setup:
@@ -35,8 +35,8 @@ jobs:
       id-token: write
       contents: read
     env:
-      GCR_REGION: ${{ secrets.GCR_DEV_REGION }}
-      GCP_PROJECT: ${{ secrets.GCP_DEV_PROJECT }}
+      GCR_DEV_REGION: ${{ secrets.GCR_DEV_REGION }}
+      GCP_DEV_PROJECT: ${{ secrets.GCP_DEV_PROJECT }}
       IMAGE_REPO: service-marketplace
       IMAGE_TAG: develop-${{ github.run_number }}
       ADDITIONAL_TAG: develop-latest
@@ -44,6 +44,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Authenticate to GCP
         id: gcp-auth
