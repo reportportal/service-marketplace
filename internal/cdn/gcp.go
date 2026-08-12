@@ -71,6 +71,7 @@ func (g *GCPInvalidator) Invalidate(ctx context.Context, paths []string) error {
 		for _, rule := range hostRules {
 			op, err := svc.UrlMaps.InvalidateCache(g.Project, g.URLMap, rule).Context(ctx).Do()
 			if err != nil {
+				g.Logger.Printf("cdn: invalidation failure urlMap=%s path=%s err=%v", g.URLMap, rule.Path, err)
 				return fmt.Errorf("invalidate %s: %w", rule.Path, err)
 			}
 			g.Logger.Printf("cdn: invalidation started urlMap=%s path=%s op=%s", g.URLMap, rule.Path, op.Name)
@@ -79,6 +80,7 @@ func (g *GCPInvalidator) Invalidate(ctx context.Context, paths []string) error {
 	}
 	op, err := svc.UrlMaps.InvalidateCache(g.Project, g.URLMap, req).Context(ctx).Do()
 	if err != nil {
+		g.Logger.Printf("cdn: invalidation failure urlMap=%s path=%s err=%v", g.URLMap, req.Path, err)
 		return fmt.Errorf("invalidate: %w", err)
 	}
 	g.Logger.Printf("cdn: invalidation started urlMap=%s path=%s op=%s", g.URLMap, req.Path, op.Name)
