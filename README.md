@@ -6,7 +6,7 @@ HTTP registry for ReportPortal plugin catalogue, publish, lifecycle, licensing, 
 
 ## Quick start (local)
 
-Requires [Go 1.22+](https://go.dev/dl/) on your `PATH`.
+Requires [Go 1.25+](https://go.dev/dl/) on your `PATH`.
 
 Production requires strong `JWT_SECRET` and `STORAGE_SIGNING_SECRET` (≥32 chars). Set `TRUSTED_PROXY_HOPS` only when behind a trusted reverse proxy.
 
@@ -158,7 +158,7 @@ $env:GITHUB_OAUTH_ALLOWED_TEAM = "marketplace-operators"
 go run .\cmd\marketplace
 ```
 
-### 3. Verify config:
+### 3. Verify config
 
 ```powershell
 curl.exe -s http://localhost:8080/api/v1/auth/config
