@@ -405,6 +405,22 @@ paths:
         3. Public plugin → `302` redirect to CloudFront CDN URL
         4. Premium plugin → requires valid license JWT; returns JSON with S3 pre-signed URL (60s)
 
+        Every distinct license failure is separately diagnosable through `ErrorResponse.code`
+        (AMD-09), so an operator can be told which one happened. Note the split: an unknown
+        `customerId` and a license JWT whose own `exp` has elapsed are `401`, while an
+        entitlement that has expired is `403`.
+
+        | Condition | Status | code |
+        |---|---|---|
+        | `Authorization` header absent or blank | 401 | `LICENSE_JWT_MISSING` |
+        | JWT unparseable, bad signature, elapsed `exp`, or unknown `customerId` | 401 | `LICENSE_JWT_INVALID` |
+        | Entitlement expired | 403 | `LICENSE_EXPIRED` |
+        | Entitlement does not cover the plugin (`pluginId` claim ≠ path `pluginId`) | 403 | `LICENSE_ENTITLEMENT_DENIED` |
+        | Version blocked | 403 | `BlockedArtifactError` with `blocked: true` (no `code`) |
+
+        A `403` is told apart by its `code`, never by which fields are present: a license
+        `403` is an `ErrorResponse` and never carries `blocked`, not even as `false`.
+
         Optional `X-RP-Instance-Id` header (FR-L-06) is used for analytics and is never
         forwarded to CDN or pre-signed URLs.
 
@@ -433,9 +449,23 @@ paths:
                 type: string
                 format: uri
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: >-
+            License JWT missing (`LICENSE_JWT_MISSING`), or unusable — unparseable, bad
+            signature, elapsed `exp`, or an unknown `customerId` (`LICENSE_JWT_INVALID`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                licenseJwtMissing:
+                  $ref: '#/components/examples/LicenseJwtMissingExample'
+                licenseJwtInvalid:
+                  $ref: '#/components/examples/LicenseJwtInvalidExample'
         '403':
-          description: Blocked version or invalid license
+          description: >-
+            Blocked version (`BlockedArtifactError`, `blocked: true`), an expired
+            entitlement (`LICENSE_EXPIRED`), or an entitlement that does not cover this
+            plugin (`LICENSE_ENTITLEMENT_DENIED`).
           content:
             application/json:
               schema:
@@ -445,6 +475,10 @@ paths:
               examples:
                 blocked:
                   $ref: '#/components/examples/BlockedArtifactExample'
+                licenseExpired:
+                  $ref: '#/components/examples/LicenseExpiredExample'
+                licenseEntitlementDenied:
+                  $ref: '#/components/examples/LicenseEntitlementDeniedExample'
         '404':
           $ref: '#/components/responses/NotFound'
         '410':
@@ -1773,6 +1807,10 @@ components:
             - STORAGE_UNAVAILABLE
             - CSRF_TOKEN_INVALID
             - TOKEN_TYPE_NOT_PERMITTED
+            - LICENSE_JWT_MISSING
+            - LICENSE_JWT_INVALID
+            - LICENSE_ENTITLEMENT_DENIED
+            - LICENSE_EXPIRED
         message:
           type: string
 
@@ -1865,6 +1903,26 @@ components:
         blocked: true
         blockedAt: '2026-02-15T10:00:00Z'
         reason: CVE-2026-1234 in jackson-databind
+
+    LicenseJwtMissingExample:
+      value:
+        code: LICENSE_JWT_MISSING
+        message: License JWT required
+
+    LicenseJwtInvalidExample:
+      value:
+        code: LICENSE_JWT_INVALID
+        message: License JWT is malformed, expired, or not signed by a known key
+
+    LicenseExpiredExample:
+      value:
+        code: LICENSE_EXPIRED
+        message: License entitlement has expired
+
+    LicenseEntitlementDeniedExample:
+      value:
+        code: LICENSE_ENTITLEMENT_DENIED
+        message: License entitlement does not cover this plugin
 
     PremiumArtifactExample:
       value:

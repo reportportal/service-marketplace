@@ -113,6 +113,25 @@ func PropertyConstraint(schemas map[string]Schema, name, property string) (Strin
 	return c, nil
 }
 
+// PropertyEnum resolves the enum published for one property of the named schema —
+// e.g. ErrorResponse.code, the registry's error vocabulary — following $ref and allOf
+// the same way Properties does. Enum (above) only reaches a whole schema's enum; a
+// controlled vocabulary declared on a property needs this.
+func PropertyEnum(schemas map[string]Schema, name, property string) ([]string, error) {
+	s, ok := schemas[name]
+	if !ok {
+		return nil, fmt.Errorf("openapispec: schema %q not found", name)
+	}
+	prop, found, err := propertySchema(schemas, s, property)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("openapispec: property %q not found in schema %q", property, name)
+	}
+	return prop.Enum, nil
+}
+
 func propertySchema(schemas map[string]Schema, s Schema, property string) (Schema, bool, error) {
 	if s.Ref != "" {
 		refName := strings.TrimPrefix(s.Ref, "#/components/schemas/")

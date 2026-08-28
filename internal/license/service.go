@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/reportportal/service-marketplace/internal/auth"
 	"github.com/reportportal/service-marketplace/internal/domain"
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
@@ -16,6 +17,12 @@ import (
 var (
 	ErrNotFound = errors.New("not found")
 	ErrConflict = errors.New("conflict")
+	// ErrEntitlementExpired: the entitlement exists and the token verified against
+	// its key, but its own ExpiresAt has elapsed. Distinct from ErrNotFound (no
+	// entitlement for that customerId at all) because AMD-09 puts them on opposite
+	// sides of the 401/403 split — the whole point of the table is that an operator
+	// can tell "renew your licence" from "wrong key".
+	ErrEntitlementExpired = errors.New("entitlement expired")
 )
 
 type Service struct {
@@ -169,27 +176,53 @@ func (s *Service) RotateKey(ctx context.Context, customerID string) (*RotateResu
 	}, nil
 }
 
-func (s *Service) PublicKeysForCustomer(ctx context.Context, customerID string) ([]string, error) {
+// entitlementFor returns customerID's entitlement, or ErrNotFound when the document
+// holds none. It deliberately reports nothing about the entitlement's state (expiry):
+// that is only decided in VerifyToken, after a signature has proven the caller holds
+// the matching private key.
+func (s *Service) entitlementFor(ctx context.Context, customerID string) (*domain.LicenseEntitlement, error) {
 	ak, _, err := s.load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range ak.Entitlements {
-		if e.CustomerID != customerID {
-			continue
+	for i := range ak.Entitlements {
+		if ak.Entitlements[i].CustomerID == customerID {
+			return &ak.Entitlements[i], nil
 		}
-		if e.ExpiresAt != nil && e.ExpiresAt.Before(time.Now()) {
-			return nil, ErrNotFound
-		}
-		keys := make([]string, 0, len(e.PublicKeys))
-		for _, k := range e.PublicKeys {
-			keys = append(keys, k.PublicKey)
-		}
-		return keys, nil
 	}
 	return nil, ErrNotFound
 }
 
-func (s *Service) FindCustomerByPlugin(ctx context.Context, customerID, pluginID string) ([]string, error) {
-	return s.PublicKeysForCustomer(ctx, customerID)
+// VerifyToken is the single entry point for verifying a premium-artifact licence JWT.
+// It keeps AMD-09's conditions separable instead of collapsing them: ErrNotFound for
+// an unknown customerId, auth.ErrUnauthorized for a token that is unparseable, signed
+// by a foreign key or past its own exp, and ErrEntitlementExpired for a verified token
+// whose entitlement window has closed. httpapi owns turning those into status/code
+// pairs.
+//
+// Ordering: the customerId claim is read unverified only to pick candidate keys (see
+// auth.PeekUnverifiedCustomerID); the signature is verified against exactly those
+// keys; only then is entitlement state consulted, so a forged token can never learn
+// anything about a real entitlement.
+func (s *Service) VerifyToken(ctx context.Context, token string) (*auth.LicenseClaims, error) {
+	customerID, err := auth.PeekUnverifiedCustomerID(token)
+	if err != nil {
+		return nil, err
+	}
+	ent, err := s.entitlementFor(ctx, customerID)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(ent.PublicKeys))
+	for _, k := range ent.PublicKeys {
+		keys = append(keys, k.PublicKey)
+	}
+	claims, err := auth.VerifyLicenseJWT(token, keys)
+	if err != nil {
+		return nil, err
+	}
+	if ent.ExpiresAt != nil && ent.ExpiresAt.Before(time.Now()) {
+		return nil, ErrEntitlementExpired
+	}
+	return claims, nil
 }
