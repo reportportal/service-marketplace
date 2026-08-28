@@ -8,8 +8,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/reportportal/service-marketplace/internal/analytics"
+	"github.com/reportportal/service-marketplace/internal/auth"
 	"github.com/reportportal/service-marketplace/internal/catalogue"
 	"github.com/reportportal/service-marketplace/internal/domain"
+	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/lifecycle"
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
@@ -223,22 +225,22 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	artPath := storage.VersionArtifactPath(pluginID, version, string(detail.Manifest.Access))
 	access := string(detail.Manifest.Access)
 	if detail.Manifest.Access == domain.AccessPremium {
-		token := bearerToken(r)
+		token := strings.TrimSpace(bearerToken(r))
 		if token == "" {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "License JWT required"})
+			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTMissing, Message: "License JWT required"})
 			return
 		}
-		keys, err := s.publicKeysForLicense(r, token)
+		claims, err := s.deps.License.VerifyToken(r.Context(), token)
 		if err != nil {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid license"})
+			writeError(w, licenseErrorResponse(err))
 			return
 		}
-		claims, err := authVerifyLicense(token, keys)
-		if err != nil || claims.PluginID != pluginID {
+		// Checked only after VerifyToken succeeded, so claims.PluginID is verified.
+		if claims.PluginID != pluginID {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid license"})
+			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeLicenseEntitlementDenied, Message: "License entitlement does not cover this plugin"})
 			return
 		}
 		url, expiresAt, err := s.deps.Store.SignedURL(r.Context(), artPath, 60*time.Second)
@@ -254,12 +256,32 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.deps.Store.PublicURL(artPath), http.StatusFound)
 }
 
-func (s *Server) publicKeysForLicense(r *http.Request, token string) ([]string, error) {
-	claims, err := authVerifyLicenseUnverifiedCustomer(token)
-	if err != nil {
-		return nil, err
+// licenseErrorResponse renders AMD-09's licence error table for an error from
+// license.Service.VerifyToken. The easy mistake is the 401/403 split, so each arm
+// names its row:
+//
+//   - unparseable, bad signature, elapsed token exp (auth.ErrUnauthorized) and an
+//     unknown customerId (license.ErrNotFound) are all "this token proves nothing":
+//     401 LICENSE_JWT_INVALID. An unknown customer is deliberately NOT 403 — telling
+//     an unauthenticated caller which customerIds exist is the same leak a forged
+//     signature would otherwise buy.
+//   - a verified token whose entitlement window has closed
+//     (license.ErrEntitlementExpired) is 403 LICENSE_EXPIRED: the caller holds a real
+//     key, the licence simply needs renewing.
+//
+// A pluginId mismatch is 403 LICENSE_ENTITLEMENT_DENIED but is not decidable from an
+// error — the caller checks it against the verified claims. Anything else (storage
+// failures VerifyToken propagates) is not an AMD-09 row and falls through to the
+// generic mapping.
+func licenseErrorResponse(err error) error {
+	switch {
+	case errors.Is(err, auth.ErrUnauthorized), errors.Is(err, license.ErrNotFound):
+		return &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTInvalid, Message: "License JWT is malformed, expired, or not signed by a known key"}
+	case errors.Is(err, license.ErrEntitlementExpired):
+		return &APIError{Status: http.StatusForbidden, Code: CodeLicenseExpired, Message: "License entitlement has expired"}
+	default:
+		return mapStorageErr(err)
 	}
-	return s.deps.License.PublicKeysForCustomer(r.Context(), claims.CustomerID)
 }
 
 // handlePublishFirst: operator session only (no OIDC).

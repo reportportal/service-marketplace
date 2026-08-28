@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/reportportal/service-marketplace/internal/config"
 	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/lifecycle"
+	"github.com/reportportal/service-marketplace/internal/openapispec"
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
@@ -327,21 +329,25 @@ func (e *testEnv) do(req *http.Request) *httptest.ResponseRecorder {
 
 // --- response / schema assertions ---------------------------------------
 
-// openAPIErrorCodes mirrors components.schemas.ErrorResponse.code.enum in
-// docs/openapi/service-marketplace-v1.yaml. There is no YAML dependency in
-// this module (see go.mod — deliberately kept minimal), so this enum is
-// hand-kept in sync with the spec rather than loaded from it; a mismatch
-// here is exactly the kind of drift a future contract test should close by
-// parsing the spec directly once a YAML/JSON-schema dependency is justified.
-var openAPIErrorCodes = map[ErrorCode]bool{
-	"NOT_FOUND": true, "UNAUTHORIZED": true, "FORBIDDEN": true, "CONFLICT": true,
-	"GONE": true, "VALIDATION_ERROR": true, "SERVICE_UNAVAILABLE": true,
-	"TOO_MANY_REQUESTS": true, "PAYLOAD_TOO_LARGE": true, "BAD_REQUEST": true,
-	"METHOD_NOT_ALLOWED": true, "UNSUPPORTED_MEDIA_TYPE": true, "NOT_ACCEPTABLE": true,
-	"INTERNAL_ERROR": true, "STORED_DOCUMENT_UNREADABLE": true, "SIGNING_UNAVAILABLE": true,
-	"STORAGE_CONFLICT": true, "STORAGE_UNAVAILABLE": true, "CSRF_TOKEN_INVALID": true,
-	"TOKEN_TYPE_NOT_PERMITTED": true,
-}
+// openAPIErrorCodes is the published error vocabulary — components.schemas.
+// ErrorResponse.code.enum in docs/openapi/service-marketplace-v1.yaml — read from the
+// spec itself rather than hand-copied, so a code the service emits without publishing
+// it (or vice versa) fails here instead of drifting silently.
+var openAPIErrorCodes = sync.OnceValue(func() map[ErrorCode]bool {
+	schemas, err := openapispec.Load(openAPISpecPath)
+	if err != nil {
+		panic("loading OpenAPI spec: " + err.Error())
+	}
+	values, err := openapispec.PropertyEnum(schemas, "ErrorResponse", "code")
+	if err != nil {
+		panic("resolving ErrorResponse.code enum: " + err.Error())
+	}
+	out := make(map[ErrorCode]bool, len(values))
+	for _, v := range values {
+		out[ErrorCode(v)] = true
+	}
+	return out
+})
 
 // decodeErrorEnvelope decodes rec's body as an ErrorResponse and checks it
 // against the OpenAPI ErrorResponse schema (required code+message, code
@@ -364,7 +370,7 @@ func assertOpenAPIErrorSchema(t *testing.T, body ErrorResponse) {
 	if body.Message == "" {
 		t.Fatalf("error envelope missing required field \"message\" per OpenAPI ErrorResponse schema")
 	}
-	if !openAPIErrorCodes[body.Code] {
+	if !openAPIErrorCodes()[body.Code] {
 		t.Fatalf("error code %q is not in the OpenAPI ErrorResponse.code enum (docs/openapi/service-marketplace-v1.yaml)", body.Code)
 	}
 }
