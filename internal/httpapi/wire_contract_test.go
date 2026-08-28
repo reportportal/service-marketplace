@@ -37,6 +37,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 	blockReason := "CVE-2026-1234 in jackson-databind"
 	changelogURL := "https://cdn.example/CHANGELOG.md"
 	expires := domain.Date{Time: now}
+	pf4jID := "Azure DevOps"
 
 	cases := []struct {
 		schema string
@@ -53,12 +54,14 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"PluginListItem", domain.IndexPlugin{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
 			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,
+			PF4JID: &pf4jID,
 		}},
 		{"PluginManifestFields", domain.Manifest{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", Version: "1.4.2", Description: "d",
 			Author: domain.Author{Name: "A"}, License: "Apache-2.0", Category: domain.CategoryBugTracking,
 			Compatibility: domain.Compatibility{ReportPortal: ">=25.1"}, Homepage: "https://reportportal.io",
 			Access: domain.AccessPublic, ContactURL: "https://reportportal.io/pricing",
+			PF4JID: &pf4jID,
 		}},
 		{"LicensePublicKey", LicensePublicKeyResponse{PublicKey: "pub", IssuedAt: domain.Date{Time: now}}},
 		{"LicenseEntitlement", LicenseEntitlementResponse{
@@ -69,12 +72,13 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"PluginListResponse", PluginListResponse{Plugins: []domain.IndexPlugin{{
 			ID: "p", Name: "n", LatestVersion: "1.0.0", Description: "d",
 			Category: domain.CategoryImport, Access: domain.AccessPublic, Tier: domain.TierOfficial,
+			PF4JID: &pf4jID,
 		}}}},
 		{"PluginDetail", PluginDetailResponse{
 			ID: "p", Name: "n", Version: "1.0.0", Description: "d", Author: domain.Author{Name: "A"},
 			License: "Apache-2.0", Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
 			Homepage: "https://x", Access: domain.AccessPublic, ContactURL: "https://x/pricing",
-			Tier: domain.TierOfficial, LatestVersion: "1.0.0",
+			PF4JID: &pf4jID, Tier: domain.TierOfficial, LatestVersion: "1.0.0",
 		}},
 		{"PluginVersionListResponse", PluginVersionListResponse{
 			PluginID: "p",
@@ -86,7 +90,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 			ID: "p", Name: "n", Version: "1.0.0", Description: "d", Author: domain.Author{Name: "A"},
 			License: "Apache-2.0", Category: domain.CategoryImport, Compatibility: domain.Compatibility{ReportPortal: ">=25.1"},
 			Homepage: "https://x", Access: domain.AccessPublic, ContactURL: "https://x/pricing",
-			Tier: domain.TierOfficial, Blocked: true, BlockedAt: &now, BlockReason: blockReason,
+			PF4JID: &pf4jID, Tier: domain.TierOfficial, Blocked: true, BlockedAt: &now, BlockReason: blockReason,
 			Advisory:       &domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "t", AttachedAt: now},
 			SHA256:         "abc",
 			ChangelogURL:   &changelogURL,

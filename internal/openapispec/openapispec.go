@@ -103,9 +103,7 @@ type jsonSchemaDocument struct {
 	Properties map[string]jsonSchemaProperty `json:"properties"`
 }
 
-// JSONSchemaEnum reads the enum declared on a top-level property of a JSON Schema
-// document (e.g. the manifest schema's "category" property).
-func JSONSchemaEnum(path, property string) ([]string, error) {
+func loadJSONSchema(path string) (*jsonSchemaDocument, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("openapispec: read %s: %w", path, err)
@@ -114,6 +112,30 @@ func JSONSchemaEnum(path, property string) ([]string, error) {
 	var doc jsonSchemaDocument
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("openapispec: parse %s: %w", path, err)
+	}
+	return &doc, nil
+}
+
+// JSONSchemaProperties returns the top-level property names a JSON Schema document
+// declares (e.g. the manifest schema's fields).
+func JSONSchemaProperties(path string) (map[string]bool, error) {
+	doc, err := loadJSONSchema(path)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(doc.Properties))
+	for name := range doc.Properties {
+		out[name] = true
+	}
+	return out, nil
+}
+
+// JSONSchemaEnum reads the enum declared on a top-level property of a JSON Schema
+// document (e.g. the manifest schema's "category" property).
+func JSONSchemaEnum(path, property string) ([]string, error) {
+	doc, err := loadJSONSchema(path)
+	if err != nil {
+		return nil, err
 	}
 	prop, ok := doc.Properties[property]
 	if !ok {

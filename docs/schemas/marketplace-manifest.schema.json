@@ -54,7 +54,14 @@
       "enum": ["public", "premium"],
       "default": "public"
     },
-    "contactUrl": { "type": "string", "format": "uri" }
+    "contactUrl": { "type": "string", "format": "uri" },
+    "pf4jId": {
+      "description": "Optional PF4J Plugin-Id (ReportPortal's IntegrationType.name). Deliberately not the registry id shape: spaces and uppercase are allowed. Omit the property entirely when there is none.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[\\x20-\\x7E]{1,64}$"
+    }
   },
   "if": {
     "properties": { "access": { "const": "premium" } },

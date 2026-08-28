@@ -89,7 +89,7 @@ func pluginDetailResponse(m domain.Manifest, st *domain.PluginState) PluginDetai
 		ID: m.ID, Name: m.Name, Version: m.Version, Description: m.Description,
 		Author: m.Author, License: m.License, Category: m.Category,
 		Compatibility: m.Compatibility, Homepage: m.Homepage, Access: m.Access,
-		ContactURL: m.ContactURL, Tier: st.Tier, LatestVersion: st.LatestVersion,
+		ContactURL: m.ContactURL, PF4JID: m.PF4JID, Tier: st.Tier, LatestVersion: st.LatestVersion,
 	}
 }
 
@@ -164,6 +164,7 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		Author: m.Author, License: m.License, Category: m.Category,
 		Compatibility: m.Compatibility, Homepage: m.Homepage, Access: m.Access,
 		ContactURL:     m.ContactURL,
+		PF4JID:         m.PF4JID,
 		Tier:           st.Tier,
 		Blocked:        detail.Blocked,
 		SHA256:         detail.SHA256,

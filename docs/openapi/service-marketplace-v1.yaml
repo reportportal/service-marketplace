@@ -1256,6 +1256,21 @@ components:
           format: uri
           description: Required when access is premium
           example: https://reportportal.io/pricing/service-packages/
+        pf4jId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[\x20-\x7E]{1,64}$'
+          description: |
+            The plugin's PF4J `Plugin-Id` manifest attribute, which ReportPortal exposes as
+            `IntegrationType.name`. Optional and additive: the property is **absent** when the
+            manifest declares no pf4jId — never `null` and never `""`, so absent unambiguously
+            means "not declared". Deliberately NOT constrained to the registry `id` shape:
+            spaces and uppercase are what it exists to carry. Match it against
+            `IntegrationType.name` byte-exactly — PF4J ids are case-sensitive, and
+            `plugin-auth-github` (`github`) and `plugin-bts-github` (`GitHub`) are different
+            plugins. Must not start or end with whitespace or contain `/`, `\` or `..`.
+          example: Azure DevOps
 
     PluginListItem:
       type: object
@@ -1281,6 +1296,16 @@ components:
           $ref: '#/components/schemas/AccessTier'
         tier:
           $ref: '#/components/schemas/TrustTier'
+        pf4jId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[\x20-\x7E]{1,64}$'
+          description: |
+            Same value and same rules as `PluginManifestFields.pf4jId`; carried on the listing
+            so the installed-plugin merge does not need a detail call per plugin. Absent when
+            the plugin declares none.
+          example: Azure DevOps
 
     PluginListResponse:
       type: object

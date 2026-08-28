@@ -37,7 +37,7 @@ func TestPropertiesFollowsAllOfAndRef(t *testing.T) {
 	}
 	want := []string{
 		"id", "name", "version", "description", "author", "license", "category",
-		"compatibility", "homepage", "access", "contactUrl", "tier", "latestVersion",
+		"compatibility", "homepage", "access", "contactUrl", "pf4jId", "tier", "latestVersion",
 	}
 	assertKeys(t, "PluginDetail", got, want)
 }

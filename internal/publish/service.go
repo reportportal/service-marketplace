@@ -347,6 +347,7 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			Category:      m.Category,
 			Access:        m.Access,
 			Tier:          st.Tier,
+			PF4JID:        m.PF4JID,
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })
