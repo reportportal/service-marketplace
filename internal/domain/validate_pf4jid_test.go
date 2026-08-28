@@ -5,14 +5,21 @@ import (
 	"testing"
 )
 
+// realPF4JPluginIDs is the complete set of Plugin-Id values the official plugins ship
+// today (requirements/integration/STAGE0-id-mapping-decision.md). Every one of them must
+// validate: a rejection here is a registry bug, not a test to relax.
+var realPF4JPluginIDs = []string{
+	"Azure DevOps", "JIRA Cloud", "GitLab", "Monday", "RobotFramework",
+	"GitHub", "github", "jira", "rally", "junit", "mobitru", "saucelabs",
+	"slack", "telegram", "quality gate", "test-execution",
+}
+
 // pf4jId carries the plugin's identity in PF4J, not in the registry, so the registry's
-// own id rule must NOT be applied to it: these are the real Plugin-Id values of the
-// official plugins (requirements/integration/STAGE0-id-mapping-decision.md).
+// own id rule must NOT be applied to it — not even to the ids that happen to look like
+// one. "quality gate" is the case that proves the rule is never applied selectively: it
+// is lowercase and hyphen-free like a registry id, yet contains a space.
 func TestValidatePF4JIDAcceptsRealPluginIDs(t *testing.T) {
-	for _, id := range []string{
-		"Azure DevOps", "JIRA Cloud", "GitLab", "Monday", "RobotFramework",
-		"GitHub", "github", "jira", strings.Repeat("a", 64),
-	} {
+	for _, id := range append(realPF4JPluginIDs, strings.Repeat("a", 64)) {
 		if ve := ValidatePF4JID(id); ve != nil {
 			t.Errorf("ValidatePF4JID(%q) = %v, want nil", id, ve)
 		}

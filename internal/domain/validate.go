@@ -52,6 +52,11 @@ func ValidateVersion(v string) *ValidationError {
 
 // ValidatePF4JID checks a declared PF4J Plugin-Id. Callers must not apply
 // ValidatePluginID to it: the registry id shape would reject most real Plugin-Ids.
+//
+// Every rule below is also published — as pattern + not.pattern — in the manifest JSON
+// Schema and the OpenAPI document, so publishers validating locally get this same
+// verdict. Change one and the other must move with it; that coupling is enforced by
+// TestPublishedPF4JIDPatternMatchesRegistryValidator.
 func ValidatePF4JID(id string) *ValidationError {
 	if !pf4jIDPattern.MatchString(id) {
 		return &ValidationError{Field: "pf4jId", Message: "pf4jId must be 1-64 printable ASCII characters"}

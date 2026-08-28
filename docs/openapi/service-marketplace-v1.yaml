@@ -1260,7 +1260,12 @@ components:
           type: string
           minLength: 1
           maxLength: 64
-          pattern: '^[\x20-\x7E]{1,64}$'
+          # 1-64 printable ASCII, excluding "/" (\x2F) and "\" (\x5C), with a non-space
+          # first and last character; `not` adds the one rule a single RE2-compilable
+          # regex cannot. Together these are the registry's complete pf4jId rule.
+          pattern: '^[\x21-\x2E\x30-\x5B\x5D-\x7E](?:[\x20-\x2E\x30-\x5B\x5D-\x7E]{0,62}[\x21-\x2E\x30-\x5B\x5D-\x7E])?$'
+          not:
+            pattern: '\.\.'
           description: |
             The plugin's PF4J `Plugin-Id` manifest attribute, which ReportPortal exposes as
             `IntegrationType.name`. Optional and additive: the property is **absent** when the
@@ -1269,7 +1274,9 @@ components:
             spaces and uppercase are what it exists to carry. Match it against
             `IntegrationType.name` byte-exactly — PF4J ids are case-sensitive, and
             `plugin-auth-github` (`github`) and `plugin-bts-github` (`GitHub`) are different
-            plugins. Must not start or end with whitespace or contain `/`, `\` or `..`.
+            plugins. The schema states the registry's whole rule, so nothing valid here is
+            rejected on upload: 1-64 printable ASCII, no leading or trailing space, and no
+            `/`, `\` or `..`.
           example: Azure DevOps
 
     PluginListItem:
@@ -1300,7 +1307,9 @@ components:
           type: string
           minLength: 1
           maxLength: 64
-          pattern: '^[\x20-\x7E]{1,64}$'
+          pattern: '^[\x21-\x2E\x30-\x5B\x5D-\x7E](?:[\x20-\x2E\x30-\x5B\x5D-\x7E]{0,62}[\x21-\x2E\x30-\x5B\x5D-\x7E])?$'
+          not:
+            pattern: '\.\.'
           description: |
             Same value and same rules as `PluginManifestFields.pf4jId`; carried on the listing
             so the installed-plugin merge does not need a detail call per plugin. Absent when
