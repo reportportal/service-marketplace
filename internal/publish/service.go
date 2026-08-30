@@ -353,6 +353,7 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			Category:      m.Category,
 			Access:        m.Access,
 			Tier:          st.Tier,
+			ContactURL:    m.ContactURL,
 			PF4JID:        m.PF4JID,
 		})
 	}

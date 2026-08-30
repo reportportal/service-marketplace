@@ -125,6 +125,10 @@ type IndexPlugin struct {
 	Category      Category   `json:"category"`
 	Access        AccessTier `json:"access"`
 	Tier          TrustTier  `json:"tier"`
+	// ContactURL travels with the listing, not only with the detail, because a premium
+	// plugin in a catalogue offers no install — only an enquiry. A consumer drawing that
+	// row from the listing alone would otherwise render an action with nowhere to go.
+	ContactURL string `json:"contactUrl,omitempty"`
 	// PF4JID mirrors Manifest.PF4JID for the catalogue listing, so a client can match
 	// installed PF4J plugins without fetching every plugin's detail. nil = not declared.
 	PF4JID *string `json:"pf4jId,omitempty"`

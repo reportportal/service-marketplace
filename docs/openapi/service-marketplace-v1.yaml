@@ -1337,6 +1337,15 @@ components:
           $ref: '#/components/schemas/AccessTier'
         tier:
           $ref: '#/components/schemas/TrustTier'
+        contactUrl:
+          type: string
+          format: uri
+          description: |
+            Same value as `PluginManifestFields.contactUrl`; carried on the listing because a
+            premium plugin offers no install, only an enquiry, and a consumer rendering that row
+            from the listing alone would otherwise draw an action with nowhere to go. Absent
+            unless the plugin declares one.
+          example: https://reportportal.io/pricing/service-packages/
         pf4jId:
           type: string
           minLength: 1
