@@ -1322,6 +1322,7 @@ components:
         - category
         - access
         - tier
+        - author
       properties:
         id:
           type: string
@@ -1346,6 +1347,14 @@ components:
             from the listing alone would otherwise draw an action with nowhere to go. Absent
             unless the plugin declares one.
           example: https://reportportal.io/pricing/service-packages/
+        author:
+          allOf:
+            - $ref: '#/components/schemas/Author'
+          description: |
+            Same value as `PluginManifestFields.author`; carried on the listing because a
+            catalogue row names who wrote the plugin, and a consumer holding only the listing
+            would otherwise have to guess — and guessing has a wrong answer, attributing a third
+            party's plugin to ReportPortal.
         pf4jId:
           type: string
           minLength: 1

@@ -65,3 +65,31 @@ func TestListingOmitsContactUrlWhenUndeclared(t *testing.T) {
 		t.Errorf("listing carries a contactUrl key for a plugin that declared none")
 	}
 }
+
+// TestListingCarriesAuthor pins the author onto the catalogue listing. A consumer builds the
+// row from the listing alone, and a row names who wrote the plugin: without this field the
+// only options are to print nothing or to guess, and the guess that was actually shipped
+// attributed every third party's plugin to ReportPortal.
+//
+// Kills dropping Author from domain.IndexPlugin or from the index rebuild.
+func TestListingCarriesAuthor(t *testing.T) {
+	env := newTestEnv(t)
+	m := premiumManifest(testOIDCPluginID, "https://reportportal.io/contact")
+	m.Author = domain.Author{Name: "Acme Integrations", Email: "dev@acme.example", URL: "https://acme.example"}
+
+	if rec := publishViaHTTP(t, env, m); rec.Code != http.StatusCreated {
+		t.Fatalf("publish: status %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	raw, ok := listItem(t, env, testOIDCPluginID)["author"]
+	if !ok {
+		t.Fatalf("GET /api/v1/plugins: author missing from the listing")
+	}
+	var got domain.Author
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("author is not an object: %v (raw %s)", err, raw)
+	}
+	if got != m.Author {
+		t.Errorf("author = %+v, want %+v", got, m.Author)
+	}
+}
