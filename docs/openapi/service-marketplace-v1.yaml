@@ -405,6 +405,22 @@ paths:
         3. Public plugin → `302` redirect to CloudFront CDN URL
         4. Premium plugin → requires valid license JWT; returns JSON with S3 pre-signed URL (60s)
 
+        Every distinct license failure is separately diagnosable through `ErrorResponse.code`
+        (AMD-09), so an operator can be told which one happened. Note the split: an unknown
+        `customerId` and a license JWT whose own `exp` has elapsed are `401`, while an
+        entitlement that has expired is `403`.
+
+        | Condition | Status | code |
+        |---|---|---|
+        | `Authorization` header absent or blank | 401 | `LICENSE_JWT_MISSING` |
+        | JWT unparseable, bad signature, elapsed `exp`, or unknown `customerId` | 401 | `LICENSE_JWT_INVALID` |
+        | Entitlement expired | 403 | `LICENSE_EXPIRED` |
+        | Entitlement does not cover the plugin (`pluginId` claim ≠ path `pluginId`) | 403 | `LICENSE_ENTITLEMENT_DENIED` |
+        | Version blocked | 403 | `BlockedArtifactError` with `blocked: true` (no `code`) |
+
+        A `403` is told apart by its `code`, never by which fields are present: a license
+        `403` is an `ErrorResponse` and never carries `blocked`, not even as `false`.
+
         Optional `X-RP-Instance-Id` header (FR-L-06) is used for analytics and is never
         forwarded to CDN or pre-signed URLs.
 
@@ -433,9 +449,23 @@ paths:
                 type: string
                 format: uri
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: >-
+            License JWT missing (`LICENSE_JWT_MISSING`), or unusable — unparseable, bad
+            signature, elapsed `exp`, or an unknown `customerId` (`LICENSE_JWT_INVALID`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                licenseJwtMissing:
+                  $ref: '#/components/examples/LicenseJwtMissingExample'
+                licenseJwtInvalid:
+                  $ref: '#/components/examples/LicenseJwtInvalidExample'
         '403':
-          description: Blocked version or invalid license
+          description: >-
+            Blocked version (`BlockedArtifactError`, `blocked: true`), an expired
+            entitlement (`LICENSE_EXPIRED`), or an entitlement that does not cover this
+            plugin (`LICENSE_ENTITLEMENT_DENIED`).
           content:
             application/json:
               schema:
@@ -445,6 +475,10 @@ paths:
               examples:
                 blocked:
                   $ref: '#/components/examples/BlockedArtifactExample'
+                licenseExpired:
+                  $ref: '#/components/examples/LicenseExpiredExample'
+                licenseEntitlementDenied:
+                  $ref: '#/components/examples/LicenseEntitlementDeniedExample'
         '404':
           $ref: '#/components/responses/NotFound'
         '410':
@@ -1256,6 +1290,28 @@ components:
           format: uri
           description: Required when access is premium
           example: https://reportportal.io/pricing/service-packages/
+        pf4jId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          # 1-64 printable ASCII, excluding "/" (\x2F) and "\" (\x5C), with a non-space
+          # first and last character; `not` adds the one rule a single RE2-compilable
+          # regex cannot. Together these are the registry's complete pf4jId rule.
+          pattern: '^[\x21-\x2E\x30-\x5B\x5D-\x7E](?:[\x20-\x2E\x30-\x5B\x5D-\x7E]{0,62}[\x21-\x2E\x30-\x5B\x5D-\x7E])?$'
+          not:
+            pattern: '\.\.'
+          description: |
+            The plugin's PF4J `Plugin-Id` manifest attribute, which ReportPortal exposes as
+            `IntegrationType.name`. Optional and additive: the property is **absent** when the
+            manifest declares no pf4jId — never `null` and never `""`, so absent unambiguously
+            means "not declared". Deliberately NOT constrained to the registry `id` shape:
+            spaces and uppercase are what it exists to carry. Match it against
+            `IntegrationType.name` byte-exactly — PF4J ids are case-sensitive, and
+            `plugin-auth-github` (`github`) and `plugin-bts-github` (`GitHub`) are different
+            plugins. The schema states the registry's whole rule, so nothing valid here is
+            rejected on upload: 1-64 printable ASCII, no leading or trailing space, and no
+            `/`, `\` or `..`.
+          example: Azure DevOps
 
     PluginListItem:
       type: object
@@ -1266,6 +1322,7 @@ components:
         - category
         - access
         - tier
+        - author
       properties:
         id:
           type: string
@@ -1281,6 +1338,35 @@ components:
           $ref: '#/components/schemas/AccessTier'
         tier:
           $ref: '#/components/schemas/TrustTier'
+        contactUrl:
+          type: string
+          format: uri
+          description: |
+            Same value as `PluginManifestFields.contactUrl`; carried on the listing because a
+            premium plugin offers no install, only an enquiry, and a consumer rendering that row
+            from the listing alone would otherwise draw an action with nowhere to go. Absent
+            unless the plugin declares one.
+          example: https://reportportal.io/pricing/service-packages/
+        author:
+          allOf:
+            - $ref: '#/components/schemas/Author'
+          description: |
+            Same value as `PluginManifestFields.author`; carried on the listing because a
+            catalogue row names who wrote the plugin, and a consumer holding only the listing
+            would otherwise have to guess — and guessing has a wrong answer, attributing a third
+            party's plugin to ReportPortal.
+        pf4jId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[\x21-\x2E\x30-\x5B\x5D-\x7E](?:[\x20-\x2E\x30-\x5B\x5D-\x7E]{0,62}[\x21-\x2E\x30-\x5B\x5D-\x7E])?$'
+          not:
+            pattern: '\.\.'
+          description: |
+            Same value and same rules as `PluginManifestFields.pf4jId`; carried on the listing
+            so the installed-plugin merge does not need a detail call per plugin. Absent when
+            the plugin declares none.
+          example: Azure DevOps
 
     PluginListResponse:
       type: object
@@ -1739,6 +1825,10 @@ components:
             - STORAGE_UNAVAILABLE
             - CSRF_TOKEN_INVALID
             - TOKEN_TYPE_NOT_PERMITTED
+            - LICENSE_JWT_MISSING
+            - LICENSE_JWT_INVALID
+            - LICENSE_ENTITLEMENT_DENIED
+            - LICENSE_EXPIRED
         message:
           type: string
 
@@ -1831,6 +1921,26 @@ components:
         blocked: true
         blockedAt: '2026-02-15T10:00:00Z'
         reason: CVE-2026-1234 in jackson-databind
+
+    LicenseJwtMissingExample:
+      value:
+        code: LICENSE_JWT_MISSING
+        message: License JWT required
+
+    LicenseJwtInvalidExample:
+      value:
+        code: LICENSE_JWT_INVALID
+        message: License JWT is malformed, expired, or not signed by a known key
+
+    LicenseExpiredExample:
+      value:
+        code: LICENSE_EXPIRED
+        message: License entitlement has expired
+
+    LicenseEntitlementDeniedExample:
+      value:
+        code: LICENSE_ENTITLEMENT_DENIED
+        message: License entitlement does not cover this plugin
 
     PremiumArtifactExample:
       value:

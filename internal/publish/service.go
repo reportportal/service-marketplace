@@ -281,7 +281,13 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		if !found {
 			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha})
 		}
-		st.LatestVersion = m.Version
+		// "Latest" is the highest version, not the most recently uploaded one. Publishing a
+		// patch for an older branch after a newer release is ordinary, and taking the upload
+		// order would demote the real latest: every instance already on it would stop being
+		// offered its update, and a fresh install would get the older jar.
+		if st.LatestVersion == "" || domain.CompareVersions(m.Version, st.LatestVersion) > 0 {
+			st.LatestVersion = m.Version
+		}
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
@@ -347,6 +353,9 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			Category:      m.Category,
 			Access:        m.Access,
 			Tier:          st.Tier,
+			ContactURL:    m.ContactURL,
+			Author:        m.Author,
+			PF4JID:        m.PF4JID,
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })

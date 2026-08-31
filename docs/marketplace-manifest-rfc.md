@@ -37,6 +37,7 @@ Place the file at the **root** of the JAR (same level as typical `plugin.propert
 | `homepage` | URI | Docs / project page |
 | `access` | `public` \| `premium` | Default `public` |
 | `contactUrl` | URI | **Required when `access` is `premium`** — purchase / contact CTA |
+| `pf4jId` | string | The plugin's PF4J `Plugin-Id` (ReportPortal's `IntegrationType.name`), e.g. `Azure DevOps`. Not the registry `id` shape: spaces and uppercase are allowed. 1–64 printable ASCII, no surrounding whitespace, no `/`, `\` or `..`. Omit the key entirely when there is none — the registry never emits it as `null` or `""`, and consumers must match it case-sensitively |
 
 ### Controlled `category` vocabulary
 

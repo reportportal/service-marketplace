@@ -12,6 +12,16 @@ var (
 	pluginIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$`)
 	// SemVer core + optional pre-release/build (RE2-safe; path traversal blocked separately).
 	versionPattern = regexp.MustCompile(`^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\w.-]+)?(?:\+[\w.-]+)?$`)
+	// pf4jIDPattern bounds the *other* system's identifier, so it deliberately admits
+	// what pluginIDPattern forbids — spaces and uppercase are the whole reason the field
+	// exists ("Azure DevOps", "JIRA Cloud", "GitHub"). What it excludes is what makes the
+	// value dangerous downstream: it is compared byte-exact against IntegrationType.name
+	// in Java and may reach storage keys and log lines, so only printable ASCII is
+	// allowed — control characters (log/line injection) and non-ASCII (homoglyphs that
+	// look like a match and never are) are out. Path separators and ".." are rejected
+	// separately below. 64 is the same ceiling pluginIDPattern imposes; the longest real
+	// Plugin-Id is 15 characters.
+	pf4jIDPattern = regexp.MustCompile(`^[\x20-\x7E]{1,64}$`)
 )
 
 type ValidationError struct {
@@ -36,6 +46,27 @@ func ValidateVersion(v string) *ValidationError {
 	}
 	if strings.Contains(v, "/") || strings.Contains(v, `\`) || strings.Contains(v, "..") {
 		return &ValidationError{Field: "version", Message: "version must be a single storage-key segment"}
+	}
+	return nil
+}
+
+// ValidatePF4JID checks a declared PF4J Plugin-Id. Callers must not apply
+// ValidatePluginID to it: the registry id shape would reject most real Plugin-Ids.
+//
+// Every rule below is also published — as pattern + not.pattern — in the manifest JSON
+// Schema and the OpenAPI document, so publishers validating locally get this same
+// verdict. Change one and the other must move with it; that coupling is enforced by
+// TestPublishedPF4JIDPatternMatchesRegistryValidator.
+func ValidatePF4JID(id string) *ValidationError {
+	if !pf4jIDPattern.MatchString(id) {
+		return &ValidationError{Field: "pf4jId", Message: "pf4jId must be 1-64 printable ASCII characters"}
+	}
+	// Surrounding whitespace is invisible and would silently never match IntegrationType.name.
+	if id != strings.TrimSpace(id) {
+		return &ValidationError{Field: "pf4jId", Message: "pf4jId must not start or end with whitespace"}
+	}
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return &ValidationError{Field: "pf4jId", Message: `pf4jId must not contain "/", "\" or ".."`}
 	}
 	return nil
 }
@@ -101,6 +132,13 @@ func ValidateManifest(m *Manifest) []ValidationError {
 	if m.ContactURL != "" {
 		if _, err := url.ParseRequestURI(m.ContactURL); err != nil {
 			add("manifest.contactUrl", "invalid url")
+		}
+	}
+	// nil = not declared (valid). Declared means it must hold a usable value — an empty
+	// or blank pf4jId is a publisher mistake, not a way of saying "none".
+	if m.PF4JID != nil {
+		if ve := ValidatePF4JID(*m.PF4JID); ve != nil {
+			add("manifest.pf4jId", ve.Message)
 		}
 	}
 	return errs

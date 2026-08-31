@@ -103,6 +103,18 @@ type Manifest struct {
 	Homepage      string        `json:"homepage,omitempty"`
 	Access        AccessTier    `json:"access,omitempty"`
 	ContactURL    string        `json:"contactUrl,omitempty"`
+	// PF4JID is the plugin's `Plugin-Id` manifest attribute — its identity in PF4J,
+	// which ReportPortal exposes as IntegrationType.name. It is a second, foreign
+	// identifier space: 6 of 14 official plugins ("Azure DevOps", "GitHub", ...) cannot
+	// use their Plugin-Id as a registry id, and case-folding the two together would
+	// merge plugin-auth-github ("github") with plugin-bts-github ("GitHub"). See
+	// requirements/integration/STAGE0-id-mapping-decision.md.
+	//
+	// Optional, and a pointer on purpose: nil means "not declared" and marshals to no
+	// key at all, so a manifest written before this field existed is unchanged on the
+	// wire. A declared-but-empty value is rejected by ValidateManifest, so an absent key
+	// is the only representation of "no pf4jId" a consumer ever has to handle.
+	PF4JID *string `json:"pf4jId,omitempty"`
 }
 
 type IndexPlugin struct {
@@ -113,6 +125,17 @@ type IndexPlugin struct {
 	Category      Category   `json:"category"`
 	Access        AccessTier `json:"access"`
 	Tier          TrustTier  `json:"tier"`
+	// ContactURL travels with the listing, not only with the detail, because a premium
+	// plugin in a catalogue offers no install — only an enquiry. A consumer drawing that
+	// row from the listing alone would otherwise render an action with nowhere to go.
+	ContactURL string `json:"contactUrl,omitempty"`
+	// Author travels with the listing for the same reason: a catalogue row names who wrote
+	// the plugin, and a consumer that only has the listing would otherwise have to guess.
+	// Guessing has a wrong answer — attributing a third party's plugin to ReportPortal.
+	Author Author `json:"author"`
+	// PF4JID mirrors Manifest.PF4JID for the catalogue listing, so a client can match
+	// installed PF4J plugins without fetching every plugin's detail. nil = not declared.
+	PF4JID *string `json:"pf4jId,omitempty"`
 }
 
 type Index struct {

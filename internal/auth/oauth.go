@@ -282,6 +282,26 @@ type LicenseClaims struct {
 	Exp        time.Time
 }
 
+// PeekUnverifiedCustomerID reads the customerId claim WITHOUT verifying the
+// signature, for one purpose only: choosing which entitlement's public keys
+// VerifyLicenseJWT should be given as candidates. Nothing may be authorized on the
+// strength of the value it returns — a forged claim only ever buys the attacker a
+// candidate key set their signature still has to satisfy. Validation (exp) is
+// deliberately skipped here so an elapsed token is reported by VerifyLicenseJWT,
+// which checks it against a real signature, rather than by this lookup.
+func PeekUnverifiedCustomerID(token string) (string, error) {
+	parsed, err := jwt.Parse([]byte(token), jwt.WithVerify(false), jwt.WithValidate(false))
+	if err != nil {
+		return "", ErrUnauthorized
+	}
+	cid, _ := parsed.Get("customerId")
+	customerID, _ := cid.(string)
+	if customerID == "" {
+		return "", ErrUnauthorized
+	}
+	return customerID, nil
+}
+
 func VerifyLicenseJWT(token string, publicKeys []string) (*LicenseClaims, error) {
 	var lastErr error
 	for _, pkB64 := range publicKeys {
