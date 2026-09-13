@@ -130,6 +130,13 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 			item.BlockedAt = &blockedAt
 			item.BlockReason = bv.Reason
 		}
+		if v.Compatibility != "" {
+			item.Compatibility = &domain.Compatibility{ReportPortal: v.Compatibility}
+		}
+		if vs, ok := st.VersionStates[v.Version]; ok && vs.Advisory != nil {
+			advisory := *vs.Advisory
+			item.Advisory = &advisory
+		}
 		versions = append(versions, item)
 	}
 	writeJSON(w, http.StatusOK, PluginVersionListResponse{PluginID: pluginID, Versions: versions})

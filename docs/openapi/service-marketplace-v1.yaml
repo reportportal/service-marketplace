@@ -1412,6 +1412,23 @@ components:
         blockReason:
           type: string
           nullable: true
+        compatibility:
+          allOf:
+            - $ref: '#/components/schemas/Compatibility'
+          description: |
+            The version's declared ReportPortal range, copied from its manifest at publish time so
+            a listing can answer for every version without fetching each one.
+
+            **Absent means unknown, not compatible.** An entry published before this field existed
+            carries no range, and a consumer that cannot read one must refuse the install rather
+            than guess — the same rule already applied to a range that will not parse.
+        advisory:
+          allOf:
+            - $ref: '#/components/schemas/SecurityAdvisory'
+          description: |
+            The advisory attached to this specific version, absent when it carries none. A listing
+            needs it per row; the plugin-level advisory on the detail response answers a different
+            question, namely whether the plugin as a whole is under one.
 
     PluginVersionListResponse:
       type: object

@@ -152,6 +152,16 @@ type VersionMeta struct {
 	Version     string    `json:"version"`
 	PublishedAt time.Time `json:"publishedAt,omitempty"`
 	SHA256      string    `json:"sha256,omitempty"`
+	// Compatibility is the version manifest's `compatibility.reportportal` range, copied here
+	// at publish time. It is denormalised on purpose: the range is what decides whether a
+	// version may be offered, and a catalogue listing needs it for every version at once —
+	// reading one manifest per version to answer a single list request does not scale, and the
+	// value is immutable once published, so the copy can never drift.
+	//
+	// Empty for an entry published before this field existed. Absent is not "compatible": a
+	// consumer that cannot read a range must treat it as unknown and refuse rather than guess,
+	// which is what service-api already does with an unparseable one.
+	Compatibility string `json:"compatibility,omitempty"`
 }
 
 type SecurityAdvisory struct {

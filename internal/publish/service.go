@@ -274,12 +274,18 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 			if v.Version == m.Version {
 				st.Versions[i].SHA256 = sha
 				st.Versions[i].PublishedAt = now
+				st.Versions[i].Compatibility = m.Compatibility.ReportPortal
 				found = true
 				break
 			}
 		}
 		if !found {
-			st.Versions = append(st.Versions, domain.VersionMeta{Version: m.Version, PublishedAt: now, SHA256: sha})
+			st.Versions = append(st.Versions, domain.VersionMeta{
+				Version:       m.Version,
+				PublishedAt:   now,
+				SHA256:        sha,
+				Compatibility: m.Compatibility.ReportPortal,
+			})
 		}
 		// "Latest" is the highest version, not the most recently uploaded one. Publishing a
 		// patch for an older branch after a newer release is ordinary, and taking the upload
