@@ -1100,6 +1100,11 @@ components:
         These are the numbers the deployment enforces, which is what a client needs; they are not
         the numbers NFR-16 states, and reconciling the two is a configuration decision rather than
         a documentation one.
+
+        The 160 MB figure also bounds the other direction: nothing larger can have been published,
+        so it is the ceiling on every artifact this registry can serve. A consumer streaming an
+        artifact to disk may bound its own write by it and treat anything larger as an answer that
+        did not come from a registry behaving as one — which is what service-api does.
       content:
         application/json:
           schema:

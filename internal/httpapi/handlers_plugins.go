@@ -331,11 +331,18 @@ func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
+// MaxPublishBundleBytes is the largest publish bundle the registry will read — the jar and its
+// screenshots together. It is the ceiling on everything the registry can ever serve, so a consumer
+// downloading an artifact can bound its own write by this number and know that anything larger did
+// not come from here. It is published in the OpenAPI description of the publish routes for exactly
+// that reason; service-api reads artifacts with the same bound.
+const MaxPublishBundleBytes = 160 << 20
+
 func (s *Server) parsePublishBundle(r *http.Request) (*publish.Bundle, error) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		return nil, &APIError{Status: http.StatusUnsupportedMediaType, Code: CodeUnsupportedMediaType, Message: "Request media type is not supported"}
 	}
-	r.Body = http.MaxBytesReader(nil, r.Body, 160<<20)
+	r.Body = http.MaxBytesReader(nil, r.Body, MaxPublishBundleBytes)
 	reader, err := r.MultipartReader()
 	if err != nil {
 		return nil, &APIError{Status: http.StatusBadRequest, Code: CodeBadRequest, Message: "Request is malformed or is missing a required parameter"}
