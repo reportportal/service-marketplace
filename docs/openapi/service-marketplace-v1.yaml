@@ -1367,6 +1367,21 @@ components:
             so the installed-plugin merge does not need a detail call per plugin. Absent when
             the plugin declares none.
           example: Azure DevOps
+        compatibility:
+          type: string
+          description: |
+            The `compatibility.reportportal` range declared by `latestVersion` — that version's
+            range, not the plugin's. Carried on the listing because a catalogue row offers to
+            install the latest build, and whether that build runs on the instance reading the row
+            is the one thing the row cannot answer for itself; without it a consumer must fetch
+            one version detail per row.
+
+            Absent for a plugin whose latest version was published before the registry recorded
+            the range. **Absent is not "compatible"** — a consumer that cannot read a range must
+            treat the answer as undecided rather than assume either way, because both assumptions
+            are wrong: offering an install the server refuses, or grounding every plugin
+            published before the field existed.
+          example: '>=26.2'
 
     PluginListResponse:
       type: object

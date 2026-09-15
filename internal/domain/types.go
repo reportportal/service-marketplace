@@ -136,6 +136,16 @@ type IndexPlugin struct {
 	// PF4JID mirrors Manifest.PF4JID for the catalogue listing, so a client can match
 	// installed PF4J plugins without fetching every plugin's detail. nil = not declared.
 	PF4JID *string `json:"pf4jId,omitempty"`
+	// Compatibility is the `compatibility.reportportal` range declared by LatestVersion —
+	// that version's range, not the plugin's. A catalogue row has to say whether the build it
+	// offers runs on the instance reading it, and without this the consumer would have to
+	// fetch one version detail per row to find out. The range belongs to a version, so it is
+	// only meaningful here because LatestVersion names which one.
+	//
+	// Empty for a plugin whose latest version was published before VersionMeta carried the
+	// field. Absent is not "compatible": a consumer that cannot read a range must treat the
+	// answer as undecided rather than assume either way.
+	Compatibility string `json:"compatibility,omitempty"`
 }
 
 type Index struct {

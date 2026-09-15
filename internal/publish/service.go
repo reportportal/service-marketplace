@@ -362,6 +362,9 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			ContactURL:    m.ContactURL,
 			Author:        m.Author,
 			PF4JID:        m.PF4JID,
+			// m is already the manifest of st.LatestVersion, so the range is the one that
+			// version declares and the copy costs no extra read
+			Compatibility: m.Compatibility.ReportPortal,
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })
