@@ -37,6 +37,15 @@ func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.Plug
 	return &st, nil
 }
 
+// SetTier records a plugin's provenance.
+//
+// Only `official` is accepted, and that is ADR-003 rather than an oversight: `partner` and
+// `community` are reserved in the schema so published entries need no migration when their
+// onboarding arrives, but the workflows that would earn a plugin either tier are Phase 3. A tier
+// this registry cannot decide how to grant is one it must not let an operator assert by hand.
+//
+// So `domain.TierPartner` existing while this refuses it is the intended state, not a gap. If that
+// changes, it changes here and in the onboarding that justifies it — together.
 func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.TrustTier) (*domain.PluginState, error) {
 	if tier != domain.TierOfficial {
 		return nil, ErrForbidden
