@@ -24,13 +24,12 @@ func TestManifestFieldsMatchPublishedJSONSchema(t *testing.T) {
 		t.Fatalf("loading manifest schema: %v", err)
 	}
 
-	pf4jID := "Azure DevOps"
 	// Every optional field set, so each one appears in the marshalled output.
 	m := domain.Manifest{
 		ID: "plugin-bts-azure", Name: "Azure DevOps", Version: "1.0.0", Description: "d",
 		Author: domain.Author{Name: "A"}, License: "Apache-2.0", Category: domain.CategoryBugTracking,
 		Compatibility: domain.Compatibility{ReportPortal: ">=25.1"}, Homepage: "https://x",
-		Access: domain.AccessPublic, ContactURL: "https://x/pricing", PF4JID: &pf4jID,
+		Access: domain.AccessPublic, ContactURL: "https://x/pricing",
 	}
 	data, err := json.Marshal(m)
 	if err != nil {

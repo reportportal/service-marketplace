@@ -103,7 +103,6 @@ type PluginDetailResponse struct {
 	Homepage      string               `json:"homepage,omitempty"`
 	Access        domain.AccessTier    `json:"access,omitempty"`
 	ContactURL    string               `json:"contactUrl,omitempty"`
-	PF4JID        *string              `json:"pf4jId,omitempty"`
 	Tier          domain.TrustTier     `json:"tier"`
 	LatestVersion string               `json:"latestVersion"`
 }
@@ -145,7 +144,6 @@ type PluginVersionDetailResponse struct {
 	Homepage      string               `json:"homepage,omitempty"`
 	Access        domain.AccessTier    `json:"access,omitempty"`
 	ContactURL    string               `json:"contactUrl,omitempty"`
-	PF4JID        *string              `json:"pf4jId,omitempty"`
 
 	Tier           domain.TrustTier         `json:"tier"`
 	Blocked        bool                     `json:"blocked"`

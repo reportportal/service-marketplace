@@ -22,6 +22,7 @@ import (
 	"github.com/reportportal/service-marketplace/internal/catalogue"
 	"github.com/reportportal/service-marketplace/internal/cdn"
 	"github.com/reportportal/service-marketplace/internal/config"
+	"github.com/reportportal/service-marketplace/internal/domain"
 	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/lifecycle"
 	"github.com/reportportal/service-marketplace/internal/openapispec"
@@ -373,4 +374,51 @@ func assertOpenAPIErrorSchema(t *testing.T, body ErrorResponse) {
 	if !openAPIErrorCodes()[body.Code] {
 		t.Fatalf("error code %q is not in the OpenAPI ErrorResponse.code enum (docs/openapi/service-marketplace-v1.yaml)", body.Code)
 	}
+}
+
+// publishViaHTTP performs a first publish through POST /api/v1/plugins with an operator
+// session, i.e. the same path a real publisher takes.
+//
+// These three lived in pf4jid_test.go until that field was dropped. They were never about
+// pf4jId — four other tests reach a published plugin through them — so they moved here rather
+// than leaving with it.
+func publishViaHTTP(t *testing.T, env *testEnv, m *domain.Manifest) *httptest.ResponseRecorder {
+	t.Helper()
+	jar, err := publish.BuildTestJAR(m)
+	if err != nil {
+		t.Fatalf("BuildTestJAR: %v", err)
+	}
+	body, contentType := buildPublishMultipart(t, jar)
+	return env.do(env.newRequest(http.MethodPost, "/api/v1/plugins", credOperatorSession, body, contentType))
+}
+
+func getJSONObject(t *testing.T, env *testEnv, target string) map[string]json.RawMessage {
+	t.Helper()
+	rec := env.do(env.newRequest(http.MethodGet, target, credNone, nil, ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: status %d body=%s", target, rec.Code, rec.Body.String())
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("GET %s: decode: %v body=%s", target, err, rec.Body.String())
+	}
+	return out
+}
+
+// listItem returns the raw JSON object for pluginID from GET /api/v1/plugins.
+func listItem(t *testing.T, env *testEnv, pluginID string) map[string]json.RawMessage {
+	t.Helper()
+	body := getJSONObject(t, env, "/api/v1/plugins")
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(body["plugins"], &items); err != nil {
+		t.Fatalf("decode plugins array: %v", err)
+	}
+	for _, item := range items {
+		var id string
+		if err := json.Unmarshal(item["id"], &id); err == nil && id == pluginID {
+			return item
+		}
+	}
+	t.Fatalf("plugin %q not present in listing: %v", pluginID, items)
+	return nil
 }
