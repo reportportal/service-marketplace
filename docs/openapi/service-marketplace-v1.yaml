@@ -591,6 +591,53 @@ paths:
         - operatorSessionJwt: []
         - operatorSessionCookie: []
 
+  /api/v1/index/rebuild:
+    post:
+      tags:
+        - Operator — Catalogue
+      summary: Regenerate the catalogue listing from plugin state
+      description: |
+        Rebuilds `index.json` from the plugin states on storage.
+
+        **Run this after any upgrade that adds a field to `PluginListItem`.** The listing is
+        otherwise only regenerated as a side effect of a mutation — publish, block, remove,
+        set-tier — so entries written by an older build keep the older shape until something
+        happens to touch them. `author`, `contactUrl` and `compatibility` were each added that
+        way, and each left existing entries without the field until an unrelated publish.
+
+        It is deliberately not run at startup: the rebuild lists every plugin directory and reads
+        one manifest per plugin, so on a multi-replica deployment every boot would have each
+        replica rewriting the same object. An explicit operator action runs exactly as often as it
+        is needed.
+
+        Idempotent — the listing is derived entirely from plugin state, so running it twice is
+        running it once. No request body.
+      operationId: rebuildIndex
+      responses:
+        '200':
+          description: The listing was regenerated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum: [rebuilt]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
   /api/v1/auth/config:
     get:
       tags:

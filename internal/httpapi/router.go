@@ -91,6 +91,7 @@ func (s *Server) routes() chi.Router {
 		api.With(s.requireSessionOrPublishOIDC).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
+		api.With(s.requireSessionRejectOIDC).Post("/index/rebuild", s.handleRebuildIndex)
 
 		api.With(s.requireSessionRejectOIDC).Get("/licenses", s.handleListLicenses)
 		api.With(s.requireSessionRejectOIDC).Post("/licenses", s.handleCreateLicense)

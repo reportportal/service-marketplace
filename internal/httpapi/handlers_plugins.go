@@ -449,6 +449,30 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tomb)
 }
 
+// handleRebuildIndex regenerates the catalogue listing from the plugin states on storage.
+//
+// It exists because nothing else could reach `rebuildIndex`: it ran on publish and on the
+// lifecycle mutations, so an upgrade that adds a field to the listing — `author`, `contactUrl`
+// and `compatibility` all did — left every existing entry without it until somebody happened to
+// publish or block something unrelated. An operator had no step to run, which made it an
+// operational gap rather than a deployment note.
+//
+// Not done at startup. The rebuild lists every plugin directory and reads one manifest per
+// plugin, so on a multi-replica deployment every boot would have each replica rewriting the same
+// object; `WriteWithRetry` would survive it, but it is work nobody asked for on every restart.
+// An explicit operator action is the one that happens exactly as often as it is needed, which is
+// once per upgrade that changes the listing's shape.
+//
+// Idempotent: the index is derived entirely from plugin state, so running it twice is running it
+// once.
+func (s *Server) handleRebuildIndex(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Publish.RebuildIndex(r.Context()); err != nil {
+		writeError(w, mapStorageErr(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilt"})
+}
+
 func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {
 	pluginID, version, ok := requirePluginVersion(w, r)
 	if !ok {
