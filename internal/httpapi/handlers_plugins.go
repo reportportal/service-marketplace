@@ -235,6 +235,11 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimSpace(bearerToken(r))
 		if token == "" {
 			track(access, analytics.ResultNoLicense)
+			// a credential was sent and it is not one this route can read — refused, not absent
+			if unsupportedAuthScheme(r) {
+				writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTInvalid, Message: "License JWT malformed"})
+				return
+			}
 			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTMissing, Message: "License JWT required"})
 			return
 		}

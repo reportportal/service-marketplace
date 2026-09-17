@@ -1896,6 +1896,9 @@ components:
             latestVersion: '1.4.2'
             description: Post and link Jira Cloud issues from ReportPortal
             category: bug-tracking
+            author:
+              name: ReportPortal Team
+              url: https://reportportal.io
             access: public
             tier: official
           - id: plugin-quality-gate
@@ -1903,7 +1906,11 @@ components:
             latestVersion: '2.0.0'
             description: Advanced quality gate rules
             category: import
+            author:
+              name: ReportPortal Team
+              url: https://reportportal.io
             access: premium
+            contactUrl: https://reportportal.io/pricing
             tier: official
 
     PluginDetailExample:

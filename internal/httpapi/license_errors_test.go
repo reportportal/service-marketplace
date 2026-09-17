@@ -9,6 +9,7 @@ package httpapi
 // The table (requirements/AMENDMENTS-v1.md, AMD-09):
 //
 //	Authorization absent or blank                        401 LICENSE_JWT_MISSING
+//	Authorization present but not a usable Bearer        401 LICENSE_JWT_INVALID
 //	unparseable / bad signature / elapsed exp /
 //	  unknown customerId                                 401 LICENSE_JWT_INVALID
 //	entitlement expired                                  403 LICENSE_EXPIRED
@@ -148,6 +149,22 @@ func TestArtifactLicenseErrorTable(t *testing.T) {
 			authHeader: func(*testing.T, *testEnv, string) string { return "Bearer not-a-jwt-at-all" },
 			wantStatus: http.StatusUnauthorized,
 			wantCode:   CodeLicenseJWTInvalid,
+		},
+		{
+			// A credential was sent and it is not usable — which is what INVALID means. Reading it
+			// as MISSING tells an operator to configure a licence they have already configured,
+			// and sends them looking in the wrong place.
+			name:       "a scheme that is not Bearer",
+			authHeader: func(*testing.T, *testEnv, string) string { return "Basic dXNlcjpwYXNz" },
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   CodeLicenseJWTInvalid,
+		},
+		{
+			// and the other direction: whitespace alone is nobody sending anything
+			name:       "whitespace-only Authorization",
+			authHeader: func(*testing.T, *testEnv, string) string { return "   " },
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   CodeLicenseJWTMissing,
 		},
 		{
 			name: "signature by a key the entitlement does not hold",

@@ -229,6 +229,19 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
+// unsupportedAuthScheme reports whether the caller sent an Authorization header that is not a
+// Bearer one at all — `Basic ...`, say.
+//
+// bearerToken returns "" for that and for no header, and AMD-09 needs the two apart: MISSING tells
+// an operator to configure a licence, INVALID tells them the one being sent is not usable, and
+// sending someone to configure what they already configured wastes the diagnosis. A `Bearer` with
+// nothing after it stays MISSING — the scheme is right and no token was supplied, which is what
+// the table calls blank.
+func unsupportedAuthScheme(r *http.Request) bool {
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	return h != "" && !strings.HasPrefix(h, "Bearer")
+}
+
 func hasSessionCookie(r *http.Request) bool {
 	c, err := r.Cookie(auth.SessionCookieName)
 	return err == nil && c.Value != ""

@@ -22,6 +22,7 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 type Schema struct {
 	Enum       []string          `yaml:"enum"`
 	Properties map[string]Schema `yaml:"properties"`
+	Required   []string          `yaml:"required"`
 	AllOf      []Schema          `yaml:"allOf"`
 	Ref        string            `yaml:"$ref"`
 	Pattern    string            `yaml:"pattern"`
@@ -39,12 +40,38 @@ type StringConstraint struct {
 
 type document struct {
 	Components struct {
-		Schemas map[string]Schema `yaml:"schemas"`
+		Schemas  map[string]Schema `yaml:"schemas"`
+		Examples map[string]struct {
+			Value any `yaml:"value"`
+		} `yaml:"examples"`
 	} `yaml:"components"`
 }
 
 // Load parses an OpenAPI document and returns its named component schemas.
 func Load(path string) (map[string]Schema, error) {
+	doc, err := load(path)
+	if err != nil {
+		return nil, err
+	}
+	return doc.Components.Schemas, nil
+}
+
+// LoadExample returns the value of one `components.examples` entry, so a test can hold the
+// published document to its own examples. An example that contradicts the schema beside it is
+// worse than no example: it is the thing an integrator copies.
+func LoadExample(path, name string) (any, error) {
+	doc, err := load(path)
+	if err != nil {
+		return nil, err
+	}
+	ex, ok := doc.Components.Examples[name]
+	if !ok {
+		return nil, fmt.Errorf("openapispec: example %q not found", name)
+	}
+	return ex.Value, nil
+}
+
+func load(path string) (*document, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("openapispec: read %s: %w", path, err)
@@ -53,7 +80,42 @@ func Load(path string) (map[string]Schema, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("openapispec: parse %s: %w", path, err)
 	}
-	return doc.Components.Schemas, nil
+	return &doc, nil
+}
+
+// RequiredProperties resolves the property names the named schema declares as required,
+// following $ref and allOf the way Properties does.
+func RequiredProperties(schemas map[string]Schema, name string) (map[string]bool, error) {
+	s, ok := schemas[name]
+	if !ok {
+		return nil, fmt.Errorf("openapispec: schema %q not found", name)
+	}
+	return requiredProperties(schemas, s)
+}
+
+func requiredProperties(schemas map[string]Schema, s Schema) (map[string]bool, error) {
+	if s.Ref != "" {
+		refName := strings.TrimPrefix(s.Ref, "#/components/schemas/")
+		sub, ok := schemas[refName]
+		if !ok {
+			return nil, fmt.Errorf("openapispec: $ref %q not found", s.Ref)
+		}
+		return requiredProperties(schemas, sub)
+	}
+	out := map[string]bool{}
+	for _, sub := range s.AllOf {
+		p, err := requiredProperties(schemas, sub)
+		if err != nil {
+			return nil, err
+		}
+		for k := range p {
+			out[k] = true
+		}
+	}
+	for _, k := range s.Required {
+		out[k] = true
+	}
+	return out, nil
 }
 
 // Properties resolves the flattened set of property names the named schema carries on

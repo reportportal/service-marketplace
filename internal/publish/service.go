@@ -291,9 +291,11 @@ func (s *Service) publish(ctx context.Context, m *domain.Manifest, bundle *Bundl
 		// patch for an older branch after a newer release is ordinary, and taking the upload
 		// order would demote the real latest: every instance already on it would stop being
 		// offered its update, and a fresh install would get the older jar.
-		if st.LatestVersion == "" || domain.CompareVersions(m.Version, st.LatestVersion) > 0 {
-			st.LatestVersion = m.Version
-		}
+		//
+		// Computed across the whole list rather than kept incrementally. The incremental rule only
+		// ever raised the value, so it could not follow a block — and it carried forward whatever
+		// an older, wrong comparison had already written.
+		st.LatestVersion = domain.LatestInstallableVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
