@@ -8,8 +8,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/reportportal/service-marketplace/internal/analytics"
+	"github.com/reportportal/service-marketplace/internal/auth"
 	"github.com/reportportal/service-marketplace/internal/catalogue"
 	"github.com/reportportal/service-marketplace/internal/domain"
+	"github.com/reportportal/service-marketplace/internal/license"
 	"github.com/reportportal/service-marketplace/internal/lifecycle"
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
@@ -128,6 +130,13 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 			item.BlockedAt = &blockedAt
 			item.BlockReason = bv.Reason
 		}
+		if v.Compatibility != "" {
+			item.Compatibility = &domain.Compatibility{ReportPortal: v.Compatibility}
+		}
+		if vs, ok := st.VersionStates[v.Version]; ok && vs.Advisory != nil {
+			advisory := *vs.Advisory
+			item.Advisory = &advisory
+		}
 		versions = append(versions, item)
 	}
 	writeJSON(w, http.StatusOK, PluginVersionListResponse{PluginID: pluginID, Versions: versions})
@@ -222,22 +231,27 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	artPath := storage.VersionArtifactPath(pluginID, version, string(detail.Manifest.Access))
 	access := string(detail.Manifest.Access)
 	if detail.Manifest.Access == domain.AccessPremium {
-		token := bearerToken(r)
+		token := strings.TrimSpace(bearerToken(r))
 		if token == "" {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeUnauthorized, Message: "License JWT required"})
+			// a credential was sent and it is not one this route can read — refused, not absent
+			if unsupportedAuthScheme(r) {
+				writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTInvalid, Message: "License JWT malformed"})
+				return
+			}
+			writeError(w, &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTMissing, Message: "License JWT required"})
 			return
 		}
-		keys, err := s.publicKeysForLicense(r, token)
+		claims, err := s.deps.License.VerifyToken(r.Context(), token)
 		if err != nil {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid license"})
+			writeError(w, licenseErrorResponse(err))
 			return
 		}
-		claims, err := authVerifyLicense(token, keys)
-		if err != nil || claims.PluginID != pluginID {
+		// Checked only after VerifyToken succeeded, so claims.PluginID is verified.
+		if claims.PluginID != pluginID {
 			track(access, analytics.ResultNoLicense)
-			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeForbidden, Message: "Invalid license"})
+			writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeLicenseEntitlementDenied, Message: "License entitlement does not cover this plugin"})
 			return
 		}
 		url, expiresAt, err := s.deps.Store.SignedURL(r.Context(), artPath, 60*time.Second)
@@ -253,12 +267,32 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, s.deps.Store.PublicURL(artPath), http.StatusFound)
 }
 
-func (s *Server) publicKeysForLicense(r *http.Request, token string) ([]string, error) {
-	claims, err := authVerifyLicenseUnverifiedCustomer(token)
-	if err != nil {
-		return nil, err
+// licenseErrorResponse renders AMD-09's licence error table for an error from
+// license.Service.VerifyToken. The easy mistake is the 401/403 split, so each arm
+// names its row:
+//
+//   - unparseable, bad signature, elapsed token exp (auth.ErrUnauthorized) and an
+//     unknown customerId (license.ErrNotFound) are all "this token proves nothing":
+//     401 LICENSE_JWT_INVALID. An unknown customer is deliberately NOT 403 — telling
+//     an unauthenticated caller which customerIds exist is the same leak a forged
+//     signature would otherwise buy.
+//   - a verified token whose entitlement window has closed
+//     (license.ErrEntitlementExpired) is 403 LICENSE_EXPIRED: the caller holds a real
+//     key, the licence simply needs renewing.
+//
+// A pluginId mismatch is 403 LICENSE_ENTITLEMENT_DENIED but is not decidable from an
+// error — the caller checks it against the verified claims. Anything else (storage
+// failures VerifyToken propagates) is not an AMD-09 row and falls through to the
+// generic mapping.
+func licenseErrorResponse(err error) error {
+	switch {
+	case errors.Is(err, auth.ErrUnauthorized), errors.Is(err, license.ErrNotFound):
+		return &APIError{Status: http.StatusUnauthorized, Code: CodeLicenseJWTInvalid, Message: "License JWT is malformed, expired, or not signed by a known key"}
+	case errors.Is(err, license.ErrEntitlementExpired):
+		return &APIError{Status: http.StatusForbidden, Code: CodeLicenseExpired, Message: "License entitlement has expired"}
+	default:
+		return mapStorageErr(err)
 	}
-	return s.deps.License.PublicKeysForCustomer(r.Context(), claims.CustomerID)
 }
 
 // handlePublishFirst: operator session only (no OIDC).
@@ -301,11 +335,18 @@ func (s *Server) handlePublishVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, res)
 }
 
+// MaxPublishBundleBytes is the largest publish bundle the registry will read — the jar and its
+// screenshots together. It is the ceiling on everything the registry can ever serve, so a consumer
+// downloading an artifact can bound its own write by this number and know that anything larger did
+// not come from here. It is published in the OpenAPI description of the publish routes for exactly
+// that reason; service-api reads artifacts with the same bound.
+const MaxPublishBundleBytes = 160 << 20
+
 func (s *Server) parsePublishBundle(r *http.Request) (*publish.Bundle, error) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		return nil, &APIError{Status: http.StatusUnsupportedMediaType, Code: CodeUnsupportedMediaType, Message: "Request media type is not supported"}
 	}
-	r.Body = http.MaxBytesReader(nil, r.Body, 160<<20)
+	r.Body = http.MaxBytesReader(nil, r.Body, MaxPublishBundleBytes)
 	reader, err := r.MultipartReader()
 	if err != nil {
 		return nil, &APIError{Status: http.StatusBadRequest, Code: CodeBadRequest, Message: "Request is malformed or is missing a required parameter"}
@@ -406,6 +447,30 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tomb)
+}
+
+// handleRebuildIndex regenerates the catalogue listing from the plugin states on storage.
+//
+// It exists because nothing else could reach `rebuildIndex`: it ran on publish and on the
+// lifecycle mutations, so an upgrade that adds a field to the listing — `author`, `contactUrl`
+// and `compatibility` all did — left every existing entry without it until somebody happened to
+// publish or block something unrelated. An operator had no step to run, which made it an
+// operational gap rather than a deployment note.
+//
+// Not done at startup. The rebuild lists every plugin directory and reads one manifest per
+// plugin, so on a multi-replica deployment every boot would have each replica rewriting the same
+// object; `WriteWithRetry` would survive it, but it is work nobody asked for on every restart.
+// An explicit operator action is the one that happens exactly as often as it is needed, which is
+// once per upgrade that changes the listing's shape.
+//
+// Idempotent: the index is derived entirely from plugin state, so running it twice is running it
+// once.
+func (s *Server) handleRebuildIndex(w http.ResponseWriter, r *http.Request) {
+	if err := s.deps.Publish.RebuildIndex(r.Context()); err != nil {
+		writeError(w, mapStorageErr(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilt"})
 }
 
 func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {

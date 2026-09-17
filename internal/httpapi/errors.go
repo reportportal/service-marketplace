@@ -31,7 +31,11 @@ const (
 	// (requirements/AMENDMENTS-v1.md): "requires an operator session JWT ...
 	// and returns 403 with ErrorResponse.code = TOKEN_TYPE_NOT_PERMITTED for
 	// any GitHub-issuer bearer token, regardless of allow-list membership."
-	CodeTokenTypeNotPermitted ErrorCode = "TOKEN_TYPE_NOT_PERMITTED"
+	CodeTokenTypeNotPermitted    ErrorCode = "TOKEN_TYPE_NOT_PERMITTED"
+	CodeLicenseJWTMissing        ErrorCode = "LICENSE_JWT_MISSING"
+	CodeLicenseJWTInvalid        ErrorCode = "LICENSE_JWT_INVALID"
+	CodeLicenseEntitlementDenied ErrorCode = "LICENSE_ENTITLEMENT_DENIED"
+	CodeLicenseExpired           ErrorCode = "LICENSE_EXPIRED"
 )
 
 type ErrorResponse struct {

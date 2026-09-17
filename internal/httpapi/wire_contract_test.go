@@ -53,6 +53,9 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"PluginListItem", domain.IndexPlugin{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
 			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,
+			ContactURL:    "https://reportportal.io/pricing",
+			Author:        domain.Author{Name: "ReportPortal Team", Email: "a@b.com", URL: "https://reportportal.io"},
+			Compatibility: ">=26.2",
 		}},
 		{"PluginManifestFields", domain.Manifest{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", Version: "1.4.2", Description: "d",

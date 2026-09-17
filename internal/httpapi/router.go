@@ -91,6 +91,7 @@ func (s *Server) routes() chi.Router {
 		api.With(s.requireSessionOrPublishOIDC).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
+		api.With(s.requireSessionRejectOIDC).Post("/index/rebuild", s.handleRebuildIndex)
 
 		api.With(s.requireSessionRejectOIDC).Get("/licenses", s.handleListLicenses)
 		api.With(s.requireSessionRejectOIDC).Post("/licenses", s.handleCreateLicense)
@@ -227,6 +228,19 @@ func bearerToken(r *http.Request) string {
 		return strings.TrimPrefix(h, "Bearer ")
 	}
 	return ""
+}
+
+// unsupportedAuthScheme reports whether the caller sent an Authorization header that is not a
+// Bearer one at all — `Basic ...`, say.
+//
+// bearerToken returns "" for that and for no header, and AMD-09 needs the two apart: MISSING tells
+// an operator to configure a licence, INVALID tells them the one being sent is not usable, and
+// sending someone to configure what they already configured wastes the diagnosis. A `Bearer` with
+// nothing after it stays MISSING — the scheme is right and no token was supplied, which is what
+// the table calls blank.
+func unsupportedAuthScheme(r *http.Request) bool {
+	h := strings.TrimSpace(r.Header.Get("Authorization"))
+	return h != "" && !strings.HasPrefix(h, "Bearer")
 }
 
 func hasSessionCookie(r *http.Request) bool {

@@ -37,6 +37,15 @@ func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.Plug
 	return &st, nil
 }
 
+// SetTier records a plugin's provenance.
+//
+// Only `official` is accepted, and that is ADR-003 rather than an oversight: `partner` is reserved
+// in the schema so published entries need no migration when its onboarding arrives, but the
+// workflow that would earn a plugin that tier is Phase 3. A tier this registry cannot decide how to
+// grant is one it must not let an operator assert by hand.
+//
+// So `domain.TierPartner` existing while this refuses it is the intended state, not a gap. If that
+// changes, it changes here and in the onboarding that justifies it — together.
 func (s *Service) SetTier(ctx context.Context, pluginID string, tier domain.TrustTier) (*domain.PluginState, error) {
 	if tier != domain.TierOfficial {
 		return nil, ErrForbidden
@@ -94,12 +103,27 @@ func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason st
 		}
 		blocked = domain.BlockedVersion{Version: version, BlockedAt: now, Reason: reason}
 		st.BlockedVersions = append(st.BlockedVersions, blocked)
+		// Blocking the newest build is the one thing that makes "latest" go down, and the listing
+		// has to follow it: the artifact route answers 403 for a blocked version, so a catalogue
+		// still naming it offers an install that can only fail.
+		st.LatestVersion = domain.LatestInstallableVersion(st.Versions, st.BlockedVersions)
 		return json.MarshalIndent(st, "", "  ")
 	}, 5)
 	if err != nil {
 		return nil, err
 	}
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PluginStatePath(pluginID)})
+	// The index carries latestVersion and the range declared by it, so it is stale the moment the
+	// line above moves. Invalidating the state alone left the catalogue offering the blocked build
+	// until the next unrelated publish happened to rebuild.
+	if s.Publisher != nil {
+		if err := s.Publisher.RebuildIndex(ctx); err != nil {
+			return nil, err
+		}
+	}
+	_ = s.Invalidator.Invalidate(ctx, []string{
+		"/" + storage.PluginStatePath(pluginID),
+		"/" + storage.PathIndex,
+	})
 	return &blocked, nil
 }
 

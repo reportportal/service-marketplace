@@ -113,6 +113,24 @@ type IndexPlugin struct {
 	Category      Category   `json:"category"`
 	Access        AccessTier `json:"access"`
 	Tier          TrustTier  `json:"tier"`
+	// ContactURL travels with the listing, not only with the detail, because a premium
+	// plugin in a catalogue offers no install — only an enquiry. A consumer drawing that
+	// row from the listing alone would otherwise render an action with nowhere to go.
+	ContactURL string `json:"contactUrl,omitempty"`
+	// Author travels with the listing for the same reason: a catalogue row names who wrote
+	// the plugin, and a consumer that only has the listing would otherwise have to guess.
+	// Guessing has a wrong answer — attributing a third party's plugin to ReportPortal.
+	Author Author `json:"author"`
+	// Compatibility is the `compatibility.reportportal` range declared by LatestVersion —
+	// that version's range, not the plugin's. A catalogue row has to say whether the build it
+	// offers runs on the instance reading it, and without this the consumer would have to
+	// fetch one version detail per row to find out. The range belongs to a version, so it is
+	// only meaningful here because LatestVersion names which one.
+	//
+	// Empty for a plugin whose latest version was published before VersionMeta carried the
+	// field. Absent is not "compatible": a consumer that cannot read a range must treat the
+	// answer as undecided rather than assume either way.
+	Compatibility string `json:"compatibility,omitempty"`
 }
 
 type Index struct {
@@ -129,6 +147,16 @@ type VersionMeta struct {
 	Version     string    `json:"version"`
 	PublishedAt time.Time `json:"publishedAt,omitempty"`
 	SHA256      string    `json:"sha256,omitempty"`
+	// Compatibility is the version manifest's `compatibility.reportportal` range, copied here
+	// at publish time. It is denormalised on purpose: the range is what decides whether a
+	// version may be offered, and a catalogue listing needs it for every version at once —
+	// reading one manifest per version to answer a single list request does not scale, and the
+	// value is immutable once published, so the copy can never drift.
+	//
+	// Empty for an entry published before this field existed. Absent is not "compatible": a
+	// consumer that cannot read a range must treat it as unknown and refuse rather than guess,
+	// which is what service-api already does with an unparseable one.
+	Compatibility string `json:"compatibility,omitempty"`
 }
 
 type SecurityAdvisory struct {

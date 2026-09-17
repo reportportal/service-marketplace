@@ -405,6 +405,22 @@ paths:
         3. Public plugin → `302` redirect to CloudFront CDN URL
         4. Premium plugin → requires valid license JWT; returns JSON with S3 pre-signed URL (60s)
 
+        Every distinct license failure is separately diagnosable through `ErrorResponse.code`
+        (AMD-09), so an operator can be told which one happened. Note the split: an unknown
+        `customerId` and a license JWT whose own `exp` has elapsed are `401`, while an
+        entitlement that has expired is `403`.
+
+        | Condition | Status | code |
+        |---|---|---|
+        | `Authorization` header absent or blank | 401 | `LICENSE_JWT_MISSING` |
+        | JWT unparseable, bad signature, elapsed `exp`, or unknown `customerId` | 401 | `LICENSE_JWT_INVALID` |
+        | Entitlement expired | 403 | `LICENSE_EXPIRED` |
+        | Entitlement does not cover the plugin (`pluginId` claim ≠ path `pluginId`) | 403 | `LICENSE_ENTITLEMENT_DENIED` |
+        | Version blocked | 403 | `BlockedArtifactError` with `blocked: true` (no `code`) |
+
+        A `403` is told apart by its `code`, never by which fields are present: a license
+        `403` is an `ErrorResponse` and never carries `blocked`, not even as `false`.
+
         Optional `X-RP-Instance-Id` header (FR-L-06) is used for analytics and is never
         forwarded to CDN or pre-signed URLs.
 
@@ -433,9 +449,23 @@ paths:
                 type: string
                 format: uri
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: >-
+            License JWT missing (`LICENSE_JWT_MISSING`), or unusable — unparseable, bad
+            signature, elapsed `exp`, or an unknown `customerId` (`LICENSE_JWT_INVALID`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                licenseJwtMissing:
+                  $ref: '#/components/examples/LicenseJwtMissingExample'
+                licenseJwtInvalid:
+                  $ref: '#/components/examples/LicenseJwtInvalidExample'
         '403':
-          description: Blocked version or invalid license
+          description: >-
+            Blocked version (`BlockedArtifactError`, `blocked: true`), an expired
+            entitlement (`LICENSE_EXPIRED`), or an entitlement that does not cover this
+            plugin (`LICENSE_ENTITLEMENT_DENIED`).
           content:
             application/json:
               schema:
@@ -445,6 +475,10 @@ paths:
               examples:
                 blocked:
                   $ref: '#/components/examples/BlockedArtifactExample'
+                licenseExpired:
+                  $ref: '#/components/examples/LicenseExpiredExample'
+                licenseEntitlementDenied:
+                  $ref: '#/components/examples/LicenseEntitlementDeniedExample'
         '404':
           $ref: '#/components/responses/NotFound'
         '410':
@@ -549,6 +583,53 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/index/rebuild:
+    post:
+      tags:
+        - Operator — Catalogue
+      summary: Regenerate the catalogue listing from plugin state
+      description: |
+        Rebuilds `index.json` from the plugin states on storage.
+
+        **Run this after any upgrade that adds a field to `PluginListItem`.** The listing is
+        otherwise only regenerated as a side effect of a mutation — publish, block, remove,
+        set-tier — so entries written by an older build keep the older shape until something
+        happens to touch them. `author`, `contactUrl` and `compatibility` were each added that
+        way, and each left existing entries without the field until an unrelated publish.
+
+        It is deliberately not run at startup: the rebuild lists every plugin directory and reads
+        one manifest per plugin, so on a multi-replica deployment every boot would have each
+        replica rewriting the same object. An explicit operator action runs exactly as often as it
+        is needed.
+
+        Idempotent — the listing is derived entirely from plugin state, so running it twice is
+        running it once. No request body.
+      operationId: rebuildIndex
+      responses:
+        '200':
+          description: The listing was regenerated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum: [rebuilt]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1066,6 +1147,11 @@ components:
         These are the numbers the deployment enforces, which is what a client needs; they are not
         the numbers NFR-16 states, and reconciling the two is a configuration decision rather than
         a documentation one.
+
+        The 160 MB figure also bounds the other direction: nothing larger can have been published,
+        so it is the ceiling on every artifact this registry can serve. A consumer streaming an
+        artifact to disk may bound its own write by it and treat anything larger as an answer that
+        did not come from a registry behaving as one — which is what service-api does.
       content:
         application/json:
           schema:
@@ -1256,7 +1342,6 @@ components:
           format: uri
           description: Required when access is premium
           example: https://reportportal.io/pricing/service-packages/
-
     PluginListItem:
       type: object
       required:
@@ -1266,6 +1351,7 @@ components:
         - category
         - access
         - tier
+        - author
       properties:
         id:
           type: string
@@ -1281,6 +1367,38 @@ components:
           $ref: '#/components/schemas/AccessTier'
         tier:
           $ref: '#/components/schemas/TrustTier'
+        contactUrl:
+          type: string
+          format: uri
+          description: |
+            Same value as `PluginManifestFields.contactUrl`; carried on the listing because a
+            premium plugin offers no install, only an enquiry, and a consumer rendering that row
+            from the listing alone would otherwise draw an action with nowhere to go. Absent
+            unless the plugin declares one.
+          example: https://reportportal.io/pricing/service-packages/
+        author:
+          allOf:
+            - $ref: '#/components/schemas/Author'
+          description: |
+            Same value as `PluginManifestFields.author`; carried on the listing because a
+            catalogue row names who wrote the plugin, and a consumer holding only the listing
+            would otherwise have to guess — and guessing has a wrong answer, attributing a third
+            party's plugin to ReportPortal.
+        compatibility:
+          type: string
+          description: |
+            The `compatibility.reportportal` range declared by `latestVersion` — that version's
+            range, not the plugin's. Carried on the listing because a catalogue row offers to
+            install the latest build, and whether that build runs on the instance reading the row
+            is the one thing the row cannot answer for itself; without it a consumer must fetch
+            one version detail per row.
+
+            Absent for a plugin whose latest version was published before the registry recorded
+            the range. **Absent is not "compatible"** — a consumer that cannot read a range must
+            treat the answer as undecided rather than assume either way, because both assumptions
+            are wrong: offering an install the server refuses, or grounding every plugin
+            published before the field existed.
+          example: '>=26.2'
 
     PluginListResponse:
       type: object
@@ -1326,6 +1444,23 @@ components:
         blockReason:
           type: string
           nullable: true
+        compatibility:
+          allOf:
+            - $ref: '#/components/schemas/Compatibility'
+          description: |
+            The version's declared ReportPortal range, copied from its manifest at publish time so
+            a listing can answer for every version without fetching each one.
+
+            **Absent means unknown, not compatible.** An entry published before this field existed
+            carries no range, and a consumer that cannot read one must refuse the install rather
+            than guess — the same rule already applied to a range that will not parse.
+        advisory:
+          allOf:
+            - $ref: '#/components/schemas/SecurityAdvisory'
+          description: |
+            The advisory attached to this specific version, absent when it carries none. A listing
+            needs it per row; the plugin-level advisory on the detail response answers a different
+            question, namely whether the plugin as a whole is under one.
 
     PluginVersionListResponse:
       type: object
@@ -1739,6 +1874,10 @@ components:
             - STORAGE_UNAVAILABLE
             - CSRF_TOKEN_INVALID
             - TOKEN_TYPE_NOT_PERMITTED
+            - LICENSE_JWT_MISSING
+            - LICENSE_JWT_INVALID
+            - LICENSE_ENTITLEMENT_DENIED
+            - LICENSE_EXPIRED
         message:
           type: string
 
@@ -1769,6 +1908,9 @@ components:
             latestVersion: '1.4.2'
             description: Post and link Jira Cloud issues from ReportPortal
             category: bug-tracking
+            author:
+              name: ReportPortal Team
+              url: https://reportportal.io
             access: public
             tier: official
           - id: plugin-quality-gate
@@ -1776,7 +1918,11 @@ components:
             latestVersion: '2.0.0'
             description: Advanced quality gate rules
             category: import
+            author:
+              name: ReportPortal Team
+              url: https://reportportal.io
             access: premium
+            contactUrl: https://reportportal.io/pricing
             tier: official
 
     PluginDetailExample:
@@ -1831,6 +1977,26 @@ components:
         blocked: true
         blockedAt: '2026-02-15T10:00:00Z'
         reason: CVE-2026-1234 in jackson-databind
+
+    LicenseJwtMissingExample:
+      value:
+        code: LICENSE_JWT_MISSING
+        message: License JWT required
+
+    LicenseJwtInvalidExample:
+      value:
+        code: LICENSE_JWT_INVALID
+        message: License JWT is malformed, expired, or not signed by a known key
+
+    LicenseExpiredExample:
+      value:
+        code: LICENSE_EXPIRED
+        message: License entitlement has expired
+
+    LicenseEntitlementDeniedExample:
+      value:
+        code: LICENSE_ENTITLEMENT_DENIED
+        message: License entitlement does not cover this plugin
 
     PremiumArtifactExample:
       value:

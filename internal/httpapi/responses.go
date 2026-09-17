@@ -108,12 +108,19 @@ type PluginDetailResponse struct {
 }
 
 // PluginVersionSummary is one entry of PluginVersionListResponse.versions.
+//
+// It carries compatibility and advisory because a consumer rendering a table of versions needs
+// both per row, and fetching the detail of every version to learn them is one request per row.
+// Both are omitted when absent, and absent means unknown rather than fine: an entry published
+// before the range was recorded has no range, and a consumer must refuse rather than guess.
 type PluginVersionSummary struct {
-	Version     string     `json:"version"`
-	PublishedAt *time.Time `json:"publishedAt,omitempty"`
-	Blocked     bool       `json:"blocked"`
-	BlockedAt   *time.Time `json:"blockedAt,omitempty"`
-	BlockReason string     `json:"blockReason,omitempty"`
+	Version       string                   `json:"version"`
+	PublishedAt   *time.Time               `json:"publishedAt,omitempty"`
+	Blocked       bool                     `json:"blocked"`
+	BlockedAt     *time.Time               `json:"blockedAt,omitempty"`
+	BlockReason   string                   `json:"blockReason,omitempty"`
+	Compatibility *domain.Compatibility    `json:"compatibility,omitempty"`
+	Advisory      *domain.SecurityAdvisory `json:"advisory,omitempty"`
 }
 
 // PluginVersionListResponse — GET /api/v1/plugins/{pluginId}/versions

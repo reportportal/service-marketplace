@@ -35,8 +35,8 @@ const (
 	// OIDC tokens: POST /api/v1/plugins, PATCH /api/v1/plugins/{pluginId},
 	// DELETE /api/v1/plugins/{pluginId},
 	// POST .../versions/{version}/block,
-	// POST .../versions/{version}/advisory, and every /api/v1/licenses/*
-	// operation. These routes accept operator session JWTs ONLY. A GitHub
+	// POST .../versions/{version}/advisory, POST /api/v1/index/rebuild,
+	// and every /api/v1/licenses/* operation. These routes accept operator session JWTs ONLY. A GitHub
 	// Actions OIDC bearer token is a recognized credential type, just not
 	// one these routes accept, so it is refused with 403
 	// TOKEN_TYPE_NOT_PERMITTED (not the generic 401 an absent or garbage
@@ -84,6 +84,9 @@ var authzMatrix = []routeCase{
 	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/advisory", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/advisory", policySessionOnlyRejectOIDC},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}/artifact", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/artifact", policyPublic},
 	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/block", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/block", policySessionOnlyRejectOIDC},
+	// Rewrites the whole public catalogue, so it belongs with the lifecycle mutations rather than
+	// with publishing: a token scoped to one plugin has no business regenerating every row.
+	{http.MethodPost, "/api/v1/index/rebuild", "/api/v1/index/rebuild", policySessionOnlyRejectOIDC},
 }
 
 // routePrefixesOutsideAPI lists every non-/api/v1 route surface the router

@@ -128,12 +128,12 @@ func TestLoad_ReadsDocumentWrittenByPreviousRelease(t *testing.T) {
 		t.Fatalf("PublicKeys[0].IssuedAt = %v, want %v", e.PublicKeys[0].IssuedAt, issuedAt)
 	}
 
-	keys, err := svc.PublicKeysForCustomer(context.Background(), "acme-corp")
+	found, err := svc.entitlementFor(context.Background(), "acme-corp")
 	if err != nil {
-		t.Fatalf("PublicKeysForCustomer: %v", err)
+		t.Fatalf("entitlementFor: %v", err)
 	}
-	if len(keys) != 1 || keys[0] != "3q2+7w==" {
-		t.Fatalf("PublicKeysForCustomer = %v, want [3q2+7w==]", keys)
+	if len(found.PublicKeys) != 1 || found.PublicKeys[0].PublicKey != "3q2+7w==" {
+		t.Fatalf("entitlementFor public keys = %+v, want [3q2+7w==]", found.PublicKeys)
 	}
 }
 
