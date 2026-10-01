@@ -1,21 +1,20 @@
-name: Build develop Docker image
+name: Build feature Docker image
 
 on:
-  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - develop
-    paths-ignore:
-      - '.github/**'
-      - README.md
-      - actions/**
-      - docs/**
-      - charts/**
+  push:
+    branches:
+      - 'feature/**'
   workflow_dispatch:
 
 jobs:
   variables-setup:
     name: Setting variables for docker build
     runs-on: ubuntu-latest
+    if: (!startsWith(github.head_ref, 'dependabot/') || !startsWith(github.head_ref, 'rc/') || !startsWith(github.head_ref, 'hotfix/') || !startsWith(github.head_ref, 'master') || !startsWith(github.head_ref, 'main'))
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -23,25 +22,24 @@ jobs:
       - name: Create variables
         id: vars
         run: |
-          echo "tag=$(echo ${{ github.ref_name }}-${{ github.run_number }} | tr '/' '-')" >> $GITHUB_OUTPUT
+          echo "tag=$(echo ${{ github.head_ref || github.ref_name }}-${{ github.run_number }} | tr '/' '-')" >> $GITHUB_OUTPUT
           echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
     outputs:
       tag: ${{ steps.vars.outputs.tag }}
       date: ${{ steps.vars.outputs.date }}
 
   call-docker-build:
-    name: Call develop Docker build
+    name: Call feature Docker build
     needs: variables-setup
     uses: reportportal/.github/.github/workflows/build-docker-image.yaml@main
     with:
       registry: gcr
       gcr-region: ${{ vars.GCR_DEV_REGION }}
       gcp-project: ${{ vars.GCP_DEV_PROJECT }}
-      build-platforms: ${{ vars.BUILD_PLATFORMS || 'linux/amd64,linux/arm64' }}
+      build-platforms: ${{ vars.BUILD_PLATFORMS || 'linux/amd64' }}
       image-tag: ${{ needs.variables-setup.outputs.tag }}
       version: ${{ needs.variables-setup.outputs.tag }}
-      branch: ${{ github.ref_name }}
-      additional-tag: 'develop-latest'
+      branch: ${{ github.head_ref || github.ref_name }}
       date: ${{ needs.variables-setup.outputs.date }}
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_DEV_WORKLOAD_IDENTITY_PROVIDER }}
