@@ -3,8 +3,20 @@ name: Build
 on:
   push:
     branches: [develop, main]
+    paths-ignore:
+      - '.github/**'
+      - README.md
+      - actions/**
+      - docs/**
+      - charts/**
   pull_request:
     branches: [develop, main]
+    paths-ignore:
+      - '.github/**'
+      - README.md
+      - actions/**
+      - docs/**
+      - charts/**
 
 jobs:
   build:
