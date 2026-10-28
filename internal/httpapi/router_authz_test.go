@@ -92,6 +92,7 @@ var authzMatrix = []routeCase{
 // routePrefixesOutsideAPI lists every non-/api/v1 route surface the router
 // serves today, and why it is deliberately excluded from the operator/OIDC
 // credential matrix above:
+//   - /: permanent redirect to the Operator UI; it has no data or mutation.
 //   - /health, /ready: unauthenticated liveness/readiness probes by design.
 //   - /cdn/*: gated by the storage layer's own signed-URL scheme
 //     (LocalStore.VerifySignedURL), not by operator session or OIDC — a
@@ -100,7 +101,7 @@ var authzMatrix = []routeCase{
 //     SPA itself calls back into the /api/v1 routes above, which are the
 //     actual enforcement point.
 var routePrefixesOutsideAPI = map[string]bool{
-	"/health": true, "/ready": true, "/cdn/*": true,
+	"/": true, "/health": true, "/ready": true, "/cdn/*": true,
 	"/operator": true, "/operator/*": true,
 }
 

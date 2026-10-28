@@ -9,6 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
+
 	"github.com/reportportal/service-marketplace/internal/analytics"
 	"github.com/reportportal/service-marketplace/internal/auth"
 	"github.com/reportportal/service-marketplace/internal/catalogue"
@@ -20,6 +23,14 @@ import (
 	"github.com/reportportal/service-marketplace/internal/publish"
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h2c.NewHandler(handler, &http2.Server{}),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -94,11 +105,7 @@ func main() {
 		OIDC:       oidc,
 	})
 
-	httpServer := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := newHTTPServer(cfg.HTTPAddr, srv.Handler())
 
 	go func() {
 		log.Printf("service-marketplace listening on %s (storage=%s)", cfg.HTTPAddr, store.Type())

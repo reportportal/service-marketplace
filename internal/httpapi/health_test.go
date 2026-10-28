@@ -19,6 +19,30 @@ func TestHandleHealthAlwaysOK(t *testing.T) {
 	}
 }
 
+func TestRootRedirectsToOperator(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.do(httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("expected 301, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/operator/" {
+		t.Fatalf("expected redirect to %q, got %q", "/operator/", got)
+	}
+}
+
+func TestOperatorUIServed(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.do(httptest.NewRequest(http.MethodGet, "/operator/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("expected embedded operator UI response")
+	}
+}
+
 func TestHandleReadyOKWhenStorageHealthy(t *testing.T) {
 	env := newTestEnv(t)
 	rec := env.do(httptest.NewRequest(http.MethodGet, "/ready", nil))

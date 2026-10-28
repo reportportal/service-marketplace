@@ -57,6 +57,12 @@ func (s *Server) routes() chi.Router {
 	r.Use(middleware.Timeout(120 * time.Second))
 	r.Use(s.ensureXSRF)
 
+	// The public GCS backend cannot serve a bucket-root request without
+	// anonymous listing rights. Send human visitors to the Operator UI while
+	// keeping concrete public artifact paths on the CDN backend.
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/operator/", http.StatusMovedPermanently)
+	})
 	r.Get("/health", s.handleHealth)
 	r.Get("/ready", s.handleReady)
 
