@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,18 +29,79 @@ func probeStore(t *testing.T, cdnBase, secret string) storage.ObjectStore {
 	return store
 }
 
-// fastCheck runs a self-check with test-sized timings and returns its result
-// and log output.
-func fastCheck(t *testing.T, c *CDNSelfCheck) (status, reason, logs string) {
+// syncBuffer is a log sink safe to read while Run is still writing to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// startCheck runs c in the background with test-sized timings. stop cancels
+// it and fails the test unless Run returns promptly.
+func startCheck(t *testing.T, c *CDNSelfCheck) (logs *syncBuffer, stop func()) {
 	t.Helper()
-	var buf bytes.Buffer
-	c.Logger = log.New(&buf, "", 0)
+	logs = &syncBuffer{}
+	c.Logger = log.New(logs, "", 0)
 	c.InitialBackoff = time.Millisecond
 	c.MaxBackoff = 5 * time.Millisecond
 	if c.Deadline == 0 {
 		c.Deadline = 2 * time.Second
 	}
-	c.Run(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.Run(ctx)
+	}()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Errorf("Run did not return within 2s of ctx cancel")
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return logs, stop
+}
+
+// waitStatus polls until the check reports want, or fails after 5s.
+func waitStatus(t *testing.T, c *CDNSelfCheck, logs *syncBuffer, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if status, _ := c.Result(); status == want {
+			return
+		}
+	}
+	status, reason := c.Result()
+	t.Fatalf("status = %q (%s), want %q; logs:\n%s", status, reason, want, logs)
+}
+
+// fastCheck runs a self-check until its startup phase settles (anything but
+// pending), stops it, and returns its result and log output.
+func fastCheck(t *testing.T, c *CDNSelfCheck) (status, reason, logs string) {
+	t.Helper()
+	buf, stop := startCheck(t, c)
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if status, _ = c.Result(); status != CDNCheckPending {
+			break
+		}
+	}
+	stop()
 	status, reason = c.Result()
 	return status, reason, buf.String()
 }
@@ -167,7 +229,7 @@ func TestCDNSelfCheckTransientErrorsNeverFail(t *testing.T) {
 
 	for name, base := range map[string]string{"502": lb.URL + "/cdn", "connection refused": closedURL + "/cdn"} {
 		t.Run(name, func(t *testing.T) {
-			c := &CDNSelfCheck{Store: probeStore(t, base, "test-signing-secret"), Deadline: 50 * time.Millisecond}
+			c := &CDNSelfCheck{Store: probeStore(t, base, "test-signing-secret"), Deadline: 500 * time.Millisecond}
 			if status, _ := c.Result(); status != CDNCheckPending {
 				t.Fatalf("status before Run = %q, want pending", status)
 			}
@@ -232,5 +294,110 @@ func TestCDNSelfCheckDisabled(t *testing.T) {
 	rec := env.do(httptest.NewRequest(http.MethodGet, "/ready", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"disabled"`) {
 		t.Fatalf("/ready = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The rolling-update case: an older replica has no probe route, verifies the
+// signature, and answers the /cdn handler's own JSON 404. That reached a
+// registry, so it must stay inconclusive rather than become three strikes.
+func TestCDNSelfCheckOldReplicaNotFoundIsInconclusive(t *testing.T) {
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Object not found"})
+	}))
+	defer old.Close()
+
+	c := &CDNSelfCheck{Store: probeStore(t, old.URL+"/cdn", "test-signing-secret"), Deadline: 500 * time.Millisecond}
+	status, _, logs := fastCheck(t, c)
+	if status != CDNCheckUnverified || strings.Contains(logs, "ERROR") {
+		t.Fatalf("status = %q, want unverified with no ERROR; logs:\n%s", status, logs)
+	}
+
+	// A plain 404 (chi's text 404, a bucket's XML 404) is still a wrong answer.
+	plain := httptest.NewServer(http.NotFoundHandler())
+	defer plain.Close()
+	c = &CDNSelfCheck{Store: probeStore(t, plain.URL+"/cdn", "test-signing-secret")}
+	if status, _, logs := fastCheck(t, c); status != CDNCheckMisconfigured {
+		t.Fatalf("plain 404: status = %q, want misconfigured; logs:\n%s", status, logs)
+	}
+}
+
+// A redirect is judged as-is, never followed: e.g. an http→https hop that
+// lands on a bucket, which a Java client would not follow either.
+func TestCDNSelfCheckRedirectIsWrongAnswer(t *testing.T) {
+	var bucketHits atomic.Int32
+	bucket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bucketHits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer bucket.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, bucket.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	c := &CDNSelfCheck{Store: probeStore(t, redirector.URL+"/cdn", "test-signing-secret")}
+	status, reason, logs := fastCheck(t, c)
+	if status != CDNCheckMisconfigured {
+		t.Fatalf("status = %q, want misconfigured; logs:\n%s", status, logs)
+	}
+	if !strings.Contains(reason, "302") || !strings.Contains(reason, bucket.URL+"/cdn/") {
+		t.Fatalf("reason should name the 302 and its Location: %q", reason)
+	}
+	if bucketHits.Load() != 0 {
+		t.Fatalf("redirect was followed %d time(s)", bucketHits.Load())
+	}
+}
+
+// After startup the check keeps re-probing on Interval and logs transitions:
+// ok → misconfigured (after the strike threshold) → RECOVERED.
+func TestCDNSelfCheckReprobesAfterStartup(t *testing.T) {
+	env := newTestEnv(t)
+	var broken atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if broken.Load() {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		env.Server.Handler().ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	c := &CDNSelfCheck{Store: probeStore(t, ts.URL+"/cdn", "test-signing-secret"), Interval: 2 * time.Millisecond}
+	logs, _ := startCheck(t, c)
+	waitStatus(t, c, logs, CDNCheckOK)
+
+	broken.Store(true)
+	waitStatus(t, c, logs, CDNCheckMisconfigured)
+	broken.Store(false)
+	waitStatus(t, c, logs, CDNCheckOK)
+
+	got := logs.String()
+	if strings.Count(got, "ERROR cdn self-check") != 1 || strings.Count(got, "RECOVERED") != 1 {
+		t.Fatalf("expected exactly one ERROR and one RECOVERED transition log, got:\n%s", got)
+	}
+	if strings.Contains(got, "wrong answer") {
+		t.Fatalf("steady-state strikes must not be logged, only transitions:\n%s", got)
+	}
+}
+
+func TestCDNSelfCheckRunReturnsOnCancel(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	// Parked in the first wait: cancel must interrupt it, not wait it out.
+	// (The steady phase is covered by every startCheck's stop.)
+	c2 := &CDNSelfCheck{Store: probeStore(t, ts.URL+"/cdn", "test-signing-secret"), InitialBackoff: time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c2.Run(ctx)
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return promptly after ctx cancel")
 	}
 }

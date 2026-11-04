@@ -76,7 +76,7 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 | `GCS_BUCKET` / `GCS_PRIVATE_BUCKET` | GCS buckets |
 | `CDN_BASE_URL` | Base of every artifact, changelog and screenshot URL the registry hands out (default `http://localhost:8080/cdn`). Must resolve to this registry's `/cdn` handler, normally `https://<host>/cdn`: signatures on premium (signed) URLs are verified there, and a bucket behind the load balancer answers 403. A CDN may cache in front of `/cdn`. A startup warning fires when it does not end with `/cdn` |
 | `CDN_BASE_URL_SUFFIX_CHECK` | `false` silences the `/cdn` suffix warning, for a CDN host that forwards to `/cdn` (default `true`) |
-| `CDN_SELF_CHECK` | Background check, after startup, that `CDN_BASE_URL` reaches this registry's `/cdn` handler. The result is reported in `/ready` under `checks.cdn`: `degraded` when misconfigured, but the status code stays 200. Set `false` when the registry cannot reach its own public host (default `true`) |
+| `CDN_SELF_CHECK` | Background check that `CDN_BASE_URL` reaches this registry's `/cdn` handler: retried after startup, then repeated every 10 minutes. See [CDN self-check](#cdn-self-check). Set `false` when the registry cannot reach its own public host (default `true`) |
 | `CDN_URL_MAP` | GCP URL map name for invalidation |
 | `ADMIN_LOGIN_ENABLED` | Enable admin form login |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` | Bcrypt admin credentials |
@@ -91,6 +91,22 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 | `GCP_PROJECT` | GCP project for Cloud CDN invalidation |
 | `HTTP_ADDR` | Listen address (default `:8080`) |
 | `ORPHAN_CLEANUP_INTERVAL` | Orphan artifact cleanup interval |
+
+### CDN self-check
+
+The registry signs a unique probe URL under `CDN_BASE_URL` (the same way it signs premium artifact URLs) and requests it. Only this registry's `/cdn` handler, holding the same `STORAGE_SIGNING_SECRET`, answers it correctly. Redirects are not followed, so a 3xx counts as a wrong answer. Network errors, 5xx responses and the registry's own JSON 404 (an older replica during a rolling update) are inconclusive. Three wrong answers without a correct one in between mark the deployment misconfigured.
+
+`GET /ready` reports the result under `checks.cdn`:
+
+| `checks.cdn.status` | Meaning |
+| ---------- | ------------- |
+| `pending` | No conclusive answer yet (startup retries with backoff for up to 15 minutes) |
+| `ok` | `CDN_BASE_URL` reaches this registry's `/cdn` handler |
+| `misconfigured` | Something else answers; `reason` names the URL, status, `Server` and `Location` headers. Top-level `status` becomes `degraded` |
+| `unverified` | Startup gave up without a conclusive answer; re-checked every 10 minutes |
+| `disabled` | `CDN_SELF_CHECK=false` |
+
+The status code of `/ready` stays 200 in every case. The chart's readinessProbe reads only the status code, so a misconfiguration surfaces only as the `ERROR cdn self-check: ...` log line (state changes are logged as they happen, including `RECOVERED`) and in the body of a manual `curl -s https://<host>/ready`.
 
 ## Layout
 

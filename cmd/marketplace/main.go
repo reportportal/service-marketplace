@@ -114,15 +114,15 @@ func main() {
 
 	httpServer := newHTTPServer(cfg.HTTPAddr, srv.Handler())
 
-	// Probes the public host in the background; it must not delay or fail startup.
-	go cdnCheck.Run(ctx)
-
 	go func() {
 		log.Printf("service-marketplace listening on %s (storage=%s)", cfg.HTTPAddr, store.Type())
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
 		}
 	}()
+
+	// Probes the public host in the background; it must not delay or fail startup.
+	go cdnCheck.Run(ctx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
