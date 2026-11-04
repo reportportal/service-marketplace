@@ -135,3 +135,63 @@ func TestLoad_NegativeTrustedProxyHopsIsRejected(t *testing.T) {
 		t.Fatalf("Load() with TRUSTED_PROXY_HOPS=-1 returned no error, want a rejection")
 	}
 }
+
+// TestLoad_CDNBaseURLSuffixWarning: a CDN_BASE_URL that does not end in /cdn
+// is how dev ended up handing out bucket URLs (403 for every download) while
+// /ready stayed green. It is a warning, not a failure, because a CDN host that
+// forwards to /cdn is a legitimate topology; that one opts out explicitly.
+func TestLoad_CDNBaseURLSuffixWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, optOut string
+		wantWarning        bool
+	}{
+		{"default base", "", "", false},
+		{"cdn suffix", "https://marketplace.example/cdn", "", false},
+		{"cdn suffix trailing slash", "https://marketplace.example/cdn/", "", false},
+		{"bare host", "https://dev.marketplace.example", "", true},
+		{"other path", "https://marketplace.example/cdn-assets", "", true},
+		{"bare host opted out", "https://cdn.marketplace.example", "false", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validEnv(t)
+			if tc.base != "" {
+				t.Setenv("CDN_BASE_URL", tc.base)
+			}
+			if tc.optOut != "" {
+				t.Setenv("CDN_BASE_URL_SUFFIX_CHECK", tc.optOut)
+			}
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load() must not fail over CDN_BASE_URL: %v", err)
+			}
+			warnings := strings.Join(c.Warnings(), "\n")
+			if got := warnings != ""; got != tc.wantWarning {
+				t.Fatalf("warning present = %v, want %v (%q)", got, tc.wantWarning, warnings)
+			}
+			if tc.wantWarning && !strings.Contains(warnings, "signed") {
+				t.Fatalf("warning should explain the signed-URL requirement: %q", warnings)
+			}
+		})
+	}
+}
+
+func TestLoad_CDNSelfCheckFlag(t *testing.T) {
+	validEnv(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if !c.CDNSelfCheck {
+		t.Errorf("CDNSelfCheck = false, want true (documented default)")
+	}
+
+	t.Setenv("CDN_SELF_CHECK", "false")
+	if c, err = Load(); err != nil || c.CDNSelfCheck {
+		t.Fatalf("CDN_SELF_CHECK=false: CDNSelfCheck=%v err=%v", c != nil && c.CDNSelfCheck, err)
+	}
+
+	t.Setenv("CDN_SELF_CHECK", "nope")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "CDN_SELF_CHECK") {
+		t.Fatalf("malformed CDN_SELF_CHECK must fail naming the key, got %v", err)
+	}
+}

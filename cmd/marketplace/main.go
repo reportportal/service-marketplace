@@ -37,6 +37,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	for _, w := range cfg.Warnings() {
+		log.Printf("WARNING config: %s", w)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -90,6 +93,8 @@ func main() {
 
 	lc.StartOrphanCleanup(ctx, cfg.OrphanCleanupInterval)
 
+	cdnCheck := &httpapi.CDNSelfCheck{Store: store, Disabled: !cfg.CDNSelfCheck, Logger: log.Default()}
+
 	srv := httpapi.NewServer(httpapi.Deps{
 		Config:     cfg,
 		Store:      store,
@@ -103,6 +108,8 @@ func main() {
 		AdminAuth:  admin,
 		GitHub:     gh,
 		OIDC:       oidc,
+
+		CDNSelfCheck: cdnCheck,
 	})
 
 	httpServer := newHTTPServer(cfg.HTTPAddr, srv.Handler())
@@ -113,6 +120,9 @@ func main() {
 			log.Fatalf("http: %v", err)
 		}
 	}()
+
+	// Probes the public host in the background; it must not delay or fail startup.
+	go cdnCheck.Run(ctx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

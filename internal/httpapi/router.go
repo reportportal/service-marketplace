@@ -32,6 +32,8 @@ type Deps struct {
 	AdminAuth  *auth.AdminAuthenticator
 	GitHub     *auth.GitHubOAuth
 	OIDC       *auth.PublishOIDCVerifier
+	// CDNSelfCheck is optional; when set, /ready reports its result.
+	CDNSelfCheck *CDNSelfCheck
 }
 
 type Server struct {

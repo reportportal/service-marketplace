@@ -22,7 +22,12 @@ env:
   HTTP_ADDR: ":8080"
   STORAGE_TYPE: local
   STORAGE_LOCAL_ROOT: /data
+  # Must resolve to the registry's own /cdn handler (keep the /cdn suffix): signed
+  # premium URLs are verified there, and the registry checks this after startup
+  # (reported in /ready as checks.cdn). A CDN may cache in front of /cdn.
   CDN_BASE_URL: "http://marketplace.local/cdn"
+  # Set to "false" if pods cannot reach their own public host.
+  CDN_SELF_CHECK: "true"
   CDN_URL_MAP: ""
   GCP_PROJECT: ""
   ADMIN_LOGIN_ENABLED: "true"
