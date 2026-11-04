@@ -74,7 +74,9 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 | `STORAGE_LOCAL_ROOT` | Local filesystem root (default `./data`) |
 | `STORAGE_SIGNING_SECRET` | HMAC secret for local signed URLs |
 | `GCS_BUCKET` / `GCS_PRIVATE_BUCKET` | GCS buckets |
-| `CDN_BASE_URL` | Public CDN base for 302 redirects |
+| `CDN_BASE_URL` | Base of every artifact, changelog and screenshot URL the registry hands out (default `http://localhost:8080/cdn`). Must resolve to this registry's `/cdn` handler, normally `https://<host>/cdn`: signatures on premium (signed) URLs are verified there, and a bucket behind the load balancer answers 403. A CDN may cache in front of `/cdn`. A startup warning fires when it does not end with `/cdn` |
+| `CDN_BASE_URL_SUFFIX_CHECK` | `false` silences the `/cdn` suffix warning, for a CDN host that forwards to `/cdn` (default `true`) |
+| `CDN_SELF_CHECK` | Background check, after startup, that `CDN_BASE_URL` reaches this registry's `/cdn` handler. The result is reported in `/ready` under `checks.cdn`: `degraded` when misconfigured, but the status code stays 200. Set `false` when the registry cannot reach its own public host (default `true`) |
 | `CDN_URL_MAP` | GCP URL map name for invalidation |
 | `ADMIN_LOGIN_ENABLED` | Enable admin form login |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD_HASH` | Bcrypt admin credentials |

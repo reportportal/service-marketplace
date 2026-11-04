@@ -17,7 +17,24 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusServiceUnavailable, Code: CodeStorageUnavailable, Message: "Registry storage is temporarily unavailable", Headers: map[string]string{"Retry-After": "1"}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	if s.deps.CDNSelfCheck == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		return
+	}
+	// The CDN self-check only ever degrades the body, never the status code:
+	// failing readiness would take the whole API out of rotation over a
+	// download-URL problem, and could deadlock a correct deployment whose
+	// CDN_BASE_URL routes back to this pod only once it is ready.
+	status, reason := s.deps.CDNSelfCheck.Result()
+	cdn := map[string]string{"status": status}
+	if reason != "" {
+		cdn["reason"] = reason
+	}
+	overall := "ready"
+	if status == CDNCheckMisconfigured {
+		overall = "degraded"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": overall, "checks": map[string]any{"cdn": cdn}})
 }
 
 // handleCDNProxy serves GET /cdn/* via ObjectStore with path guards and signed-URL checks.
@@ -44,6 +61,10 @@ func (s *Server) handleCDNProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	exp := r.URL.Query().Get("exp")
 	sig := r.URL.Query().Get("sig")
+	if isCDNProbePath(objectPath) {
+		s.serveCDNProbe(w, objectPath, exp, sig)
+		return
+	}
 	private := storage.IsPrivateObject(objectPath)
 	if private {
 		if exp == "" || sig == "" || !s.deps.Store.VerifySignedURL(objectPath, exp, sig) {

@@ -48,6 +48,8 @@ type Config struct {
 	GCPProject                string
 	TrustedProxyHops          int
 	AllowInsecureDefaults     bool
+	CDNSelfCheck              bool
+	CDNBaseURLSuffixCheck     bool
 }
 
 func Load() (*Config, error) {
@@ -68,6 +70,14 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	allowInsecureDefaults, err := getEnvBoolE("ALLOW_INSECURE_DEFAULTS", false)
+	if err != nil {
+		return nil, err
+	}
+	cdnSelfCheck, err := getEnvBoolE("CDN_SELF_CHECK", true)
+	if err != nil {
+		return nil, err
+	}
+	cdnBaseURLSuffixCheck, err := getEnvBoolE("CDN_BASE_URL_SUFFIX_CHECK", true)
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +109,8 @@ func Load() (*Config, error) {
 		GCPProject:              getEnv("GCP_PROJECT", ""),
 		TrustedProxyHops:        trustedProxyHops,
 		AllowInsecureDefaults:   allowInsecureDefaults,
+		CDNSelfCheck:            cdnSelfCheck,
+		CDNBaseURLSuffixCheck:   cdnBaseURLSuffixCheck,
 	}
 
 	if cfg.GitHubOAuthRedirectURL == "" {
@@ -163,6 +175,26 @@ func requireSecret(name, value, insecureDefault string) error {
 		return fmt.Errorf("%s must be at least %d characters", name, minSecretLen)
 	}
 	return nil
+}
+
+// Warnings returns non-fatal configuration problems for main to log at
+// startup. They are heuristics: a deployment can be correct and still trip
+// one, which is why they warn instead of failing Load.
+func (c *Config) Warnings() []string {
+	var out []string
+	// Every URL the registry hands out (public 302 targets, changelog and
+	// screenshot links, signed premium URLs) is CDN_BASE_URL + "/" + object
+	// path, and signed URLs are only ever verified by this registry's own
+	// /cdn handler. A base without the /cdn suffix usually means those URLs
+	// land on the bucket or the load balancer's default backend instead.
+	// A CDN host that rewrites onto /cdn is legitimate; it opts out with
+	// CDN_BASE_URL_SUFFIX_CHECK=false and relies on the live CDN_SELF_CHECK.
+	if c.CDNBaseURLSuffixCheck && !strings.HasSuffix(c.CDNBaseURL, "/cdn") {
+		out = append(out, fmt.Sprintf("CDN_BASE_URL=%q does not end with /cdn: artifact, changelog and signed premium URLs "+
+			"must resolve to this registry's /cdn handler (signatures are verified there; a CDN may cache in front of it). "+
+			"Set CDN_BASE_URL_SUFFIX_CHECK=false if the base is a CDN host that forwards to /cdn", c.CDNBaseURL))
+	}
+	return out
 }
 
 func (c *Config) GitHubOAuthEnabled() bool {

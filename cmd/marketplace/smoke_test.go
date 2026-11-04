@@ -226,6 +226,22 @@ func TestSmokeWiring(t *testing.T) {
 		}
 	})
 
+	// The background CDN self-check is wired and, with CDN_BASE_URL pointing
+	// at this binary's own /cdn, eventually reports ok on /ready.
+	t.Run("cdn self-check reaches /cdn", func(t *testing.T) {
+		var body []byte
+		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+			_, body = e.do(http.MethodGet, "/ready", nil, nil)
+			var ready struct {
+				Checks struct{ CDN struct{ Status string } }
+			}
+			if json.Unmarshal(body, &ready) == nil && ready.Checks.CDN.Status == "ok" {
+				return
+			}
+		}
+		t.Errorf("/ready never reported checks.cdn.status=ok; last body: %s", body)
+	})
+
 	t.Run("operator routes reject anonymous callers", func(t *testing.T) {
 		for _, p := range []string{"/api/v1/plugins", "/api/v1/licenses"} {
 			if got := e.status(http.MethodPost, p, nil); got != http.StatusUnauthorized {
