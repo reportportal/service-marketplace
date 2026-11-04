@@ -62,7 +62,7 @@ func (s *GCSStore) obj(objectPath string) *storage.ObjectHandle {
 }
 
 func (s *GCSStore) Read(ctx context.Context, objectPath string) (*Object, error) {
-	reader, err := s.obj(objectPath).Generation(0).NewReader(ctx)
+	reader, err := s.obj(objectPath).NewReader(ctx)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
 			return nil, ErrNotFound
