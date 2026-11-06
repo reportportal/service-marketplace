@@ -85,8 +85,10 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 | `ALLOW_INSECURE_DEFAULTS` | `true` only for local/dev — enables weak default secrets |
 | `TRUSTED_PROXY_HOPS` | Honor `X-Forwarded-For` only when >0 (login rate-limit keying) |
 | `GITHUB_OAUTH_*` | GitHub OAuth for operator login |
-| `PUBLISH_OIDC_AUDIENCE` | Required when OIDC allow-list is non-empty |
-| `PUBLISH_OIDC_ALLOWED_SOURCES` | JSON map `repo→pluginId` |
+| `PUBLISH_OIDC_AUDIENCE` | Required when the OIDC allow-list is non-empty, and when GitLab OIDC is enabled |
+| `PUBLISH_OIDC_ALLOWED_SOURCES` | JSON map `source→pluginId`. GitHub uses `owner/repo`; GitLab uses `project_path` (for example `EPM-RPP/plugin-billing-epam` → `billing`) |
+| `PUBLISH_OIDC_GITLAB_ISSUER` | GitLab origin, for example `https://git.epam.com`. Empty disables GitLab; GitHub Actions keeps working |
+| `PUBLISH_OIDC_GITLAB_JWKS_URL` | Optional. Defaults to `<issuer>/oauth/discovery/keys` |
 | `GA4_MEASUREMENT_ID` / `GA4_API_SECRET` | Analytics (optional) |
 | `GCP_PROJECT` | GCP project for Cloud CDN invalidation |
 | `HTTP_ADDR` | Listen address (default `:8080`) |

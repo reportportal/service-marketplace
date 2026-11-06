@@ -89,6 +89,8 @@ func main() {
 	oidc := &auth.PublishOIDCVerifier{
 		Audience:       cfg.PublishOIDCAudience,
 		AllowedSources: cfg.PublishOIDCAllowedSources,
+		GitLabIssuer:   cfg.PublishOIDCGitLabIssuer,
+		GitLabJWKSURL:  cfg.PublishOIDCGitLabJWKSURL,
 	}
 
 	lc.StartOrphanCleanup(ctx, cfg.OrphanCleanupInterval)

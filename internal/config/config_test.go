@@ -195,3 +195,38 @@ func TestLoad_CDNSelfCheckFlag(t *testing.T) {
 		t.Fatalf("malformed CDN_SELF_CHECK must fail naming the key, got %v", err)
 	}
 }
+
+func TestLoad_GitLabOIDC(t *testing.T) {
+	validEnv(t)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if c.PublishOIDCGitLabIssuer != "" || c.PublishOIDCGitLabJWKSURL != "" {
+		t.Fatalf("gitlab OIDC must stay disabled by default, got issuer %q jwks %q", c.PublishOIDCGitLabIssuer, c.PublishOIDCGitLabJWKSURL)
+	}
+
+	t.Setenv("PUBLISH_OIDC_AUDIENCE", "marketplace.reportportal.io")
+	t.Setenv("PUBLISH_OIDC_GITLAB_ISSUER", "https://git.epam.com/")
+	t.Setenv("PUBLISH_OIDC_GITLAB_JWKS_URL", "https://git.epam.com/oauth/discovery/keys")
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("Load() with gitlab issuer: %v", err)
+	}
+	if c.PublishOIDCGitLabIssuer != "https://git.epam.com" {
+		t.Fatalf("issuer = %q, want trailing slash trimmed", c.PublishOIDCGitLabIssuer)
+	}
+	if c.PublishOIDCGitLabJWKSURL != "https://git.epam.com/oauth/discovery/keys" {
+		t.Fatalf("jwks = %q", c.PublishOIDCGitLabJWKSURL)
+	}
+
+	t.Setenv("PUBLISH_OIDC_GITLAB_ISSUER", "https://token.actions.githubusercontent.com")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "PUBLISH_OIDC_GITLAB_ISSUER") {
+		t.Fatalf("github issuer reused as gitlab must fail, got %v", err)
+	}
+
+	t.Setenv("PUBLISH_OIDC_GITLAB_ISSUER", "http://git.epam.com")
+	if _, err = Load(); err == nil || !strings.Contains(err.Error(), "PUBLISH_OIDC_GITLAB_ISSUER") {
+		t.Fatalf("non-https issuer must fail, got %v", err)
+	}
+}

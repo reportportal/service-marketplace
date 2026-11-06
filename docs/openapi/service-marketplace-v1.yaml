@@ -7,7 +7,7 @@ info:
     Public read endpoints are unauthenticated and CDN-cacheable (except artifact download,
     which hits the registry origin). Operator endpoints accept a registry session (ADR-010) as
     either an `Authorization: Bearer` token or the `mp_operator_session` cookie the Operator UI
-    uses; the two publish operations additionally accept a GitHub Actions OIDC token (CI/CD,
+    uses; version publish additionally accepts a GitHub Actions or GitLab CI OIDC token (CI/CD,
     ADR-014). A cookie-authenticated unsafe method must carry the CSRF double submit described
     on `operatorSessionCookie`.
 
@@ -308,8 +308,9 @@ paths:
         when publish is interrupted before index commit (§6.4).
 
         AMD-15-ci-first-publish (D-05, adopted "auto-create"): when the caller is an
-        allow-listed GitHub Actions OIDC token (the `repository` claim maps to this URL's
-        `pluginId` in `publishOidcTrust.allowedSources`) and `plugins/{pluginId}/plugin.json`
+        allow-listed publish OIDC token (GitHub Actions `repository`, or GitLab CI
+        `project_path`, maps to this URL's `pluginId` in `publishOidcTrust.allowedSources`)
+        and `plugins/{pluginId}/plugin.json`
         does not yet exist, this call creates the plugin entry at `tier: official` (equivalent
         to `POST /api/v1/plugins`) before writing the version, instead of `404`ing. An operator
         session on a not-yet-existing pluginId still gets `404` — first publish via the Operator
@@ -357,6 +358,7 @@ paths:
         - operatorSessionJwt: []
         - operatorSessionCookie: []
         - githubOidcJwt: []
+        - gitlabOidcJwt: []
 
   /api/v1/plugins/{pluginId}/versions/{version}:
     get:
@@ -996,11 +998,22 @@ components:
       bearerFormat: JWT
       description: |
         GitHub Actions OIDC token for CI/CD publish (ADR-014). Distinguished from session
-        JWTs by the `iss` claim (`token.actions.githubusercontent.com`).
+        JWTs by the `iss` claim (`token.actions.githubusercontent.com`). The published plugin
+        is the `repository` claim looked up in `PUBLISH_OIDC_ALLOWED_SOURCES`.
 
-        Accepted on the publish operations only — `publishFirstVersion` and `publishVersion`.
-        Every other operator operation requires an operator session; a workflow token presented
-        there is authenticated and then refused with `403`.
+        Accepted on `publishVersion` only. Every other operator operation requires an operator
+        session; a workflow token presented there is authenticated and then refused with `403`.
+    gitlabOidcJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        GitLab CI OIDC token for CI/CD publish. Accepted when `PUBLISH_OIDC_GITLAB_ISSUER`
+        is set and the token `iss` matches it. The published plugin is the `project_path`
+        claim looked up in the same `PUBLISH_OIDC_ALLOWED_SOURCES` map as GitHub
+        (`EPM-RPP/plugin-billing-epam` → `billing`). Audience is `PUBLISH_OIDC_AUDIENCE`.
+
+        Accepted on `publishVersion` only. Every other operator operation refuses it with `403`.
     licenseJwt:
       type: http
       scheme: bearer

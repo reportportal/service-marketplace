@@ -166,7 +166,8 @@ func startMarketplace(t *testing.T) *smokeEnv {
 		"ADMIN_PASSWORD_HASH="+string(hash),
 		// Keep the child from inheriting a developer's own settings.
 		"GITHUB_OAUTH_CLIENT_ID=", "GITHUB_OAUTH_CLIENT_SECRET=",
-		"PUBLISH_OIDC_ALLOWED_SOURCES={}", "CDN_URL_MAP=", "GA4_MEASUREMENT_ID=",
+		"PUBLISH_OIDC_ALLOWED_SOURCES={}", "PUBLISH_OIDC_GITLAB_ISSUER=", "PUBLISH_OIDC_GITLAB_JWKS_URL=",
+		"CDN_URL_MAP=", "GA4_MEASUREMENT_ID=",
 	)
 	var logs bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
