@@ -3,10 +3,13 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reportportal/service-marketplace/internal/auth"
 )
 
 type StorageType string
@@ -41,15 +44,19 @@ type Config struct {
 	GitHubOAuthRedirectURL    string
 	PublishOIDCAudience       string
 	PublishOIDCAllowedSources map[string]string
-	GA4MeasurementID          string
-	GA4APISecret              string
-	HTTPAddr                  string
-	OrphanCleanupInterval     time.Duration
-	GCPProject                string
-	TrustedProxyHops          int
-	AllowInsecureDefaults     bool
-	CDNSelfCheck              bool
-	CDNBaseURLSuffixCheck     bool
+	// PublishOIDCGitLabIssuer enables GitLab CI publish tokens. Empty keeps
+	// GitHub Actions as the only OIDC issuer.
+	PublishOIDCGitLabIssuer  string
+	PublishOIDCGitLabJWKSURL string
+	GA4MeasurementID         string
+	GA4APISecret             string
+	HTTPAddr                 string
+	OrphanCleanupInterval    time.Duration
+	GCPProject               string
+	TrustedProxyHops         int
+	AllowInsecureDefaults    bool
+	CDNSelfCheck             bool
+	CDNBaseURLSuffixCheck    bool
 }
 
 func Load() (*Config, error) {
@@ -122,6 +129,11 @@ func Load() (*Config, error) {
 	if err = json.Unmarshal([]byte(raw), &cfg.PublishOIDCAllowedSources); err != nil {
 		return nil, fmt.Errorf("PUBLISH_OIDC_ALLOWED_SOURCES: %w", err)
 	}
+	cfg.PublishOIDCGitLabIssuer = strings.TrimRight(strings.TrimSpace(getEnv("PUBLISH_OIDC_GITLAB_ISSUER", "")), "/")
+	cfg.PublishOIDCGitLabJWKSURL = strings.TrimSpace(getEnv("PUBLISH_OIDC_GITLAB_JWKS_URL", ""))
+	if err = validateGitLabOIDC(cfg); err != nil {
+		return nil, err
+	}
 
 	if cfg.StorageType != StorageLocal && cfg.StorageType != StorageGCS {
 		return nil, fmt.Errorf("invalid STORAGE_TYPE: %s", cfg.StorageType)
@@ -142,10 +154,43 @@ func Load() (*Config, error) {
 	if len(cfg.PublishOIDCAllowedSources) > 0 && strings.TrimSpace(cfg.PublishOIDCAudience) == "" {
 		return nil, fmt.Errorf("PUBLISH_OIDC_AUDIENCE is required when PUBLISH_OIDC_ALLOWED_SOURCES is non-empty")
 	}
+	if cfg.PublishOIDCGitLabIssuer != "" && strings.TrimSpace(cfg.PublishOIDCAudience) == "" {
+		return nil, fmt.Errorf("PUBLISH_OIDC_AUDIENCE is required when PUBLISH_OIDC_GITLAB_ISSUER is set")
+	}
 	if cfg.StorageType == StorageGCS && cfg.GCSBucket == "" {
 		return nil, fmt.Errorf("GCS_BUCKET is required when STORAGE_TYPE=gcs")
 	}
 	return cfg, nil
+}
+
+func validateGitLabOIDC(cfg *Config) error {
+	if cfg.PublishOIDCGitLabJWKSURL != "" && cfg.PublishOIDCGitLabIssuer == "" {
+		return fmt.Errorf("PUBLISH_OIDC_GITLAB_ISSUER is required when PUBLISH_OIDC_GITLAB_JWKS_URL is set")
+	}
+	if cfg.PublishOIDCGitLabIssuer == "" {
+		return nil
+	}
+	if cfg.PublishOIDCGitLabIssuer == auth.GitHubActionsIssuer {
+		return fmt.Errorf("PUBLISH_OIDC_GITLAB_ISSUER must not be the GitHub Actions issuer")
+	}
+	if err := requireHTTPSOrigin("PUBLISH_OIDC_GITLAB_ISSUER", cfg.PublishOIDCGitLabIssuer); err != nil {
+		return err
+	}
+	if cfg.PublishOIDCGitLabJWKSURL != "" {
+		u, err := url.Parse(cfg.PublishOIDCGitLabJWKSURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return fmt.Errorf("PUBLISH_OIDC_GITLAB_JWKS_URL must be an https URL")
+		}
+	}
+	return nil
+}
+
+func requireHTTPSOrigin(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("%s must be an https origin (for example https://git.epam.com)", name)
+	}
+	return nil
 }
 
 func (c *Config) validateSecrets() error {

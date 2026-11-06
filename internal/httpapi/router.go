@@ -205,7 +205,7 @@ func (s *Server) requireSessionRejectOIDC(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if bearer := bearerToken(r); bearer != "" {
 			if _, _, err := s.deps.OIDC.Verify(r.Context(), bearer); err == nil || errors.Is(err, auth.ErrForbidden) {
-				writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeTokenTypeNotPermitted, Message: "GitHub Actions OIDC tokens are not accepted on this route; use an operator session"})
+				writeError(w, &APIError{Status: http.StatusForbidden, Code: CodeTokenTypeNotPermitted, Message: "Publish OIDC tokens are not accepted on this route; use an operator session"})
 				return
 			}
 		}

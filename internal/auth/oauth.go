@@ -196,45 +196,111 @@ func (g *GitHubOAuth) Callback(ctx context.Context, code, state string) (string,
 	return g.Sessions.Issue(ctx, login)
 }
 
+const (
+	// GitHubActionsIssuer is the only issuer accepted for GitHub Actions publish tokens.
+	GitHubActionsIssuer = "https://token.actions.githubusercontent.com"
+	gitHubActionsJWKS   = "https://token.actions.githubusercontent.com/.well-known/jwks"
+	gitLabJWKSPath      = "/oauth/discovery/keys"
+)
+
+type oidcIssuerKind int
+
+const (
+	oidcIssuerGitHub oidcIssuerKind = iota
+	oidcIssuerGitLab
+)
+
 type PublishOIDCVerifier struct {
 	Audience       string
 	AllowedSources map[string]string
-	JWKSURL        string
-	// KeySet, when set, is used instead of fetching JWKS (tests / offline).
+	// JWKSURL overrides the GitHub Actions JWKS endpoint. Empty uses the public default.
+	JWKSURL string
+	// KeySet, when set, verifies GitHub Actions tokens offline (tests).
 	KeySet jwk.Set
-	cache  *jwk.Cache
-	once   sync.Once
+
+	// GitLabIssuer enables GitLab CI OIDC when non-empty. A token is checked
+	// against this issuer only after its signature matches GitLab's keys.
+	// Empty leaves GitHub Actions as the only accepted issuer.
+	GitLabIssuer string
+	// GitLabJWKSURL overrides GitLab's key endpoint. Empty uses
+	// <GitLabIssuer>/oauth/discovery/keys.
+	GitLabJWKSURL string
+	// GitLabKeySet, when set, verifies GitLab tokens offline (tests).
+	GitLabKeySet jwk.Set
+
+	cache *jwk.Cache
+	once  sync.Once
+}
+
+func (v *PublishOIDCVerifier) githubJWKS() string {
+	if v.JWKSURL != "" {
+		return v.JWKSURL
+	}
+	return gitHubActionsJWKS
+}
+
+func (v *PublishOIDCVerifier) gitLabJWKS() string {
+	if v.GitLabJWKSURL != "" {
+		return v.GitLabJWKSURL
+	}
+	return strings.TrimRight(v.GitLabIssuer, "/") + gitLabJWKSPath
 }
 
 func (v *PublishOIDCVerifier) ensureCache() {
 	v.once.Do(func() {
-		url := v.JWKSURL
-		if url == "" {
-			url = "https://token.actions.githubusercontent.com/.well-known/jwks"
-		}
 		v.cache = jwk.NewCache(context.Background())
-		_ = v.cache.Register(url, jwk.WithMinRefreshInterval(15*time.Minute))
-		v.JWKSURL = url
+		_ = v.cache.Register(v.githubJWKS(), jwk.WithMinRefreshInterval(15*time.Minute))
+		if v.GitLabIssuer != "" && v.GitLabKeySet == nil {
+			_ = v.cache.Register(v.gitLabJWKS(), jwk.WithMinRefreshInterval(15*time.Minute))
+		}
 	})
 }
 
-func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject, pluginID string, err error) {
-	var set jwk.Set
-	if v.KeySet != nil {
-		set = v.KeySet
-	} else {
-		v.ensureCache()
-		set, err = v.cache.Get(ctx, v.JWKSURL)
-		if err != nil {
-			return "", "", ErrUnauthorized
+// keySetForIssuer picks the key set from the unverified iss claim. The
+// signature is checked against that set afterwards, so a forged iss only
+// selects a key the caller still has to satisfy.
+func (v *PublishOIDCVerifier) keySetForIssuer(ctx context.Context, iss string) (jwk.Set, oidcIssuerKind, error) {
+	switch {
+	case iss == GitHubActionsIssuer:
+		if v.KeySet != nil {
+			return v.KeySet, oidcIssuerGitHub, nil
 		}
+		v.ensureCache()
+		set, err := v.cache.Get(ctx, v.githubJWKS())
+		if err != nil {
+			return nil, 0, err
+		}
+		return set, oidcIssuerGitHub, nil
+	case v.GitLabIssuer != "" && iss == v.GitLabIssuer:
+		if v.GitLabKeySet != nil {
+			return v.GitLabKeySet, oidcIssuerGitLab, nil
+		}
+		v.ensureCache()
+		set, err := v.cache.Get(ctx, v.gitLabJWKS())
+		if err != nil {
+			return nil, 0, err
+		}
+		return set, oidcIssuerGitLab, nil
+	default:
+		return nil, 0, ErrUnauthorized
 	}
-	parsed, err := jwt.Parse([]byte(token), jwt.WithKeySet(set), jwt.WithValidate(true))
+}
+
+func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject, pluginID string, err error) {
+	unverified, err := jwt.Parse([]byte(token), jwt.WithVerify(false), jwt.WithValidate(false))
 	if err != nil {
 		return "", "", ErrUnauthorized
 	}
-	iss := parsed.Issuer()
-	if iss != "https://token.actions.githubusercontent.com" {
+	set, kind, err := v.keySetForIssuer(ctx, unverified.Issuer())
+	if err != nil {
+		return "", "", ErrUnauthorized
+	}
+	parsed, err := jwt.Parse([]byte(token),
+		jwt.WithKeySet(set),
+		jwt.WithValidate(true),
+		jwt.WithIssuer(unverified.Issuer()),
+	)
+	if err != nil {
 		return "", "", ErrUnauthorized
 	}
 	if v.Audience == "" {
@@ -251,26 +317,51 @@ func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject
 	if !okAud {
 		return "", "", ErrUnauthorized
 	}
-	sub := parsed.Subject()
-	repoClaim, _ := parsed.Get("repository")
-	repo, _ := repoClaim.(string)
-	if repo == "" {
-		repo = extractRepo(sub)
-	}
-	if repo == "" {
+	source := sourceID(kind, parsed)
+	if source == "" {
 		return "", "", ErrForbidden
 	}
-	pid, ok := v.AllowedSources[repo]
+	pid, ok := v.AllowedSources[source]
 	if !ok {
 		return "", "", ErrForbidden
 	}
-	return sub, pid, nil
+	return parsed.Subject(), pid, nil
+}
+
+func sourceID(kind oidcIssuerKind, parsed jwt.Token) string {
+	switch kind {
+	case oidcIssuerGitHub:
+		repoClaim, _ := parsed.Get("repository")
+		repo, _ := repoClaim.(string)
+		if repo == "" {
+			repo = extractRepo(parsed.Subject())
+		}
+		return repo
+	case oidcIssuerGitLab:
+		pathClaim, _ := parsed.Get("project_path")
+		path, _ := pathClaim.(string)
+		if path == "" {
+			path = extractGitLabProject(parsed.Subject())
+		}
+		return path
+	default:
+		return ""
+	}
 }
 
 func extractRepo(sub string) string {
 	// repo:org/name:ref:refs/heads/main
 	parts := strings.Split(sub, ":")
 	if len(parts) >= 2 && parts[0] == "repo" {
+		return parts[1]
+	}
+	return ""
+}
+
+func extractGitLabProject(sub string) string {
+	// project_path:group/project:ref_type:branch:ref:main
+	parts := strings.Split(sub, ":")
+	if len(parts) >= 2 && parts[0] == "project_path" {
 		return parts[1]
 	}
 	return ""
