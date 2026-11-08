@@ -36,11 +36,10 @@ env:
   TRUSTED_PROXY_HOPS: "0"
   PUBLISH_OIDC_AUDIENCE: "marketplace.reportportal.io"
   # source → pluginId. GitHub: owner/repo. GitLab: project_path.
-  # Example: {"EPM-RPP/plugin-billing-epam":"billing"}
-  PUBLISH_OIDC_ALLOWED_SOURCES: "{}"
-  # Empty disables GitLab CI OIDC. GitHub Actions is unaffected.
-  PUBLISH_OIDC_GITLAB_ISSUER: ""
-  # Optional. Defaults to <issuer>/oauth/discovery/keys.
+  PUBLISH_OIDC_ALLOWED_SOURCES: '{"EPM-RPP/plugin-billing-epam":"billing"}'
+  # Empty issuer disables GitLab CI OIDC. GitHub Actions stays accepted either way.
+  PUBLISH_OIDC_GITLAB_ISSUER: "https://git.epam.com"
+  # Optional. Empty uses <issuer>/oauth/discovery/keys.
   PUBLISH_OIDC_GITLAB_JWKS_URL: ""
   GA4_MEASUREMENT_ID: ""
   GA4_API_SECRET: ""
