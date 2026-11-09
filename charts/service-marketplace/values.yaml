@@ -35,7 +35,12 @@ env:
   # Set to "1" only behind an ingress that strips/forwards X-Forwarded-For.
   TRUSTED_PROXY_HOPS: "0"
   PUBLISH_OIDC_AUDIENCE: "marketplace.reportportal.io"
-  PUBLISH_OIDC_ALLOWED_SOURCES: "{}"
+  # source → pluginId. GitHub: owner/repo. GitLab: project_path.
+  PUBLISH_OIDC_ALLOWED_SOURCES: '{"EPM-RPP/plugin-billing-epam":"billing"}'
+  # Empty issuer disables GitLab CI OIDC. GitHub Actions stays accepted either way.
+  PUBLISH_OIDC_GITLAB_ISSUER: "https://git.epam.com"
+  # Optional. Empty uses <issuer>/oauth/discovery/keys.
+  PUBLISH_OIDC_GITLAB_JWKS_URL: ""
   GA4_MEASUREMENT_ID: ""
   GA4_API_SECRET: ""
   # JWT_SECRET and STORAGE_SIGNING_SECRET must come from a Kubernetes Secret (see secrets below).

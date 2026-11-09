@@ -115,3 +115,156 @@ func TestPublishOIDCVerifier(t *testing.T) {
 		t.Fatalf("unexpected plugin id %s", pid)
 	}
 }
+
+func TestPublishOIDCVerifierGitLab(t *testing.T) {
+	githubKey := newTestRSAKey(t, "github-key")
+	gitlabKey := newTestRSAKey(t, "gitlab-key")
+	githubSet := jwk.NewSet()
+	gitlabSet := jwk.NewSet()
+	githubPub, err := githubKey.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitlabPub, err := gitlabKey.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = githubSet.AddKey(githubPub)
+	_ = gitlabSet.AddKey(gitlabPub)
+
+	v := &PublishOIDCVerifier{
+		Audience: "marketplace",
+		AllowedSources: map[string]string{
+			"reportportal/plugin-jira":    "plugin-jira",
+			"EPM-RPP/plugin-billing-epam": "billing",
+		},
+		KeySet:       githubSet,
+		GitLabIssuer: "https://git.epam.com",
+		GitLabKeySet: gitlabSet,
+	}
+
+	t.Run("github still publishes", func(t *testing.T) {
+		tok := signOIDC(t, githubKey, jwt.NewBuilder().
+			Issuer(GitHubActionsIssuer).
+			Subject("repo:reportportal/plugin-jira:ref:refs/heads/main").
+			Audience([]string{"marketplace"}).
+			Claim("repository", "reportportal/plugin-jira").
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now()))
+		_, pid, err := v.Verify(context.Background(), tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid != "plugin-jira" {
+			t.Fatalf("plugin id %s", pid)
+		}
+	})
+
+	t.Run("gitlab project_path publishes billing", func(t *testing.T) {
+		tok := signOIDC(t, gitlabKey, jwt.NewBuilder().
+			Issuer("https://git.epam.com").
+			Subject("project_path:EPM-RPP/plugin-billing-epam:ref_type:branch:ref:main").
+			Audience([]string{"marketplace"}).
+			Claim("project_path", "EPM-RPP/plugin-billing-epam").
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now()))
+		_, pid, err := v.Verify(context.Background(), tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid != "billing" {
+			t.Fatalf("plugin id %s", pid)
+		}
+	})
+
+	t.Run("gitlab subject fallback", func(t *testing.T) {
+		tok := signOIDC(t, gitlabKey, jwt.NewBuilder().
+			Issuer("https://git.epam.com").
+			Subject("project_path:EPM-RPP/plugin-billing-epam:ref_type:branch:ref:main").
+			Audience([]string{"marketplace"}).
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now()))
+		_, pid, err := v.Verify(context.Background(), tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid != "billing" {
+			t.Fatalf("plugin id %s", pid)
+		}
+	})
+
+	t.Run("unknown gitlab project is forbidden", func(t *testing.T) {
+		tok := signOIDC(t, gitlabKey, jwt.NewBuilder().
+			Issuer("https://git.epam.com").
+			Subject("project_path:EPM-RPP/other:ref_type:branch:ref:main").
+			Audience([]string{"marketplace"}).
+			Claim("project_path", "EPM-RPP/other").
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now()))
+		_, _, err := v.Verify(context.Background(), tok)
+		if err != ErrForbidden {
+			t.Fatalf("got %v, want forbidden", err)
+		}
+	})
+
+	t.Run("gitlab token signed with github key is unauthorized", func(t *testing.T) {
+		tok := signOIDC(t, githubKey, jwt.NewBuilder().
+			Issuer("https://git.epam.com").
+			Subject("project_path:EPM-RPP/plugin-billing-epam:ref_type:branch:ref:main").
+			Audience([]string{"marketplace"}).
+			Claim("project_path", "EPM-RPP/plugin-billing-epam").
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now()))
+		_, _, err := v.Verify(context.Background(), tok)
+		if err != ErrUnauthorized {
+			t.Fatalf("got %v, want unauthorized", err)
+		}
+	})
+
+	t.Run("gitlab disabled rejects gitlab issuer", func(t *testing.T) {
+		githubOnly := &PublishOIDCVerifier{
+			Audience:       "marketplace",
+			AllowedSources: v.AllowedSources,
+			KeySet:         githubSet,
+		}
+		tok := signOIDC(t, gitlabKey, jwt.NewBuilder().
+			Issuer("https://git.epam.com").
+			Subject("project_path:EPM-RPP/plugin-billing-epam:ref_type:branch:ref:main").
+			Audience([]string{"marketplace"}).
+			Claim("project_path", "EPM-RPP/plugin-billing-epam").
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now()))
+		_, _, err := githubOnly.Verify(context.Background(), tok)
+		if err != ErrUnauthorized {
+			t.Fatalf("got %v, want unauthorized", err)
+		}
+	})
+}
+
+func newTestRSAKey(t *testing.T, kid string) jwk.Key {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := jwk.FromRaw(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = key.Set(jwk.KeyIDKey, kid)
+	_ = key.Set(jwk.AlgorithmKey, jwa.RS256)
+	return key
+}
+
+func signOIDC(t *testing.T, key jwk.Key, b *jwt.Builder) string {
+	t.Helper()
+	tok, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(signed)
+}

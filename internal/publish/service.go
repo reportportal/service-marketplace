@@ -182,7 +182,7 @@ func (s *Service) PublishFirst(ctx context.Context, bundle *Bundle, operator str
 // autoCreate is true and no plugin.json exists yet for pluginID, it creates
 // the plugin entry (tier: official) as part of writing this version instead
 // of returning ErrNotFound — AMD-15-ci-first-publish / D-05 (adopted
-// "auto-create"): an allow-listed GitHub Actions OIDC publish to a
+// "auto-create"): an allow-listed GitHub Actions or GitLab CI OIDC publish to a
 // not-yet-existing pluginId is the sanctioned first-CI-publish path, since
 // the publishOidcTrust allow-list is already an operator-curated grant. The
 // caller (handlePublishVersion) sets autoCreate only once it has confirmed

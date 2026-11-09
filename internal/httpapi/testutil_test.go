@@ -46,17 +46,21 @@ const (
 	// at all — a signature/issuer/audience-valid GitHub Actions token for a
 	// repo the operator never granted publish rights to.
 	testUnmappedOIDCRepo = "reportportal/unmapped-repo"
+	testGitLabIssuer     = "https://git.epam.com"
+	testGitLabProject    = "EPM-RPP/plugin-billing-epam"
+	testGitLabPluginID   = "billing"
 )
 
 // testEnv bundles a fully-wired Server (the real router, the real
 // middleware chain) with the pieces a test needs to mint credentials and
 // seed storage state directly.
 type testEnv struct {
-	t        *testing.T
-	Server   *Server
-	Store    *storage.LocalStore
-	Sessions *auth.SessionManager
-	oidcKey  jwk.Key
+	t         *testing.T
+	Server    *Server
+	Store     *storage.LocalStore
+	Sessions  *auth.SessionManager
+	oidcKey   jwk.Key
+	gitlabKey jwk.Key
 }
 
 // newTestEnv wires the same dependency graph cmd/marketplace/main.go builds,
@@ -82,13 +86,25 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err := set.AddKey(pub); err != nil {
 		t.Fatalf("add oidc public key: %v", err)
 	}
+	gitlabKey := generateRSAJWK(t)
+	gitlabPub, err := gitlabKey.PublicKey()
+	if err != nil {
+		t.Fatalf("gitlab oidc public key: %v", err)
+	}
+	gitlabSet := jwk.NewSet()
+	if err := gitlabSet.AddKey(gitlabPub); err != nil {
+		t.Fatalf("add gitlab oidc public key: %v", err)
+	}
 	oidc := &auth.PublishOIDCVerifier{
 		Audience: testOIDCAudience,
 		AllowedSources: map[string]string{
 			testOIDCRepo:      testOIDCPluginID,
 			testOtherOIDCRepo: testOtherPluginID,
+			testGitLabProject: testGitLabPluginID,
 		},
-		KeySet: set,
+		KeySet:       set,
+		GitLabIssuer: testGitLabIssuer,
+		GitLabKeySet: gitlabSet,
 	}
 
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte("s3cret-operator-pass"), bcrypt.MinCost)
@@ -121,7 +137,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		OIDC:       oidc,
 	})
 
-	return &testEnv{t: t, Server: srv, Store: store, Sessions: sessions, oidcKey: oidcKey}
+	return &testEnv{t: t, Server: srv, Store: store, Sessions: sessions, oidcKey: oidcKey, gitlabKey: gitlabKey}
 }
 
 // serverWithStore returns a fresh Server sharing every dependency with
@@ -241,6 +257,28 @@ func (e *testEnv) oidcToken(repo string) string {
 	signed, err := jwt.Sign(built, jwt.WithKey(jwa.RS256, e.oidcKey))
 	if err != nil {
 		e.t.Fatalf("sign oidc token: %v", err)
+	}
+	return string(signed)
+}
+
+// gitlabOIDCToken mints a GitLab-CI-shaped OIDC token. project is the
+// project_path claim (for example EPM-RPP/plugin-billing-epam).
+func (e *testEnv) gitlabOIDCToken(project string) string {
+	e.t.Helper()
+	built, err := jwt.NewBuilder().
+		Issuer(testGitLabIssuer).
+		Subject("project_path:"+project+":ref_type:branch:ref:main").
+		Audience([]string{testOIDCAudience}).
+		Claim("project_path", project).
+		IssuedAt(time.Now()).
+		Expiration(time.Now().Add(10 * time.Minute)).
+		Build()
+	if err != nil {
+		e.t.Fatalf("build gitlab oidc token: %v", err)
+	}
+	signed, err := jwt.Sign(built, jwt.WithKey(jwa.RS256, e.gitlabKey))
+	if err != nil {
+		e.t.Fatalf("sign gitlab oidc token: %v", err)
 	}
 	return string(signed)
 }
