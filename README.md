@@ -108,7 +108,7 @@ The registry signs a unique probe URL under `CDN_BASE_URL` (the same way it sign
 | `unverified` | Startup gave up without a conclusive answer; re-checked every 10 minutes |
 | `disabled` | `CDN_SELF_CHECK=false` |
 
-The status code of `/ready` stays 200 in every case. The chart's readinessProbe reads only the status code, so a misconfiguration surfaces only as the `ERROR cdn self-check: ...` log line (state changes are logged as they happen, including `RECOVERED`) and in the body of a manual `curl -s https://<host>/ready`.
+The status code of `/ready` stays 200 in every case. A misconfiguration surfaces only as the `ERROR cdn self-check: ...` log line (state changes are logged as they happen, including `RECOVERED`) and in the body of a manual `curl -s https://<host>/ready`.
 
 ## Layout
 
@@ -127,7 +127,6 @@ internal/analytics/       GA4 events
 internal/httpapi/         Chi router & handlers
 web/operator/             Operator console (static)
 actions/marketplace-publish-action/  GitHub Action for CI publish
-charts/service-marketplace/          Helm chart
 ```
 
 ## Docker

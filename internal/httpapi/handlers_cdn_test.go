@@ -578,8 +578,8 @@ func (f *fakeObjectStore) Type() string                    { return "fake" }
 // Production shape, which the pre-existing redirect test missed by using a
 // cosmetically different host for the double: cmd/marketplace/main.go passes
 // the SAME cfg.CDNBaseURL to the store constructor and leaves this service
-// serving /cdn, and CDN_BASE_URL defaults to "http://localhost:8080/cdn"
-// (charts ship "http://marketplace.local/cdn"). Both LocalStore.PublicURL
+// serving /cdn, and CDN_BASE_URL defaults to "http://localhost:8080/cdn".
+// Both LocalStore.PublicURL
 // and GCSStore.PublicURL are cdnBase + "/" + CDNPath(objectPath), so on a
 // GCS deployment the backend's "public origin" IS this same route, and
 // redirecting to it loops until the client gives up.
