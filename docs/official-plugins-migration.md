@@ -12,7 +12,7 @@ This guide covers **US-MRKT-PUB-008**: move Official plugins onto `service-marke
    **This is a breaking change for instances that already run the plugin.** `IntegrationType.name` is what existing integration records point at, so an instance carrying the old name keeps it and the catalogue will not recognise the plugin until it is reinstalled from the marketplace. That is the accepted cost of not carrying a second identifier — decided on service-marketplace#13, 2026-09-16. Plan the rename with the release that first publishes the plugin, not separately.
 5. Optionally add `CHANGELOG.md` and screenshots for the publish bundle.
 6. Add a GitHub Actions workflow using [`marketplace-publish-action`](../actions/marketplace-publish-action/) (see [examples](examples/github-workflows/publish.yml)).
-7. Ensure the registry Helm `publishOidcTrust.allowedSources` maps `reportportal/<plugin-repo>` → `<plugin-id>`.
+7. Ensure the registry `PUBLISH_OIDC_ALLOWED_SOURCES` maps `reportportal/<plugin-repo>` → `<plugin-id>` (Terraform variable `publish_oidc_allowed_sources`).
 8. Publish to **staging**, then smoke-test:
    - `GET /api/v1/plugins` lists the plugin
    - `GET .../versions/{ver}` returns `sha256`
