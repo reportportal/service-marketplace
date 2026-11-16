@@ -35,6 +35,7 @@ const (
 	// OIDC tokens: POST /api/v1/plugins, PATCH /api/v1/plugins/{pluginId},
 	// DELETE /api/v1/plugins/{pluginId},
 	// POST .../versions/{version}/block,
+	// PUT and DELETE .../versions/{version}/compatibility-ceiling,
 	// POST .../versions/{version}/advisory, POST /api/v1/index/rebuild,
 	// and every /api/v1/licenses/* operation. These routes accept operator session JWTs ONLY. A GitHub
 	// Actions OIDC bearer token is a recognized credential type, just not
@@ -84,6 +85,8 @@ var authzMatrix = []routeCase{
 	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/advisory", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/advisory", policySessionOnlyRejectOIDC},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}/artifact", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/artifact", policyPublic},
 	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions/{version}/block", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/block", policySessionOnlyRejectOIDC},
+	{http.MethodPut, "/api/v1/plugins/{pluginId}/versions/{version}/compatibility-ceiling", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/compatibility-ceiling", policySessionOnlyRejectOIDC},
+	{http.MethodDelete, "/api/v1/plugins/{pluginId}/versions/{version}/compatibility-ceiling", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0/compatibility-ceiling", policySessionOnlyRejectOIDC},
 	// Rewrites the whole public catalogue, so it belongs with the lifecycle mutations rather than
 	// with publishing: a token scoped to one plugin has no business regenerating every row.
 	{http.MethodPost, "/api/v1/index/rebuild", "/api/v1/index/rebuild", policySessionOnlyRejectOIDC},
@@ -280,6 +283,7 @@ func assertOIDCVersionScopedRoute(t *testing.T, env *testEnv, rc routeCase) {
 // assertSessionOnlyRejectOIDCRoute covers every route policySessionOnlyRejectOIDC
 // names: POST /api/v1/plugins, PATCH /api/v1/plugins/{pluginId},
 // DELETE /api/v1/plugins/{pluginId}, POST .../versions/{version}/block,
+// PUT and DELETE .../versions/{version}/compatibility-ceiling,
 // POST .../versions/{version}/advisory, and every /api/v1/licenses/* route.
 // Per the adopted product decision, "OIDC tokens are accepted ONLY on the
 // version-publish route" (AMD-02): a GitHub-issuer bearer token on any of

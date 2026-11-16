@@ -274,8 +274,10 @@ paths:
         - Public — Plugins
       summary: List plugin versions
       description: |
-        Returns version history with block state per version. Returns `410 Gone` when the
-        plugin has been removed.
+        Returns version history with block state per version. Each entry includes the
+        author's `compatibility` and `effectiveCompatibility` (the author range intersected
+        with any operator ceiling; a copy of the author range when no ceiling is set).
+        Returns `410 Gone` when the plugin has been removed.
       operationId: listPluginVersions
       parameters:
         - $ref: '#/components/parameters/PluginId'
@@ -367,8 +369,11 @@ paths:
       summary: Get version detail
       description: |
         Returns composed version metadata: manifest fields, trust tier, block flag, optional
-        security advisory (Phase 2), absolute CDN URLs for changelog and screenshots, and
-        the SHA-256 checksum of the `.jar` artifact (used by `MarketplaceClient` before install).
+        security advisory (Phase 2), `effectiveCompatibility` (the author range intersected
+        with any operator ceiling) and `compatibilityCeilingReason` when a ceiling is set,
+        absolute CDN URLs for changelog and screenshots, and the SHA-256 checksum of the
+        `.jar` artifact (used by `MarketplaceClient` before install). `compatibility` stays
+        the author's manifest claim.
       operationId: getPluginVersion
       parameters:
         - $ref: '#/components/parameters/PluginId'
@@ -406,6 +411,9 @@ paths:
         2. Blocked version → `403 Forbidden` with block payload (FR-OP-03)
         3. Public plugin → `302` redirect to CloudFront CDN URL
         4. Premium plugin → requires valid license JWT; returns JSON with S3 pre-signed URL (60s)
+
+        A compatibility ceiling is not a step in this order. The jar stays downloadable,
+        and the caller enforces `effectiveCompatibility` locally.
 
         Every distinct license failure is separately diagnosable through `ErrorResponse.code`
         (AMD-09), so an operator can be told which one happened. Note the split: an unknown
@@ -534,6 +542,85 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/plugins/{pluginId}/versions/{version}/compatibility-ceiling:
+    put:
+      tags:
+        - Operator — Plugins
+      summary: Set or replace a compatibility ceiling
+      description: |
+        Sets or replaces the compatibility ceiling on one published version (FR-OP-16).
+        The ceiling is a single upper bound on ReportPortal (`<` or `<=` a CalVer, for
+        example `<27.0`). It does not edit the author's `compatibility` field. The registry
+        intersects the two and serves the result as `effectiveCompatibility`.
+
+        A bound whose intersection with the author's range is empty is rejected: stopping
+        a version on every release is a block. Replacing a ceiling updates the stored bound.
+        The jar stays downloadable.
+      operationId: setCompatibilityCeiling
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - $ref: '#/components/parameters/Version'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetCompatibilityCeilingRequest'
+      responses:
+        '200':
+          description: Ceiling stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompatibilityCeiling'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+    delete:
+      tags:
+        - Operator — Plugins
+      summary: Clear a compatibility ceiling
+      description: |
+        Removes the compatibility ceiling on one published version (FR-OP-16).
+        `effectiveCompatibility` returns to the author's range. Clearing a version that
+        has no ceiling returns `404`.
+      operationId: clearCompatibilityCeiling
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+        - $ref: '#/components/parameters/Version'
+      responses:
+        '204':
+          description: Ceiling cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -1400,11 +1487,12 @@ components:
         compatibility:
           type: string
           description: |
-            The `compatibility.reportportal` range declared by `latestVersion` — that version's
-            range, not the plugin's. Carried on the listing because a catalogue row offers to
-            install the latest build, and whether that build runs on the instance reading the row
-            is the one thing the row cannot answer for itself; without it a consumer must fetch
-            one version detail per row.
+            The effective ReportPortal range of `latestVersion`: the range that version declares,
+            narrowed by an operator compatibility ceiling when one is set on that version. With
+            no ceiling it is the declared range. Carried on the listing because a catalogue row
+            offers to install the latest build, and whether that build runs on the instance
+            reading the row is the one thing the row cannot answer for itself; without it a
+            consumer must fetch one version detail per row.
 
             Absent for a plugin whose latest version was published before the registry recorded
             the range. **Absent is not "compatible"** — a consumer that cannot read a range must
@@ -1467,6 +1555,27 @@ components:
             **Absent means unknown, not compatible.** An entry published before this field existed
             carries no range, and a consumer that cannot read one must refuse the install rather
             than guess — the same rule already applied to a range that will not parse.
+        effectiveCompatibility:
+          allOf:
+            - $ref: '#/components/schemas/Compatibility'
+          description: |
+            The author's range intersected with any operator ceiling on this version. With no
+            ceiling this is a copy of `compatibility`. Install, upgrade, and rollback evaluate
+            this range and do not recompute the intersection. Absent when `compatibility` is
+            absent.
+        compatibilityCeiling:
+          type: string
+          description: |
+            The operator upper bound (`<` or `<=` a ReportPortal CalVer) when one is set.
+            Absent when the version has no ceiling. The install decision uses
+            `effectiveCompatibility`, not this field.
+          example: '<27.0'
+        compatibilityCeilingReason:
+          type: string
+          description: |
+            The operator's reason, present when a compatibility ceiling is set on this version.
+            Quoted by the install error and by the installed-plugin warning when the running
+            ReportPortal release falls outside `effectiveCompatibility`.
         advisory:
           allOf:
             - $ref: '#/components/schemas/SecurityAdvisory'
@@ -1525,6 +1634,22 @@ components:
             blockReason:
               type: string
               nullable: true
+            effectiveCompatibility:
+              allOf:
+                - $ref: '#/components/schemas/Compatibility'
+              description: |
+                The author's `compatibility` range intersected with any operator ceiling. With no
+                ceiling this is a copy of `compatibility`. The accept/reject decision uses only
+                this range.
+            compatibilityCeiling:
+              type: string
+              description: |
+                The operator upper bound when one is set on this version. Absent otherwise.
+              example: '<27.0'
+            compatibilityCeilingReason:
+              type: string
+              description: |
+                The operator's reason, present when a compatibility ceiling is set.
             advisory:
               $ref: '#/components/schemas/SecurityAdvisory'
             sha256:
@@ -1663,6 +1788,48 @@ components:
             format: binary
           maxItems: 5
           description: Optional PNG/JPEG screenshots (max 2 MB each, NFR-08)
+
+    CompatibilityCeiling:
+      type: object
+      required:
+        - version
+        - reportportal
+        - reason
+        - setAt
+        - setBy
+      properties:
+        version:
+          type: string
+        reportportal:
+          type: string
+          description: A single `<` or `<=` upper bound on a ReportPortal CalVer.
+          pattern: '^<(=)?(0|[1-9]\d*)\.(0|[1-9]\d*)(\.(0|[1-9]\d*))?$'
+          example: '<27.0'
+        reason:
+          type: string
+        setAt:
+          type: string
+          format: date-time
+        setBy:
+          type: string
+          description: Operator identity from the session JWT subject or OIDC subject.
+
+    SetCompatibilityCeilingRequest:
+      type: object
+      required:
+        - reportportal
+        - reason
+      properties:
+        reportportal:
+          type: string
+          minLength: 1
+          description: A single `<` or `<=` upper bound on a ReportPortal CalVer.
+          pattern: '^<(=)?(0|[1-9]\d*)\.(0|[1-9]\d*)(\.(0|[1-9]\d*))?$'
+          example: '<27.0'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 2000
 
     BlockVersionRequest:
       type: object
@@ -1970,6 +2137,10 @@ components:
         category: bug-tracking
         compatibility:
           reportportal: '>=25.1'
+        effectiveCompatibility:
+          reportportal: '>=25.1, <27.0'
+        compatibilityCeiling: '<27.0'
+        compatibilityCeilingReason: RP 27.0 removes ExtensionPoint X
         homepage: https://reportportal.io/docs/plugins/jira-cloud
         access: public
         tier: official

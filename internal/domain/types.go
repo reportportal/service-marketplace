@@ -121,8 +121,9 @@ type IndexPlugin struct {
 	// the plugin, and a consumer that only has the listing would otherwise have to guess.
 	// Guessing has a wrong answer — attributing a third party's plugin to ReportPortal.
 	Author Author `json:"author"`
-	// Compatibility is the `compatibility.reportportal` range declared by LatestVersion —
-	// that version's range, not the plugin's. A catalogue row has to say whether the build it
+	// Compatibility is the effective ReportPortal range of LatestVersion: the range that
+	// version declares, narrowed by an operator ceiling when one is set on it. With no
+	// ceiling it is the declared range. A catalogue row has to say whether the build it
 	// offers runs on the instance reading it, and without this the consumer would have to
 	// fetch one version detail per row to find out. The range belongs to a version, so it is
 	// only meaningful here because LatestVersion names which one.
@@ -141,6 +142,17 @@ type BlockedVersion struct {
 	Version   string    `json:"version"`
 	BlockedAt time.Time `json:"blockedAt"`
 	Reason    string    `json:"reason"`
+}
+
+// CompatibilityCeiling is an operator upper bound on one published version.
+// It is not part of the author's manifest. The registry intersects it with
+// the author's range and serves the result as effectiveCompatibility.
+type CompatibilityCeiling struct {
+	Version      string    `json:"version"`
+	ReportPortal string    `json:"reportportal"`
+	Reason       string    `json:"reason"`
+	SetAt        time.Time `json:"setAt"`
+	SetBy        string    `json:"setBy"`
 }
 
 type VersionMeta struct {
@@ -170,15 +182,16 @@ type VersionState struct {
 }
 
 type PluginState struct {
-	ID              string                  `json:"id"`
-	Tier            TrustTier               `json:"tier"`
-	LatestVersion   string                  `json:"latestVersion"`
-	Versions        []VersionMeta           `json:"versions"`
-	BlockedVersions []BlockedVersion        `json:"blockedVersions,omitempty"`
-	Removed         *time.Time              `json:"removed,omitempty"`
-	RemovalReason   string                  `json:"removalReason,omitempty"`
-	RemovedBy       string                  `json:"removedBy,omitempty"`
-	VersionStates   map[string]VersionState `json:"versionStates,omitempty"`
+	ID                    string                  `json:"id"`
+	Tier                  TrustTier               `json:"tier"`
+	LatestVersion         string                  `json:"latestVersion"`
+	Versions              []VersionMeta           `json:"versions"`
+	BlockedVersions       []BlockedVersion        `json:"blockedVersions,omitempty"`
+	CompatibilityCeilings []CompatibilityCeiling  `json:"compatibilityCeilings,omitempty"`
+	Removed               *time.Time              `json:"removed,omitempty"`
+	RemovalReason         string                  `json:"removalReason,omitempty"`
+	RemovedBy             string                  `json:"removedBy,omitempty"`
+	VersionStates         map[string]VersionState `json:"versionStates,omitempty"`
 }
 
 type PluginTombstone struct {

@@ -98,6 +98,8 @@ func (s *Server) routes() chi.Router {
 		api.With(s.requireSessionRejectOIDC).Delete("/plugins/{pluginId}", s.handleRemovePlugin)
 		api.With(s.requireSessionOrPublishOIDC).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
+		api.With(s.requireSessionRejectOIDC).Put("/plugins/{pluginId}/versions/{version}/compatibility-ceiling", s.handleSetCompatibilityCeiling)
+		api.With(s.requireSessionRejectOIDC).Delete("/plugins/{pluginId}/versions/{version}/compatibility-ceiling", s.handleClearCompatibilityCeiling)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
 		api.With(s.requireSessionRejectOIDC).Post("/index/rebuild", s.handleRebuildIndex)
 
