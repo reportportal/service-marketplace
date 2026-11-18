@@ -1,6 +1,6 @@
 # service-marketplace — agent instructions
 
-Go 1.25 service: the ReportPortal plugin registry. It serves the public read API, the operator console, publish, lifecycle (block, remove, tier), and licensing. The API contract is `docs/openapi/service-marketplace-v1.yaml`.
+Go 1.26 service: the ReportPortal plugin registry. It serves the public read API, the operator console, publish, lifecycle (block, remove, tier), and licensing. The API contract is `docs/openapi/service-marketplace-v1.yaml`.
 
 ## Checks
 
