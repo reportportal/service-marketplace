@@ -5,6 +5,7 @@ on:
     branches: [develop, main]
     paths-ignore:
       - '.github/**'
+      - '.cursor/**'
       - README.md
       - actions/**
       - docs/**
@@ -12,6 +13,7 @@ on:
     branches: [develop, main]
     paths-ignore:
       - '.github/**'
+      - '.cursor/**'
       - README.md
       - actions/**
       - docs/**
@@ -31,23 +33,11 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Format
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "gofmt needed on:"; echo "$unformatted"; exit 1
-          fi
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
-      - name: Vet
-        run: go vet ./...
-
-      # -race, because a torn (data, generation) read in LocalStore was a real
-      # bug here and a plain `go test` cannot see its return.
-      - name: Test
-        run: go test -race ./...
-
-      - name: Build
-        run: go build -o bin/marketplace ./cmd/marketplace
+      - name: Check
+        run: bash scripts/check.sh
 
       - name: Docker build
         run: docker build -t service-marketplace:ci .
