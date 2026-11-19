@@ -17,6 +17,8 @@ If the story needs no code change in this repository, say so and do not edit.
 
 Each acceptance criterion maps to a test. An OpenAPI change updates `docs/openapi/service-marketplace-v1.yaml`, `internal/httpapi/wire_contract_test.go`, and `internal/openapispec/` in the same change.
 
+Go changes follow `.cursor/skills/go/SKILL.md`. Package layout and handler test helpers are in `.cursor/skills/marketplace-developer/SKILL.md`.
+
 Before you finish, run this from the repository root:
 
 ```bash

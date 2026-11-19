@@ -1,6 +1,6 @@
 # service-marketplace — agent instructions
 
-Go 1.26 service: the ReportPortal plugin registry. It serves the public read API, the operator console, publish, lifecycle (block, remove, tier), and licensing. The API contract is `docs/openapi/service-marketplace-v1.yaml`.
+Go 1.27 service: the ReportPortal plugin registry. It serves the public read API, the operator console, publish, lifecycle (block, remove, tier), and licensing. The API contract is `docs/openapi/service-marketplace-v1.yaml`.
 
 ## Checks
 
@@ -32,3 +32,4 @@ Run `bash scripts/check.sh` before you finish. It runs `gofmt`, `go vet`, `go te
 
 - Story implementation: `.cursor/skills/marketplace-story/SKILL.md`
 - Code layout and test helpers: `.cursor/skills/marketplace-developer/SKILL.md`
+- Go style, errors, context, and tests: `.cursor/skills/go/SKILL.md`

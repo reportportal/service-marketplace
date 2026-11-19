@@ -1,6 +1,6 @@
 module github.com/reportportal/service-marketplace
 
-go 1.26.1
+go 1.27.4
 
 require (
 	cloud.google.com/go/storage v1.56.0

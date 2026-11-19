@@ -5,6 +5,8 @@ description: Explains where behaviour lives in service-marketplace and how its G
 
 # service-marketplace developer reference
 
+Go style, errors, context, concurrency, and test shape: `.cursor/skills/go/SKILL.md`.
+
 ## Where behaviour lives
 
 - Routes and handlers: `internal/httpapi/router.go` and `handlers_*.go`. Errors go through `errors.go` and the `ErrorResponse` envelope. Its `code` enum must match the OpenAPI spec.
