@@ -68,6 +68,8 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 
 ## Configuration
 
+Env configuration for GCS, Cloud CDN, and auth (description and example for each variable this process reads, and a separate retired env vars section): [internal/config/env-configuration.md](internal/config/env-configuration.md).
+
 | Variable | Description |
 | ---------- | ------------- |
 | `STORAGE_TYPE` | `local` or `gcs` |
