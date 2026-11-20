@@ -103,8 +103,8 @@ func TestCeilingReasonLengthCountsCharacters(t *testing.T) {
 func TestCeilingAuthorRangeMessages(t *testing.T) {
 	ctx := context.Background()
 	for _, tt := range []struct{ name, author, wantSub string }{
-		{"caret", "^25.1", "not supported for a ceiling"},
-		{"space AND", ">=25.1 <27.5", "op version[, op version]"},
+		{"caret", "^25.1", `own range "^25.1" can't take a ceiling`},
+		{"space AND", ">=25.1 <27.5", `own range ">=25.1 <27.5" can't take a ceiling`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			life, m := publishWithRange(t, tt.author)
@@ -119,7 +119,7 @@ func TestCeilingAuthorRangeMessages(t *testing.T) {
 
 func TestCeilingViolationEmptyAuthorRange(t *testing.T) {
 	var fv FieldViolation
-	if !errors.As(ceilingViolation(domain.ErrNoAuthorRange), &fv) || !strings.Contains(fv.Message, "no author compatibility range") {
+	if !errors.As(ceilingViolation(domain.ErrNoAuthorRange, ""), &fv) || !strings.Contains(fv.Message, "no author compatibility range") {
 		t.Fatalf("violation = %v", fv)
 	}
 }
