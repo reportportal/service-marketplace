@@ -564,6 +564,11 @@ paths:
         A bound whose intersection with the author's range is empty is rejected: stopping
         a version on every release is a block. Replacing a ceiling updates the stored bound.
         The jar stays downloadable.
+
+        Validation failures return `422 VALIDATION_ERROR`: an empty intersection, a bound that
+        does not match the pattern, an author range the registry cannot intersect (it must be
+        `op version[, op version]` with ops `>=`, `>`, `<=`, `<`, `=`), and a missing or
+        over-long reason. `400` is only for malformed JSON.
       operationId: setCompatibilityCeiling
       parameters:
         - $ref: '#/components/parameters/PluginId'
@@ -589,6 +594,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '415':
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
@@ -621,6 +628,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
