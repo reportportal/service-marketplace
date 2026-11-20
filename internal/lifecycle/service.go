@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/reportportal/service-marketplace/internal/cdn"
 	"github.com/reportportal/service-marketplace/internal/domain"
@@ -147,7 +149,7 @@ func (s *Service) SetCompatibilityCeiling(ctx context.Context, pluginID, version
 	if reason == "" {
 		return nil, FieldViolation{Field: "reason", Message: "required"}
 	}
-	if len(reason) > maxCeilingReasonLen {
+	if utf8.RuneCountInString(reason) > maxCeilingReasonLen {
 		return nil, FieldViolation{Field: "reason", Message: "must be at most 2000 characters"}
 	}
 	now := time.Now().UTC()
@@ -176,11 +178,11 @@ func (s *Service) SetCompatibilityCeiling(ctx context.Context, pluginID, version
 			return nil, ErrNotFound
 		}
 		if _, err := domain.EffectiveReportPortalRange(author, bound); err != nil {
-			return nil, ceilingViolation(err)
+			return nil, ceilingViolation(err, author)
 		}
 		canonical, err := domain.CanonicalCeiling(bound)
 		if err != nil {
-			return nil, ceilingViolation(err)
+			return nil, ceilingViolation(err, author)
 		}
 		stored = domain.CompatibilityCeiling{
 			Version:      version,
@@ -275,14 +277,16 @@ func (s *Service) ClearCompatibilityCeiling(ctx context.Context, pluginID, versi
 	return nil
 }
 
-func ceilingViolation(err error) error {
+func ceilingViolation(err error, author string) error {
 	switch {
 	case errors.Is(err, domain.ErrInvalidCeilingBound):
 		return FieldViolation{Field: "reportportal", Message: "must be a single upper bound, < or <= a ReportPortal CalVer such as <27.0"}
 	case errors.Is(err, domain.ErrEmptyCeilingIntersection):
 		return FieldViolation{Field: "reportportal", Message: "ceiling leaves no ReportPortal release inside the author's range; block the version instead"}
-	case errors.Is(err, domain.ErrUnreadableAuthorRange):
+	case errors.Is(err, domain.ErrNoAuthorRange):
 		return FieldViolation{Field: "reportportal", Message: "version has no author compatibility range to intersect"}
+	case errors.Is(err, domain.ErrUnreadableAuthorRange):
+		return FieldViolation{Field: "reportportal", Message: fmt.Sprintf("this version's own range %q can't take a ceiling; a ceiling needs a range written like \">=25.1, <27.0\" (operators >=, >, <=, <, =)", author)}
 	default:
 		return err
 	}
