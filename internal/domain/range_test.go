@@ -31,8 +31,10 @@ func TestEffectiveReportPortalRange(t *testing.T) {
 		{name: "major only", author: ">=25.1", ceiling: "<27", err: ErrInvalidCeilingBound},
 		{name: "two bounds", author: ">=25.1", ceiling: "<27.0, <28.0", err: ErrInvalidCeilingBound},
 		{name: "prerelease ceiling", author: ">=25.1", ceiling: "<27.0.0-rc.1", err: ErrInvalidCeilingBound},
-		{name: "missing author range", ceiling: "<27.0", err: ErrUnreadableAuthorRange},
+		{name: "missing author range", ceiling: "<27.0", err: ErrNoAuthorRange},
 		{name: "unreadable author range", author: "25.1 - 26.0", ceiling: "<27.0", err: ErrUnreadableAuthorRange},
+		{name: "caret author range", author: "^25.1", ceiling: "<27.0", err: ErrUnreadableAuthorRange},
+		{name: "space-AND author range", author: ">=25.1 <27.0", ceiling: "<27.0", err: ErrUnreadableAuthorRange},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -50,5 +52,14 @@ func TestEffectiveReportPortalRange(t *testing.T) {
 				t.Fatalf("EffectiveReportPortalRange(%q, %q) = %q, want %q", tt.author, tt.ceiling, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCanonicalCeilingSpacing(t *testing.T) {
+	if got, err := CanonicalCeiling("  <=27.0 "); err != nil || got != "<=27.0" {
+		t.Fatalf("CanonicalCeiling trimmed = %q, %v", got, err)
+	}
+	if _, err := CanonicalCeiling("< 27.0"); !errors.Is(err, ErrInvalidCeilingBound) {
+		t.Fatalf("CanonicalCeiling with inner space err = %v, want ErrInvalidCeilingBound", err)
 	}
 }

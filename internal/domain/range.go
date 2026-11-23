@@ -13,8 +13,10 @@ var (
 	// ErrEmptyCeilingIntersection means the ceiling excludes every release the
 	// author's range still allows. That outcome is a block, not a ceiling.
 	ErrEmptyCeilingIntersection = errors.New("empty compatibility ceiling intersection")
-	// ErrUnreadableAuthorRange means the published range cannot be intersected,
-	// so a ceiling must not be stored against it.
+	// ErrNoAuthorRange means the version published no compatibility.reportportal range.
+	ErrNoAuthorRange = errors.New("no author compatibility range")
+	// ErrUnreadableAuthorRange means the published range is present but not in the
+	// comma-separated comparator form, so a ceiling must not be stored against it.
 	ErrUnreadableAuthorRange = errors.New("unreadable author compatibility range")
 )
 
@@ -46,7 +48,8 @@ func FindCeiling(ceilings []CompatibilityCeiling, version string) (Compatibility
 }
 
 // CanonicalCeiling reports the stored spelling of an operator bound (`<27.0`,
-// `<=27.0`). Spacing is dropped. Anything that is not a single upper bound is rejected.
+// `<=27.0`). Surrounding whitespace is trimmed; space after the operator (`< 27.0`)
+// is rejected. Anything that is not a single upper bound is rejected.
 func CanonicalCeiling(raw string) (string, error) {
 	c, err := parseCeiling(raw)
 	if err != nil {
@@ -64,7 +67,7 @@ func EffectiveReportPortalRange(author, ceiling string) (string, error) {
 		return author, nil
 	}
 	if strings.TrimSpace(author) == "" {
-		return "", ErrUnreadableAuthorRange
+		return "", ErrNoAuthorRange
 	}
 	ceil, err := parseCeiling(ceiling)
 	if err != nil {
