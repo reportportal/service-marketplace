@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -39,6 +40,9 @@ type Deps struct {
 type Server struct {
 	deps   Deps
 	router chi.Router
+	// proxyHopsWarning logs once that a login arrived through a proxy while
+	// TRUSTED_PROXY_HOPS is 0.
+	proxyHopsWarning sync.Once
 }
 
 func NewServer(deps Deps) *Server {

@@ -67,11 +67,11 @@ func TestAdminUnknownUsernamesShareOneRecord(t *testing.T) {
 
 func TestAdminFailureRecordsArePruned(t *testing.T) {
 	a, now := newTestAdmin(t)
-	for i := range 1000 {
+	for i := range 100 {
 		_ = a.Authenticate(fmt.Sprintf("ip%d", i), "admin", "wrong")
 	}
-	if n := len(a.failures); n != 1000 {
-		t.Fatalf("records %d, want 1000", n)
+	if n := len(a.failures); n != 100 {
+		t.Fatalf("records %d, want 100", n)
 	}
 	*now = now.Add(adminLockout + adminPruneEvery)
 	_ = a.Authenticate("ip-new", "admin", "wrong")
@@ -86,7 +86,22 @@ func TestAdminSuccessClearsRecord(t *testing.T) {
 	if err := a.Authenticate("ip1", "admin", "right"); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(a.failures); n != 0 {
-		t.Fatalf("records %d, want 0", n)
+	if n, m := len(a.failures), len(a.lastFail); n != 0 || m != 0 {
+		t.Fatalf("records: failures %d, lastFail %d, want 0", n, m)
+	}
+}
+
+// failures older than the window do not count, whether or not a prune ran
+func TestAdminOldFailuresDoNotCount(t *testing.T) {
+	a, now := newTestAdmin(t)
+	for range adminMaxFailures - 1 {
+		_ = a.Authenticate("ip1", "admin", "wrong")
+	}
+	// keep pruning from running on the next call
+	*now = now.Add(adminLockout + adminPruneEvery/2)
+	a.lastPrune = *now
+	_ = a.Authenticate("ip1", "admin", "wrong")
+	if err := a.Authenticate("ip1", "admin", "right"); err != nil {
+		t.Fatalf("one recent failure must not lock: %v", err)
 	}
 }

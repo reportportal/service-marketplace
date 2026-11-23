@@ -59,11 +59,12 @@ func (a *AdminAuthenticator) Authenticate(clientKey, username, password string) 
 	defer a.mu.Unlock()
 	now := a.now()
 	a.pruneLocked(now)
-	if a.failures[key] >= adminMaxFailures {
-		if now.Sub(a.lastFail[key]) < adminLockout {
-			return ErrTooManyAttempts
-		}
-		a.failures[key] = 0
+	if now.Sub(a.lastFail[key]) >= adminLockout {
+		// nothing within the window: a pending prune would drop it anyway
+		delete(a.failures, key)
+		delete(a.lastFail, key)
+	} else if a.failures[key] >= adminMaxFailures {
+		return ErrTooManyAttempts
 	}
 	if username != a.Username {
 		a.recordFailure(key, now)

@@ -75,3 +75,33 @@ func TestForgedForwardedProtoDoesNotMarkCookieSecureWithoutTrustedProxy(t *testi
 		t.Fatalf("expected ensureXSRF to set an XSRF-TOKEN cookie, got Set-Cookie headers: %v", rec.Result().Header.Values("Set-Cookie"))
 	}
 }
+
+func TestClientIPBehindTrustedProxies(t *testing.T) {
+	tests := []struct {
+		name string
+		hops int
+		xff  []string
+		want string
+	}{
+		{"no proxy trusted, header ignored", 0, []string{"198.51.100.1"}, "203.0.113.7"},
+		{"one hop, client-supplied prefix ignored", 1, []string{"6.6.6.6, 198.51.100.1"}, "198.51.100.1"},
+		{"one hop, proxy adds its own header line", 1, []string{"6.6.6.6", "198.51.100.1"}, "198.51.100.1"},
+		{"two hops", 2, []string{"6.6.6.6, 198.51.100.1, 10.0.0.9"}, "198.51.100.1"},
+		{"fewer entries than hops falls back to the peer", 2, []string{"6.6.6.6"}, "203.0.113.7"},
+		{"entry that is not an IP falls back to the peer", 1, []string{"not-an-ip"}, "203.0.113.7"},
+		{"entry with a port falls back to the peer", 1, []string{"198.51.100.1:55"}, "203.0.113.7"},
+		{"no header falls back to the peer", 1, nil, "203.0.113.7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", nil)
+			r.RemoteAddr = "203.0.113.7:4444"
+			for _, v := range tt.xff {
+				r.Header.Add("X-Forwarded-For", v)
+			}
+			if got := clientIP(r, tt.hops); got != tt.want {
+				t.Fatalf("clientIP = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
