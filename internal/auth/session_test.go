@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,17 +279,53 @@ func TestPublishOIDCVerifierRemoteJWKS(t *testing.T) {
 	}
 
 	t.Run("verifies against fetched keys", func(t *testing.T) {
+		var hits atomic.Int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(body)
 		}))
 		defer srv.Close()
-		_, pid, err := newVerifier(srv.URL).Verify(context.Background(), signOIDC(t, key, claims()))
-		if err != nil {
-			t.Fatal(err)
+		v := newVerifier(srv.URL)
+		for range 5 {
+			_, pid, err := v.Verify(context.Background(), signOIDC(t, key, claims()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pid != "plugin-jira" {
+				t.Fatalf("plugin id %q", pid)
+			}
 		}
-		if pid != "plugin-jira" {
-			t.Fatalf("plugin id %q", pid)
+		// a ready set is served from the cache, not refetched per request
+		if n := hits.Load(); n > 2 {
+			t.Fatalf("upstream hits %d, want at most 2", n)
+		}
+	})
+
+	// the refetch is not tied to the request that started it
+	t.Run("a request that gives up does not cancel the refetch for others", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(300 * time.Millisecond)
+			_, _ = w.Write(body)
+		}))
+		defer srv.Close()
+		v := newVerifier(srv.URL)
+		token := signOIDC(t, key, claims())
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			_, _, _ = v.Verify(ctx, token)
+		})
+		time.Sleep(50 * time.Millisecond)
+		var err error
+		wg.Go(func() {
+			_, _, err = v.Verify(context.Background(), token)
+		})
+		wg.Wait()
+		if err != nil {
+			t.Fatalf("second request: %v", err)
 		}
 	})
 
@@ -301,6 +339,138 @@ func TestPublishOIDCVerifierRemoteJWKS(t *testing.T) {
 		_, _, err := newVerifier(srv.URL).Verify(ctx, signOIDC(t, key, claims()))
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("expected ErrUnauthorized, got %v", err)
+		}
+	})
+
+	// The cache's own retry after a failed first fetch waits 15 minutes, so
+	// the next request has to refetch.
+	t.Run("recovers on the next request after a failed first fetch", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if hits.Add(1) == 1 {
+				http.Error(w, "down", http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(body)
+		}))
+		defer srv.Close()
+		v := newVerifier(srv.URL)
+		v.retryBackoff = time.Nanosecond
+		token := signOIDC(t, key, claims())
+
+		// the first call may or may not see the failed fetch, depending on
+		// whether the background fetch or the request's refetch goes first
+		_, _, _ = v.Verify(context.Background(), token)
+		_, pid, err := v.Verify(context.Background(), token)
+		if err != nil {
+			t.Fatalf("second verify: %v (upstream hits %d)", err, hits.Load())
+		}
+		if pid != "plugin-jira" {
+			t.Fatalf("plugin id %q", pid)
+		}
+	})
+
+	t.Run("refetches of an unready set are rate-limited", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			http.Error(w, "down", http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		v := newVerifier(srv.URL)
+		token := signOIDC(t, key, claims())
+
+		for i := range 5 {
+			start := time.Now()
+			_, _, err := v.Verify(context.Background(), token)
+			if !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("call %d: expected ErrUnauthorized, got %v", i, err)
+			}
+			if i > 0 && time.Since(start) > time.Second {
+				t.Fatalf("call %d took %v; inside the backoff it should fail at once", i, time.Since(start))
+			}
+		}
+		// the background first fetch plus one request-driven refetch
+		if n := hits.Load(); n > 2 {
+			t.Fatalf("upstream hits %d, want at most 2", n)
+		}
+	})
+
+	// requests that arrive during a refetch share it rather than queueing
+	// a fetch each
+	t.Run("concurrent requests share one refetch", func(t *testing.T) {
+		var hits atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			time.Sleep(300 * time.Millisecond)
+			_, _ = w.Write(body)
+		}))
+		defer srv.Close()
+		v := newVerifier(srv.URL)
+		token := signOIDC(t, key, claims())
+
+		var wg sync.WaitGroup
+		errs := make([]error, 5)
+		for i := range errs {
+			wg.Go(func() {
+				time.Sleep(time.Duration(i) * 40 * time.Millisecond)
+				_, _, errs[i] = v.Verify(context.Background(), token)
+			})
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("call %d: %v", i, err)
+			}
+		}
+		// the background first fetch plus one shared refetch
+		if n := hits.Load(); n > 2 {
+			t.Fatalf("upstream hits %d, want at most 2", n)
+		}
+	})
+
+	// a hung endpoint must not hold a request past its own deadline, even
+	// while an earlier request with a longer deadline is still waiting
+	t.Run("a hung endpoint does not hold requests past their deadline", func(t *testing.T) {
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+		defer srv.Close()
+		defer close(release)
+		v := newVerifier(srv.URL)
+		token := signOIDC(t, key, claims())
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, _, _ = v.Verify(ctx, token)
+		})
+		time.Sleep(50 * time.Millisecond)
+		took := make([]time.Duration, 3)
+		errs := make([]error, 3)
+		for i := range took {
+			wg.Go(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				defer cancel()
+				start := time.Now()
+				_, _, errs[i] = v.Verify(ctx, token)
+				took[i] = time.Since(start)
+			})
+		}
+		wg.Wait()
+		for i := range took {
+			// took is read after wg.Wait, which also waits for the 2s caller
+			if !errors.Is(errs[i], ErrUnauthorized) {
+				t.Fatalf("call %d: expected ErrUnauthorized, got %v", i, errs[i])
+			}
+			if took[i] > time.Second {
+				t.Fatalf("call %d took %v with a 200ms deadline", i, took[i])
+			}
 		}
 	})
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
+	"github.com/lestrrat-go/httprc/v3/errsink"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
@@ -233,11 +235,35 @@ type PublishOIDCVerifier struct {
 	cache    *jwkfetch.Cache
 	cacheErr error
 	once     sync.Once
+
+	// refetchMu guards refetches: the refetch in flight per URL and when
+	// the last one failed.
+	refetchMu sync.Mutex
+	refetches map[string]*jwksRefetchState
+	// retryBackoff overrides jwksRetryBackoff when non-zero (tests).
+	retryBackoff time.Duration
 }
 
-// jwksReadyTimeout bounds how long a request waits for the first fetch of a
-// JWKS endpoint. The cache keeps retrying in the background after it expires.
+type jwksRefetchState struct {
+	inflight *jwksRefetch
+	failedAt time.Time
+}
+
+// jwksRefetch is one refetch of a key set; done closes when it finishes.
+type jwksRefetch struct {
+	done chan struct{}
+	err  error
+}
+
+// jwksReadyTimeout bounds how long a request waits for a JWKS fetch.
 const jwksReadyTimeout = 10 * time.Second
+
+// jwksRetryBackoff is how long after a failed refetch requests fail at once
+// instead of refetching. The cache's own retry after a failed first fetch
+// comes only after the 15-minute minimum interval, so requests drive the
+// retry, and this gap stops callers without a valid token from driving
+// fetches faster.
+const jwksRetryBackoff = 5 * time.Second
 
 func (v *PublishOIDCVerifier) githubJWKS() string {
 	if v.JWKSURL != "" {
@@ -255,14 +281,26 @@ func (v *PublishOIDCVerifier) gitLabJWKS() string {
 
 func (v *PublishOIDCVerifier) ensureCache() error {
 	v.once.Do(func() {
-		cache, err := jwkfetch.NewCache(context.Background(), httprc.NewClient())
+		client := httprc.NewClient(httprc.WithErrorSink(errsink.NewFunc(
+			func(_ context.Context, err error) {
+				log.Printf("WARNING publish oidc: jwks fetch: %v", err)
+			})))
+		// jwkfetch's default transport ignores HTTP(S)_PROXY; use the
+		// standard one, as the other outbound clients here do.
+		transport := http.DefaultTransport
+		if t, ok := transport.(*http.Transport); ok {
+			transport = t.Clone()
+		}
+		httpClient := jwkfetch.WrapHTTPClientDefaults(&http.Client{Transport: transport})
+		cache, err := jwkfetch.NewCache(context.Background(), client,
+			jwkfetch.WithHTTPClient(httpClient))
 		if err != nil {
 			v.cacheErr = err
 			return
 		}
 		// WithWaitReady(false): registering must not block or fail on a cold
-		// or unreachable JWKS endpoint. cachedKeySet waits under the request
-		// context instead, and the cache keeps retrying in the background.
+		// or unreachable JWKS endpoint. cachedKeySet fetches under the
+		// request context instead.
 		urls := []string{v.githubJWKS()}
 		if v.GitLabIssuer != "" && v.GitLabKeySet == nil {
 			urls = append(urls, v.gitLabJWKS())
@@ -281,18 +319,96 @@ func (v *PublishOIDCVerifier) ensureCache() error {
 	return v.cacheErr
 }
 
-// cachedKeySet returns the cached key set for url, waiting for the first
-// fetch under ctx. It fails closed: an unready or unregistered set is an error.
+// cachedKeySet returns the cached key set for url. While the set is not
+// ready (the first fetch is pending or failed), the request starts a
+// refetch or joins the one in flight, and waits for it under ctx. After a
+// failed refetch, requests fail at once for jwksRetryBackoff. It fails
+// closed: an unready set is an error.
 func (v *PublishOIDCVerifier) cachedKeySet(ctx context.Context, url string) (jwk.Set, error) {
 	if err := v.ensureCache(); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, jwksReadyTimeout)
-	defer cancel()
-	if !v.cache.Ready(ctx, url) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if set, err := v.readyKeySet(ctx, url); set != nil || err != nil {
+		return set, err
+	}
+
+	f, err := v.startRefetch(url)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case <-f.done:
+		if f.err != nil {
+			return nil, f.err
+		}
+		if set, err := v.readyKeySet(ctx, url); set != nil || err != nil {
+			return set, err
+		}
+		return nil, fmt.Errorf("jwks %s not ready", url)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// readyKeySet returns the key set for url, or nil while it is not fetched.
+func (v *PublishOIDCVerifier) readyKeySet(ctx context.Context, url string) (jwk.Set, error) {
+	r, err := v.cache.LookupResource(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	return r.Resource(), nil
+}
+
+// startRefetch returns the refetch in flight for url, starting one if none
+// is running and the last one did not fail within the backoff.
+func (v *PublishOIDCVerifier) startRefetch(url string) (*jwksRefetch, error) {
+	v.refetchMu.Lock()
+	defer v.refetchMu.Unlock()
+	if v.refetches == nil {
+		v.refetches = map[string]*jwksRefetchState{}
+	}
+	st := v.refetches[url]
+	if st == nil {
+		st = &jwksRefetchState{}
+		v.refetches[url] = st
+	}
+	if st.inflight != nil {
+		return st.inflight, nil
+	}
+	backoff := v.retryBackoff
+	if backoff == 0 {
+		backoff = jwksRetryBackoff
+	}
+	if time.Since(st.failedAt) < backoff {
 		return nil, fmt.Errorf("jwks %s not ready", url)
 	}
-	return v.cache.Lookup(ctx, url)
+	f := &jwksRefetch{done: make(chan struct{})}
+	st.inflight = f
+	go v.refetch(url, st, f)
+	return f, nil
+}
+
+// refetch runs detached from any request, so a caller that gives up does
+// not cancel it for the others waiting on it.
+func (v *PublishOIDCVerifier) refetch(url string, st *jwksRefetchState, f *jwksRefetch) {
+	ctx, cancel := context.WithTimeout(context.Background(), jwksReadyTimeout)
+	defer cancel()
+	_, err := v.cache.Refresh(ctx, url)
+	if err != nil {
+		log.Printf("WARNING publish oidc: jwks refetch: %v", err)
+	}
+
+	v.refetchMu.Lock()
+	st.inflight = nil
+	if err != nil {
+		st.failedAt = time.Now()
+	}
+	v.refetchMu.Unlock()
+	f.err = err
+	close(f.done)
 }
 
 // keySetForIssuer picks the key set from the unverified iss claim. The
