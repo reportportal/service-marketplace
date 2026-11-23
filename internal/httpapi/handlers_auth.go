@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "username", Message: "required"}}})
 		return
 	}
+	s.warnUntrustedProxy(r)
 	if err := s.deps.AdminAuth.Authenticate(clientIP(r, s.deps.Config.TrustedProxyHops), req.Username, req.Password); err != nil {
 		if errors.Is(err, auth.ErrTooManyAttempts) {
 			writeError(w, &APIError{Status: http.StatusTooManyRequests, Code: CodeTooManyRequests, Message: "Too many login attempts for this username"})
@@ -190,4 +192,19 @@ func (s *Server) handleRotateLicenseKey(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, res)
+}
+
+// warnUntrustedProxy logs once when a login carries X-Forwarded-For while
+// TRUSTED_PROXY_HOPS is 0. Behind a proxy that setting keys every client's
+// login attempts on the proxy's address, so five wrong passwords from anyone
+// lock the admin out for everyone.
+func (s *Server) warnUntrustedProxy(r *http.Request) {
+	if s.deps.Config.TrustedProxyHops > 0 || r.Header.Get("X-Forwarded-For") == "" {
+		return
+	}
+	s.proxyHopsWarning.Do(func() {
+		log.Printf("WARNING admin login: request carries X-Forwarded-For but TRUSTED_PROXY_HOPS=0, " +
+			"so the login rate limit keys on the proxy address and is shared by all clients; " +
+			"set TRUSTED_PROXY_HOPS to the number of X-Forwarded-For entries the trusted proxies append")
+	})
 }
