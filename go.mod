@@ -5,7 +5,6 @@ go 1.27.4
 require (
 	cloud.google.com/go/storage v1.56.0
 	github.com/go-chi/chi/v5 v5.3.0
-	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/jwx/v2 v2.1.1
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.62.0
@@ -35,6 +34,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-json v0.10.3 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
 	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.2 // indirect
