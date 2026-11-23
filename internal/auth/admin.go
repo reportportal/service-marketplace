@@ -10,6 +10,14 @@ import (
 
 var ErrTooManyAttempts = errors.New("too many attempts")
 
+const (
+	adminMaxFailures = 5
+	adminLockout     = 15 * time.Minute
+	// adminPruneEvery is how often failure records older than adminLockout
+	// are dropped, so the records do not grow without bound.
+	adminPruneEvery = time.Minute
+)
+
 type AdminAuthenticator struct {
 	Enabled      bool
 	Username     string
@@ -17,6 +25,8 @@ type AdminAuthenticator struct {
 	mu           sync.Mutex
 	failures     map[string]int
 	lastFail     map[string]time.Time
+	lastPrune    time.Time
+	now          func() time.Time // tests
 }
 
 func NewAdminAuthenticator(enabled bool, username, passwordHash string) *AdminAuthenticator {
@@ -26,6 +36,7 @@ func NewAdminAuthenticator(enabled bool, username, passwordHash string) *AdminAu
 		PasswordHash: passwordHash,
 		failures:     map[string]int{},
 		lastFail:     map[string]time.Time{},
+		now:          time.Now,
 	}
 }
 
@@ -37,28 +48,52 @@ func (a *AdminAuthenticator) Authenticate(clientKey, username, password string) 
 	if !a.Configured() {
 		return ErrForbidden
 	}
-	key := clientKey + "|" + username
+	// Unknown usernames share one record per client, so varying the username
+	// neither resets the limit nor adds records.
+	bucket := ""
+	if username == a.Username {
+		bucket = username
+	}
+	key := clientKey + "|" + bucket
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.failures[key] >= 5 {
-		if time.Since(a.lastFail[key]) < 15*time.Minute {
+	now := a.now()
+	a.pruneLocked(now)
+	if a.failures[key] >= adminMaxFailures {
+		if now.Sub(a.lastFail[key]) < adminLockout {
 			return ErrTooManyAttempts
 		}
 		a.failures[key] = 0
 	}
 	if username != a.Username {
-		a.recordFailure(key)
+		a.recordFailure(key, now)
 		return ErrUnauthorized
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(a.PasswordHash), []byte(password)); err != nil {
-		a.recordFailure(key)
+		a.recordFailure(key, now)
 		return ErrUnauthorized
 	}
-	a.failures[key] = 0
+	delete(a.failures, key)
+	delete(a.lastFail, key)
 	return nil
 }
 
-func (a *AdminAuthenticator) recordFailure(key string) {
+func (a *AdminAuthenticator) recordFailure(key string, now time.Time) {
 	a.failures[key]++
-	a.lastFail[key] = time.Now()
+	a.lastFail[key] = now
+}
+
+// pruneLocked drops records whose last failure is older than adminLockout:
+// they would no longer block anything.
+func (a *AdminAuthenticator) pruneLocked(now time.Time) {
+	if now.Sub(a.lastPrune) < adminPruneEvery {
+		return
+	}
+	a.lastPrune = now
+	for key, at := range a.lastFail {
+		if now.Sub(at) >= adminLockout {
+			delete(a.failures, key)
+			delete(a.lastFail, key)
+		}
+	}
 }

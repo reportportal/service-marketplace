@@ -54,7 +54,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// No middleware.RealIP: it copies True-Client-IP, X-Real-IP or
+	// X-Forwarded-For into RemoteAddr with no proxy check, so a client could
+	// pick its own login rate-limit key. clientIP honours X-Forwarded-For
+	// only when TRUSTED_PROXY_HOPS says a proxy is in front.
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(120 * time.Second))
 	r.Use(s.ensureXSRF)
