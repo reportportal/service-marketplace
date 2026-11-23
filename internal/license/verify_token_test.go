@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/reportportal/service-marketplace/internal/auth"
 )
@@ -39,7 +39,7 @@ func signLicenseJWT(t *testing.T, privB64, customerID, pluginID string, exp time
 	if err != nil {
 		t.Fatalf("build license token: %v", err)
 	}
-	signed, err := jwt.Sign(built, jwt.WithKey(jwa.EdDSA, ed25519.PrivateKey(raw)))
+	signed, err := jwt.Sign(built, jwt.WithKey(jwa.EdDSA(), ed25519.PrivateKey(raw)))
 	if err != nil {
 		t.Fatalf("sign license token: %v", err)
 	}

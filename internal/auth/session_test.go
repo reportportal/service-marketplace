@@ -4,12 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/reportportal/service-marketplace/internal/storage"
 	"github.com/reportportal/service-marketplace/internal/storage/storagetest"
 )
@@ -72,12 +76,12 @@ func TestPublishOIDCVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := jwk.FromRaw(priv)
+	key, err := jwk.Import[jwk.Key](priv)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = key.Set(jwk.KeyIDKey, "test-key")
-	_ = key.Set(jwk.AlgorithmKey, jwa.RS256)
+	_ = key.Set(jwk.AlgorithmKey, jwa.RS256())
 	pub, err := key.PublicKey()
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +107,7 @@ func TestPublishOIDCVerifier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, key))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), key))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,18 +245,90 @@ func TestPublishOIDCVerifierGitLab(t *testing.T) {
 	})
 }
 
+// TestPublishOIDCVerifierRemoteJWKS covers the cached JWKS fetch path that the
+// offline KeySet tests skip.
+func TestPublishOIDCVerifierRemoteJWKS(t *testing.T) {
+	key := newTestRSAKey(t, "remote-key")
+	pub, err := key.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := jwk.NewSet()
+	_ = set.AddKey(pub)
+	body, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := func() *jwt.Builder {
+		return jwt.NewBuilder().
+			Issuer(GitHubActionsIssuer).
+			Subject("repo:reportportal/plugin-jira:ref:refs/heads/main").
+			Audience([]string{"marketplace"}).
+			Claim("repository", "reportportal/plugin-jira").
+			Expiration(time.Now().Add(time.Hour)).
+			IssuedAt(time.Now())
+	}
+	newVerifier := func(url string) *PublishOIDCVerifier {
+		return &PublishOIDCVerifier{
+			Audience:       "marketplace",
+			AllowedSources: map[string]string{"reportportal/plugin-jira": "plugin-jira"},
+			JWKSURL:        url,
+		}
+	}
+
+	t.Run("verifies against fetched keys", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+		}))
+		defer srv.Close()
+		_, pid, err := newVerifier(srv.URL).Verify(context.Background(), signOIDC(t, key, claims()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pid != "plugin-jira" {
+			t.Fatalf("plugin id %q", pid)
+		}
+	})
+
+	t.Run("unreachable JWKS fails closed", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "down", http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		_, _, err := newVerifier(srv.URL).Verify(ctx, signOIDC(t, key, claims()))
+		if !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("expected ErrUnauthorized, got %v", err)
+		}
+	})
+
+	t.Run("token signed with a different key is rejected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(body)
+		}))
+		defer srv.Close()
+		other := newTestRSAKey(t, "remote-key") // same kid, different key material
+		_, _, err := newVerifier(srv.URL).Verify(context.Background(), signOIDC(t, other, claims()))
+		if !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("expected ErrUnauthorized, got %v", err)
+		}
+	})
+}
+
 func newTestRSAKey(t *testing.T, kid string) jwk.Key {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := jwk.FromRaw(priv)
+	key, err := jwk.Import[jwk.Key](priv)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = key.Set(jwk.KeyIDKey, kid)
-	_ = key.Set(jwk.AlgorithmKey, jwa.RS256)
+	_ = key.Set(jwk.AlgorithmKey, jwa.RS256())
 	return key
 }
 
@@ -262,7 +338,7 @@ func signOIDC(t *testing.T, key jwk.Key, b *jwt.Builder) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, key))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), key))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/reportportal/service-marketplace/internal/analytics"
@@ -156,12 +156,12 @@ func generateRSAJWK(t *testing.T) jwk.Key {
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
 	}
-	key, err := jwk.FromRaw(priv)
+	key, err := jwk.Import[jwk.Key](priv)
 	if err != nil {
-		t.Fatalf("jwk.FromRaw: %v", err)
+		t.Fatalf("jwk.Import: %v", err)
 	}
 	_ = key.Set(jwk.KeyIDKey, "test-key")
-	_ = key.Set(jwk.AlgorithmKey, jwa.RS256)
+	_ = key.Set(jwk.AlgorithmKey, jwa.RS256())
 	return key
 }
 
@@ -232,7 +232,7 @@ func (e *testEnv) expiredSessionToken() string {
 	if err != nil {
 		e.t.Fatalf("build expired token: %v", err)
 	}
-	signed, err := jwt.Sign(built, jwt.WithKey(jwa.HS256, []byte(testSessionSecret)))
+	signed, err := jwt.Sign(built, jwt.WithKey(jwa.HS256(), []byte(testSessionSecret)))
 	if err != nil {
 		e.t.Fatalf("sign expired token: %v", err)
 	}
@@ -254,7 +254,7 @@ func (e *testEnv) oidcToken(repo string) string {
 	if err != nil {
 		e.t.Fatalf("build oidc token: %v", err)
 	}
-	signed, err := jwt.Sign(built, jwt.WithKey(jwa.RS256, e.oidcKey))
+	signed, err := jwt.Sign(built, jwt.WithKey(jwa.RS256(), e.oidcKey))
 	if err != nil {
 		e.t.Fatalf("sign oidc token: %v", err)
 	}
@@ -276,7 +276,7 @@ func (e *testEnv) gitlabOIDCToken(project string) string {
 	if err != nil {
 		e.t.Fatalf("build gitlab oidc token: %v", err)
 	}
-	signed, err := jwt.Sign(built, jwt.WithKey(jwa.RS256, e.gitlabKey))
+	signed, err := jwt.Sign(built, jwt.WithKey(jwa.RS256(), e.gitlabKey))
 	if err != nil {
 		e.t.Fatalf("sign gitlab oidc token: %v", err)
 	}

@@ -14,9 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/jwx-go/jwkfetch/v4"
+	"github.com/lestrrat-go/httprc/v3"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 )
 
 var ErrGitHubUnavailable = errors.New("github oauth unavailable")
@@ -228,9 +230,14 @@ type PublishOIDCVerifier struct {
 	// GitLabKeySet, when set, verifies GitLab tokens offline (tests).
 	GitLabKeySet jwk.Set
 
-	cache *jwk.Cache
-	once  sync.Once
+	cache    *jwkfetch.Cache
+	cacheErr error
+	once     sync.Once
 }
+
+// jwksReadyTimeout bounds how long a request waits for the first fetch of a
+// JWKS endpoint. The cache keeps retrying in the background after it expires.
+const jwksReadyTimeout = 10 * time.Second
 
 func (v *PublishOIDCVerifier) githubJWKS() string {
 	if v.JWKSURL != "" {
@@ -246,14 +253,46 @@ func (v *PublishOIDCVerifier) gitLabJWKS() string {
 	return strings.TrimRight(v.GitLabIssuer, "/") + gitLabJWKSPath
 }
 
-func (v *PublishOIDCVerifier) ensureCache() {
+func (v *PublishOIDCVerifier) ensureCache() error {
 	v.once.Do(func() {
-		v.cache = jwk.NewCache(context.Background())
-		_ = v.cache.Register(v.githubJWKS(), jwk.WithMinRefreshInterval(15*time.Minute))
-		if v.GitLabIssuer != "" && v.GitLabKeySet == nil {
-			_ = v.cache.Register(v.gitLabJWKS(), jwk.WithMinRefreshInterval(15*time.Minute))
+		cache, err := jwkfetch.NewCache(context.Background(), httprc.NewClient())
+		if err != nil {
+			v.cacheErr = err
+			return
 		}
+		// WithWaitReady(false): registering must not block or fail on a cold
+		// or unreachable JWKS endpoint. cachedKeySet waits under the request
+		// context instead, and the cache keeps retrying in the background.
+		urls := []string{v.githubJWKS()}
+		if v.GitLabIssuer != "" && v.GitLabKeySet == nil {
+			urls = append(urls, v.gitLabJWKS())
+		}
+		for _, u := range urls {
+			if err := cache.Register(context.Background(), u,
+				jwkfetch.WithMinInterval(15*time.Minute),
+				jwkfetch.WithWaitReady(false),
+			); err != nil {
+				v.cacheErr = err
+				return
+			}
+		}
+		v.cache = cache
 	})
+	return v.cacheErr
+}
+
+// cachedKeySet returns the cached key set for url, waiting for the first
+// fetch under ctx. It fails closed: an unready or unregistered set is an error.
+func (v *PublishOIDCVerifier) cachedKeySet(ctx context.Context, url string) (jwk.Set, error) {
+	if err := v.ensureCache(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, jwksReadyTimeout)
+	defer cancel()
+	if !v.cache.Ready(ctx, url) {
+		return nil, fmt.Errorf("jwks %s not ready", url)
+	}
+	return v.cache.Lookup(ctx, url)
 }
 
 // keySetForIssuer picks the key set from the unverified iss claim. The
@@ -265,8 +304,7 @@ func (v *PublishOIDCVerifier) keySetForIssuer(ctx context.Context, iss string) (
 		if v.KeySet != nil {
 			return v.KeySet, oidcIssuerGitHub, nil
 		}
-		v.ensureCache()
-		set, err := v.cache.Get(ctx, v.githubJWKS())
+		set, err := v.cachedKeySet(ctx, v.githubJWKS())
 		if err != nil {
 			return nil, 0, err
 		}
@@ -275,8 +313,7 @@ func (v *PublishOIDCVerifier) keySetForIssuer(ctx context.Context, iss string) (
 		if v.GitLabKeySet != nil {
 			return v.GitLabKeySet, oidcIssuerGitLab, nil
 		}
-		v.ensureCache()
-		set, err := v.cache.Get(ctx, v.gitLabJWKS())
+		set, err := v.cachedKeySet(ctx, v.gitLabJWKS())
 		if err != nil {
 			return nil, 0, err
 		}
@@ -287,18 +324,19 @@ func (v *PublishOIDCVerifier) keySetForIssuer(ctx context.Context, iss string) (
 }
 
 func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject, pluginID string, err error) {
-	unverified, err := jwt.Parse([]byte(token), jwt.WithVerify(false), jwt.WithValidate(false))
+	unverified, err := jwt.ParseInsecure([]byte(token))
 	if err != nil {
 		return "", "", ErrUnauthorized
 	}
-	set, kind, err := v.keySetForIssuer(ctx, unverified.Issuer())
+	iss, _ := unverified.Issuer()
+	set, kind, err := v.keySetForIssuer(ctx, iss)
 	if err != nil {
 		return "", "", ErrUnauthorized
 	}
 	parsed, err := jwt.Parse([]byte(token),
 		jwt.WithKeySet(set),
 		jwt.WithValidate(true),
-		jwt.WithIssuer(unverified.Issuer()),
+		jwt.WithIssuer(iss),
 	)
 	if err != nil {
 		return "", "", ErrUnauthorized
@@ -306,7 +344,7 @@ func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject
 	if v.Audience == "" {
 		return "", "", ErrUnauthorized
 	}
-	aud := parsed.Audience()
+	aud, _ := parsed.Audience()
 	okAud := false
 	for _, a := range aud {
 		if a == v.Audience {
@@ -325,23 +363,26 @@ func (v *PublishOIDCVerifier) Verify(ctx context.Context, token string) (subject
 	if !ok {
 		return "", "", ErrForbidden
 	}
-	return parsed.Subject(), pid, nil
+	sub, _ := parsed.Subject()
+	return sub, pid, nil
 }
 
 func sourceID(kind oidcIssuerKind, parsed jwt.Token) string {
 	switch kind {
 	case oidcIssuerGitHub:
-		repoClaim, _ := parsed.Get("repository")
+		repoClaim, _ := parsed.Field("repository")
 		repo, _ := repoClaim.(string)
 		if repo == "" {
-			repo = extractRepo(parsed.Subject())
+			sub, _ := parsed.Subject()
+			repo = extractRepo(sub)
 		}
 		return repo
 	case oidcIssuerGitLab:
-		pathClaim, _ := parsed.Get("project_path")
+		pathClaim, _ := parsed.Field("project_path")
 		path, _ := pathClaim.(string)
 		if path == "" {
-			path = extractGitLabProject(parsed.Subject())
+			sub, _ := parsed.Subject()
+			path = extractGitLabProject(sub)
 		}
 		return path
 	default:
@@ -381,11 +422,11 @@ type LicenseClaims struct {
 // deliberately skipped here so an elapsed token is reported by VerifyLicenseJWT,
 // which checks it against a real signature, rather than by this lookup.
 func PeekUnverifiedCustomerID(token string) (string, error) {
-	parsed, err := jwt.Parse([]byte(token), jwt.WithVerify(false), jwt.WithValidate(false))
+	parsed, err := jwt.ParseInsecure([]byte(token))
 	if err != nil {
 		return "", ErrUnauthorized
 	}
-	cid, _ := parsed.Get("customerId")
+	cid, _ := parsed.Field("customerId")
 	customerID, _ := cid.(string)
 	if customerID == "" {
 		return "", ErrUnauthorized
@@ -406,14 +447,14 @@ func VerifyLicenseJWT(token string, publicKeys []string) (*LicenseClaims, error)
 			continue
 		}
 		pub := ed25519.PublicKey(raw)
-		key, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.EdDSA, pub))
+		key, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.EdDSA(), pub))
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		cid, _ := key.Get("customerId")
-		pid, _ := key.Get("pluginId")
-		exp := key.Expiration()
+		cid, _ := key.Field("customerId")
+		pid, _ := key.Field("pluginId")
+		exp, _ := key.Expiration()
 		customerID, _ := cid.(string)
 		pluginID, _ := pid.(string)
 		if customerID == "" || pluginID == "" {
