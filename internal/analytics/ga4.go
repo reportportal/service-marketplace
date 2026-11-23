@@ -7,8 +7,7 @@ import (
 	"log"
 	"net/http"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // Result values for plugin_artifact_request (FR-R-08).
@@ -36,7 +35,7 @@ func (c *GA4Client) TrackArtifactRequest(ctx context.Context, pluginID, version,
 		return
 	}
 	if clientID == "" {
-		clientID = uuid.NewString()
+		clientID = uuid.New().String()
 	}
 	go func() {
 		payload := map[string]any{
