@@ -51,6 +51,15 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"CompatibilityCeiling", domain.CompatibilityCeiling{Version: "1.0.0", ReportPortal: "<27.0", Reason: "RP 27.0 removes ExtensionPoint X", SetAt: now, SetBy: "operator@example.com"}},
 		{"SecurityAdvisory", domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "text", AttachedAt: now}},
 		{"PluginTombstone", domain.PluginTombstone{Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
+		{"RemovedPluginListItem", domain.RemovedPlugin{ID: "p", Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
+		{"RemovedPluginListResponse", RemovedPluginListResponse{Plugins: []domain.RemovedPlugin{
+			{ID: "p", Removed: now, RemovalReason: "reason", RemovedBy: "operator"},
+		}}},
+		{"PluginErased", domain.PluginErased{ID: "p", Erased: now, ErasedBy: "operator", RemovalReason: "reason"}},
+		{"PluginRestoredResponse", PluginRestoredResponse{ID: "p", Restored: now, RestoredBy: "operator"}},
+		{"PluginRemovedError", PluginRemovedErrorResponse{
+			Code: CodeGone, Message: "removed", Removed: now, RemovalReason: "reason", RemovedBy: "operator",
+		}},
 		{"PluginListItem", domain.IndexPlugin{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
 			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,

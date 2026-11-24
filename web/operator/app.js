@@ -244,6 +244,7 @@ function closePluginDetail() {
 async function openPluginDetail(plugin) {
   selectedPlugin = plugin;
   hideActionForms();
+  resetRemoveForm();
   document.getElementById('detail-error').textContent = '';
   setAlert('detail-success', '', false);
   hideBox('detail-result-box');
@@ -421,6 +422,11 @@ function setActiveTab(tabName) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.add('hidden'));
   document.getElementById('tab-' + tabName).classList.remove('hidden');
   if (tabName === 'licenses') loadLicenses();
+  if (tabName === 'removed') {
+    document.getElementById('removed-error').textContent = '';
+    setAlert('removed-success', '', false);
+    loadRemoved();
+  }
 }
 
 async function init() {
@@ -679,33 +685,57 @@ async function init() {
     }
   });
 
+  document.querySelectorAll('input[name="remove-mode"]').forEach((r) => r.addEventListener('change', syncRemoveMode));
+  syncRemoveMode();
+
   document.getElementById('remove-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const errEl = document.getElementById('detail-error');
     const submitBtn = e.target.querySelector('button[type="submit"]');
     errEl.textContent = '';
     if (!selectedPlugin) return;
+    const erase = removeMode() === 'erase';
+    const idleLabel = erase ? 'Erase plugin' : 'Remove plugin';
     const reason = document.getElementById('removal-reason').value.trim();
-    const ok = window.confirm(
-      `Remove plugin "${selectedPlugin.id}" permanently?\n\nThis hard-deletes artifacts and cannot be undone.`,
-    );
-    if (!ok) return;
-    setBusy(submitBtn, true, 'Removing…', 'Remove plugin');
+    const removedId = selectedPlugin.id;
+
+    if (erase) {
+      if (!confirmErase(removedId)) {
+        errEl.textContent = 'The plugin id did not match, so nothing was erased.';
+        return;
+      }
+    } else if (
+      !window.confirm(
+        `Remove plugin "${removedId}" permanently?\n\nThis hard-deletes every version and cannot be undone. ` +
+          'The id stays closed until you restore it.',
+      )
+    ) {
+      return;
+    }
+
+    setBusy(submitBtn, true, erase ? 'Erasing…' : 'Removing…', idleLabel);
     try {
-      const res = await api(`/plugins/${encodeURIComponent(selectedPlugin.id)}`, {
-        method: 'DELETE',
-        body: { removalReason: reason },
-      });
-      document.getElementById('removal-reason').value = '';
+      const body = erase ? { leaveTombstone: false } : { removalReason: reason };
+      if (erase && reason) body.removalReason = reason;
+      const res = await api(`/plugins/${encodeURIComponent(removedId)}`, { method: 'DELETE', body });
+      resetRemoveForm();
       closePluginDetail();
       await loadPlugins();
-      setAlert('publish-success', `Plugin removed: ${res.pluginId || ''}`.trim(), true);
+      setAlert(
+        'publish-success',
+        erase
+          ? `Plugin erased: ${removedId}. The id is free; its repository can publish to it again.`
+          : `Plugin removed: ${removedId}. It is listed under the Removed tab.`,
+        true,
+      );
       document.getElementById('publish-result').textContent = JSON.stringify(res, null, 2);
       showBox('publish-result-box', false);
     } catch (err) {
       errEl.textContent = formatApiError(err);
     } finally {
-      setBusy(submitBtn, false, 'Removing…', 'Remove plugin');
+      setBusy(submitBtn, false, erase ? 'Erasing…' : 'Removing…', idleLabel);
+      // the form may have been reset to the other mode while the request ran; label follows it
+      syncRemoveMode();
     }
   });
 
@@ -781,6 +811,132 @@ async function loadPlugins() {
     li.appendChild(actions);
     list.appendChild(li);
   });
+}
+
+function formatRemovedAt(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso ?? '') : d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+}
+
+function removeMode() {
+  return document.querySelector('input[name="remove-mode"]:checked')?.value || 'tombstone';
+}
+
+// The reason is what a 410 tells the world, so it is only required when a tombstone carries it.
+function syncRemoveMode() {
+  const erase = removeMode() === 'erase';
+  document.getElementById('removal-reason').required = !erase;
+  document.getElementById('removal-reason-note').textContent = erase ? '(optional, only kept in the service log)' : '';
+  document.getElementById('remove-submit').textContent = erase ? 'Erase plugin' : 'Remove plugin';
+}
+
+function resetRemoveForm() {
+  const tombstone = document.querySelector('input[name="remove-mode"][value="tombstone"]');
+  if (tombstone) tombstone.checked = true;
+  document.getElementById('removal-reason').value = '';
+  syncRemoveMode();
+}
+
+// Erasing leaves no tombstone and no way back, so the id has to be typed.
+function confirmErase(id) {
+  const typed = window.prompt(
+    `Erase "${id}" completely?\n\nEvery version and the plugin record are deleted and nothing is kept: ` +
+      'the id becomes free and the plugin cannot be restored.\n\nType the plugin id to confirm.',
+  );
+  return typed !== null && typed.trim() === id;
+}
+
+async function erasePluginRecord(plugin) {
+  const errEl = document.getElementById('removed-error');
+  errEl.textContent = '';
+  setAlert('removed-success', '', false);
+  if (!confirmErase(plugin.id)) {
+    errEl.textContent = 'The plugin id did not match, so nothing was erased.';
+    return;
+  }
+  try {
+    const res = await api(`/plugins/${encodeURIComponent(plugin.id)}`, {
+      method: 'DELETE',
+      body: { leaveTombstone: false },
+    });
+    setAlert('removed-success', `Erased ${res.id}. The id is free; its repository can publish to it again.`, true);
+    await loadRemoved();
+  } catch (err) {
+    errEl.textContent = formatApiError(err);
+    if (err?.status === 404) {
+      errEl.textContent += '\nThe list was out of date and has been refreshed.';
+      await loadRemoved().catch(() => {});
+    }
+  }
+}
+
+async function restorePlugin(plugin) {
+  const errEl = document.getElementById('removed-error');
+  errEl.textContent = '';
+  setAlert('removed-success', '', false);
+  const ok = window.confirm(
+    `Restore plugin id "${plugin.id}"?\n\nThis reopens the id so its repository can publish again. ` +
+      'The versions deleted by the removal are not recovered.',
+  );
+  if (!ok) return;
+  try {
+    const res = await api(`/plugins/${encodeURIComponent(plugin.id)}/restore`, { method: 'POST' });
+    setAlert('removed-success', `Restored ${res.id}. It will appear in the catalogue after its next publish.`, true);
+    await loadRemoved();
+  } catch (err) {
+    errEl.textContent = formatApiError(err);
+    // 409/404: somebody already restored or erased it. Refresh so the stale row goes, and say so
+    // rather than letting it vanish without a word.
+    if (err?.status === 409 || err?.status === 404) {
+      errEl.textContent += '\nThe list was out of date and has been refreshed.';
+      await loadRemoved().catch(() => {});
+    }
+  }
+}
+
+async function loadRemoved() {
+  const errEl = document.getElementById('removed-error');
+  const list = document.getElementById('removed-list');
+  const empty = document.getElementById('removed-empty');
+  try {
+    const data = await api('/removed-plugins');
+    const plugins = data.plugins || [];
+    list.innerHTML = '';
+    empty.classList.toggle('hidden', plugins.length > 0);
+    list.classList.toggle('hidden', plugins.length === 0);
+
+    plugins.forEach((p) => {
+      const li = document.createElement('li');
+      const meta = document.createElement('div');
+      meta.className = 'plugin-meta';
+      meta.innerHTML =
+        `<strong>${escapeHtml(p.id)}</strong>${badgeHtml('removed', 'neutral')}<br>` +
+        `<small>${escapeHtml(formatRemovedAt(p.removed))} · by ${escapeHtml(p.removedBy)}</small><br>` +
+        `<small>Reason: ${escapeHtml(p.removalReason)}</small>`;
+
+      const actions = document.createElement('div');
+      actions.className = 'row-actions';
+      const restoreBtn = document.createElement('button');
+      restoreBtn.type = 'button';
+      restoreBtn.className = 'btn btn-ghost';
+      restoreBtn.textContent = 'Restore';
+      restoreBtn.addEventListener('click', () => restorePlugin(p));
+      const eraseBtn = document.createElement('button');
+      eraseBtn.type = 'button';
+      eraseBtn.className = 'btn btn-danger';
+      eraseBtn.textContent = 'Erase';
+      eraseBtn.title = 'Delete the tombstone too: the id becomes free, as if never used';
+      eraseBtn.addEventListener('click', () => erasePluginRecord(p));
+      actions.appendChild(restoreBtn);
+      actions.appendChild(eraseBtn);
+
+      li.appendChild(meta);
+      li.appendChild(actions);
+      list.appendChild(li);
+    });
+  } catch (err) {
+    errEl.textContent = formatApiError(err);
+  }
 }
 
 async function loadLicenses() {

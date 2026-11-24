@@ -33,7 +33,8 @@ const (
 	// policySessionOnlyRejectOIDC: s.requireSessionRejectOIDC — every
 	// operator route AMD-02-oidc-token-scope names as scoped OUT of GitHub
 	// OIDC tokens: POST /api/v1/plugins, PATCH /api/v1/plugins/{pluginId},
-	// DELETE /api/v1/plugins/{pluginId},
+	// DELETE /api/v1/plugins/{pluginId}, POST /api/v1/plugins/{pluginId}/restore,
+	// GET /api/v1/removed-plugins,
 	// POST .../versions/{version}/block,
 	// PUT and DELETE .../versions/{version}/compatibility-ceiling,
 	// POST .../versions/{version}/advisory, POST /api/v1/index/rebuild,
@@ -79,6 +80,12 @@ var authzMatrix = []routeCase{
 	{http.MethodGet, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policyPublic},
 	{http.MethodPatch, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnlyRejectOIDC},
 	{http.MethodDelete, "/api/v1/plugins/{pluginId}", "/api/v1/plugins/" + testOIDCPluginID, policySessionOnlyRejectOIDC},
+	// Lifting a removal is the one thing a plugin's own publish token must never do: removal exists
+	// to stop that pipeline, so the same pipeline reopening the id would make it decorative.
+	{http.MethodPost, "/api/v1/plugins/{pluginId}/restore", "/api/v1/plugins/" + testOIDCPluginID + "/restore", policySessionOnlyRejectOIDC},
+	// Not public like the catalogue: the index leaves removed plugins out on purpose, and this list
+	// is the only place their ids can be enumerated.
+	{http.MethodGet, "/api/v1/removed-plugins", "/api/v1/removed-plugins", policySessionOnlyRejectOIDC},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions", "/api/v1/plugins/" + testOIDCPluginID + "/versions", policyPublic},
 	{http.MethodPost, "/api/v1/plugins/{pluginId}/versions", "/api/v1/plugins/" + testOIDCPluginID + "/versions", policyOIDCVersionScoped},
 	{http.MethodGet, "/api/v1/plugins/{pluginId}/versions/{version}", "/api/v1/plugins/" + testOIDCPluginID + "/versions/1.0.0", policyPublic},

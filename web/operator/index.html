@@ -44,6 +44,7 @@
       <nav class="console-nav" aria-label="Operator sections">
         <div class="tab-list" role="tablist">
           <button type="button" data-tab="plugins" class="tab-btn active" role="tab" aria-selected="true">Plugins</button>
+          <button type="button" data-tab="removed" class="tab-btn" role="tab" aria-selected="false">Removed</button>
           <button type="button" data-tab="licenses" class="tab-btn" role="tab" aria-selected="false">Licenses</button>
         </div>
         <div class="nav-actions">
@@ -206,17 +207,49 @@
 
           <div id="remove-form-wrap" class="action-panel danger-panel">
             <h3>Remove plugin</h3>
-            <p class="panel-help">Irreversible: tombstones the plugin, hard-deletes artifacts, and returns 410 to clients.</p>
+            <p class="panel-help">Deletes every version and jar of the plugin for good, premium ones included. Choose what stays behind.</p>
             <form id="remove-form">
+              <fieldset class="publish-mode">
+                <legend>After removal</legend>
+                <label class="choice">
+                  <input type="radio" name="remove-mode" value="tombstone" checked>
+                  <span class="choice-body">
+                    <span class="choice-title">Leave a tombstone</span>
+                    <span class="choice-hint">The id stays closed: clients get 410 Gone with your reason, and nobody can publish to it until you restore it. For legal, abuse or security removals.</span>
+                  </span>
+                </label>
+                <label class="choice">
+                  <input type="radio" name="remove-mode" value="erase">
+                  <span class="choice-body">
+                    <span class="choice-title">Erase completely</span>
+                    <span class="choice-hint">Nothing is kept. The id is free again (404) and its repository can publish to it right away. For dev clean-up and renames.</span>
+                  </span>
+                </label>
+              </fieldset>
               <label class="field">
-                <span class="field-label">Removal reason</span>
+                <span class="field-label">Removal reason <span id="removal-reason-note" class="muted"></span></span>
                 <textarea id="removal-reason" required maxlength="2000" rows="3"></textarea>
               </label>
               <div class="form-actions">
-                <button type="submit" class="btn btn-danger">Remove plugin</button>
+                <button type="submit" id="remove-submit" class="btn btn-danger">Remove plugin</button>
               </div>
             </form>
           </div>
+        </div>
+      </div>
+
+      <div id="tab-removed" class="tab hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Removed plugins</h2>
+          </div>
+          <p class="panel-help">Plugins removed with a tombstone. Their ids are closed: publishing to one answers 410 Gone. Restore reopens an id so its allow-listed repository can publish again; the deleted versions are not recovered. Erase deletes the tombstone too, so the id is free as if it had never been used.</p>
+          <p id="removed-success" class="alert alert-success hidden"></p>
+          <p id="removed-error" class="alert alert-error"></p>
+          <div id="removed-empty" class="empty-state hidden">
+            <p>No removed plugins.</p>
+          </div>
+          <ul id="removed-list" class="list"></ul>
         </div>
       </div>
 

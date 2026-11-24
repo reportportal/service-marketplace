@@ -178,6 +178,29 @@ type BlockedArtifactErrorResponse struct {
 	Reason    string    `json:"reason"`
 }
 
+// PluginRemovedErrorResponse — 410 body of the publish routes when the target id was removed.
+// allOf(ErrorResponse, PluginTombstone): the standard envelope, so a log reader gets a message,
+// plus the tombstone fields the read routes serve, so a client that already parses those can.
+type PluginRemovedErrorResponse struct {
+	Code          ErrorCode `json:"code"`
+	Message       string    `json:"message"`
+	Removed       time.Time `json:"removed"`
+	RemovalReason string    `json:"removalReason"`
+	RemovedBy     string    `json:"removedBy"`
+}
+
+// RemovedPluginListResponse — GET /api/v1/removed-plugins
+type RemovedPluginListResponse struct {
+	Plugins []domain.RemovedPlugin `json:"plugins"`
+}
+
+// PluginRestoredResponse — POST /api/v1/plugins/{pluginId}/restore
+type PluginRestoredResponse struct {
+	ID         string    `json:"id"`
+	Restored   time.Time `json:"restored"`
+	RestoredBy string    `json:"restoredBy"`
+}
+
 // PluginOperatorStateResponse — PATCH /api/v1/plugins/{pluginId}
 type PluginOperatorStateResponse struct {
 	ID              string                  `json:"id"`
