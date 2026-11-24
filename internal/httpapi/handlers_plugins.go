@@ -374,7 +374,7 @@ func mapPublishErr(err error) error {
 	if errors.As(err, &removed) {
 		msg := "Plugin " + removed.PluginID + " was removed from the registry on " +
 			removed.Tombstone.Removed.Format(time.RFC3339) + " by " + removed.Tombstone.RemovedBy +
-			" (reason: " + removed.Tombstone.RemovalReason + "). Its id cannot be published to until an operator restores it"
+			" (reason: " + removed.Tombstone.RemovalReason + "). Its id cannot be published to until an operator restores it or erases it"
 		return &APIError{
 			Status:  http.StatusGone,
 			Code:    CodeGone,
@@ -442,29 +442,49 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		RemovalReason string `json:"removalReason"`
+		// LeaveTombstone is a pointer so an absent field means true, the behaviour every client
+		// written before this option existed relies on.
+		LeaveTombstone *bool `json:"leaveTombstone"`
 	}
 	if err := jsonDecode(r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
-	if strings.TrimSpace(req.RemovalReason) == "" {
+	reason := strings.TrimSpace(req.RemovalReason)
+	operator := operatorIdentity(r.Context())
+
+	if req.LeaveTombstone != nil && !*req.LeaveTombstone {
+		erased, err := s.deps.Lifecycle.ErasePlugin(r.Context(), pluginID, reason, operator)
+		if err != nil {
+			writeError(w, mapRemoveErr(err))
+			return
+		}
+		writeJSON(w, http.StatusOK, erased)
+		return
+	}
+
+	// The reason is what a 410 tells the world, so it is required exactly when there is a
+	// tombstone to carry it.
+	if reason == "" {
 		writeError(w, &APIError{Status: http.StatusUnprocessableEntity, Code: CodeValidation, Message: "Validation failed", Errors: []FieldError{{Field: "removalReason", Message: "required"}}})
 		return
 	}
-	tomb, err := s.deps.Lifecycle.RemovePlugin(r.Context(), pluginID, req.RemovalReason, operatorIdentity(r.Context()))
+	tomb, err := s.deps.Lifecycle.RemovePlugin(r.Context(), pluginID, req.RemovalReason, operator)
 	if err != nil {
-		if errors.Is(err, lifecycle.ErrNotFound) {
-			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"})
-			return
-		}
-		if errors.Is(err, lifecycle.ErrConflict) {
-			writeError(w, &APIError{Status: http.StatusConflict, Code: CodeConflict, Message: "Plugin already removed"})
-			return
-		}
-		writeError(w, mapStorageErr(err))
+		writeError(w, mapRemoveErr(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, tomb)
+}
+
+func mapRemoveErr(err error) error {
+	if errors.Is(err, lifecycle.ErrNotFound) {
+		return &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"}
+	}
+	if errors.Is(err, lifecycle.ErrConflict) {
+		return &APIError{Status: http.StatusConflict, Code: CodeConflict, Message: "Plugin already removed"}
+	}
+	return mapStorageErr(err)
 }
 
 // handleRestorePlugin lifts a removal: operator session only, never an OIDC publish token. A token

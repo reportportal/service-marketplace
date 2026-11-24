@@ -201,6 +201,16 @@ type RemovedPlugin struct {
 	RemovedBy     string    `json:"removedBy"`
 }
 
+// PluginErased is the outcome of erasing a plugin without a tombstone. Nothing of the plugin is
+// left in the registry, so this response is the only record the caller gets; RemovalReason is
+// whatever the operator chose to say, and may be empty.
+type PluginErased struct {
+	ID            string    `json:"id"`
+	Erased        time.Time `json:"erased"`
+	ErasedBy      string    `json:"erasedBy"`
+	RemovalReason string    `json:"removalReason,omitempty"`
+}
+
 // PluginRestored is the outcome of lifting a removal.
 type PluginRestored struct {
 	ID         string    `json:"id"`

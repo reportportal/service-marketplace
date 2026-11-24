@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,19 @@ type Service struct {
 	Store       storage.ObjectStore
 	Invalidator cdn.Invalidator
 	Publisher   *publish.Service
+	// Logger receives the audit lines for removal, erasure and restore. Nil means log.Default().
+	Logger *log.Logger
+}
+
+// audit writes one line per destructive or reversing operator action. There is no audit log yet
+// (FR-OP-08 is deferred) and an erased plugin leaves no tombstone behind, so this line is the only
+// record of who removed what, when, and why; it is deliberately a single greppable line.
+func (s *Service) audit(format string, args ...any) {
+	logger := s.Logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	logger.Printf("audit: "+format, args...)
 }
 
 func (s *Service) loadPlugin(ctx context.Context, pluginID string) (*domain.PluginState, error) {
@@ -132,6 +146,11 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 	now := time.Now().UTC()
 	tomb := domain.PluginTombstone{Removed: now, RemovalReason: reason, RemovedBy: removedBy}
 	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
+		// WriteWithRetry hands over no data for an object that does not exist; decoding that
+		// would surface as a 500 for what is simply an unknown id.
+		if len(data) == 0 {
+			return nil, ErrNotFound
+		}
 		var st domain.PluginState
 		if err := json.Unmarshal(data, &st); err != nil {
 			return nil, err
@@ -148,17 +167,99 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 		return nil, err
 	}
 
-	files, _ := s.Store.ListPrefix(ctx, storage.PluginPrefix(pluginID))
-	for _, f := range files {
-		if strings.HasSuffix(f, "plugin.json") {
-			continue
-		}
-		_ = s.Store.Delete(ctx, f)
+	// A failure here is reported, not swallowed: the tombstone is already written, so answering
+	// 200 over a jar that is still on storage would claim a removal that did not finish. The
+	// tombstone is what makes the retry possible — erasing the plugin (ErasePlugin) finishes the job.
+	if err := s.deletePluginObjects(ctx, pluginID, true); err != nil {
+		return nil, err
 	}
 
 	_ = s.Publisher.RebuildIndex(ctx)
-	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PathIndex, "/" + storage.PluginStatePath(pluginID)})
+	_ = s.Invalidator.Invalidate(ctx, pluginInvalidationPaths(pluginID))
+	s.audit("plugin %q removed with tombstone by %q, reason %q", pluginID, removedBy, reason)
 	return &tomb, nil
+}
+
+// ErasePlugin removes a plugin and leaves nothing behind: every object, plugin.json included, so
+// the id is as free as one that was never used. Reads answer 404 rather than 410, and the
+// plugin's allow-listed repository can publish to the id again at once.
+//
+// It is the counterpart of RemovePlugin for the cases the tombstone is wrong for — clearing out a
+// dev registry, retiring an id after a rename. What the tombstone buys (clients told "removed",
+// the id held closed) is exactly what those cases do not want and legal or abuse removals do, so
+// that is the operator's call, per removal.
+//
+// It also works on a plugin that is already removed. That is the point: a tombstoned id is
+// otherwise unusable, and Restore keeps the tombstone's history where this does not.
+//
+// The reason is optional here: with no tombstone there is no public payload to carry it. It is
+// still written to the audit line when given.
+func (s *Service) ErasePlugin(ctx context.Context, pluginID, reason, erasedBy string) (*domain.PluginErased, error) {
+	obj, err := s.Store.Read(ctx, storage.PluginStatePath(pluginID))
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	// Only for the audit line. A plugin.json that no longer decodes is a reason to erase the
+	// plugin, not to refuse to.
+	var prev domain.PluginState
+	_ = json.Unmarshal(obj.Data, &prev)
+
+	// plugin.json goes last: if anything fails part-way the plugin is still listed by its state
+	// and the operator can simply run the erase again, rather than being left with orphaned
+	// jars under an id the registry no longer knows about.
+	if err := s.deletePluginObjects(ctx, pluginID, false); err != nil {
+		return nil, err
+	}
+
+	_ = s.Publisher.RebuildIndex(ctx)
+	_ = s.Invalidator.Invalidate(ctx, pluginInvalidationPaths(pluginID))
+
+	now := time.Now().UTC()
+	prevState := "live"
+	if prev.Removed != nil {
+		prevState = "removed at " + prev.Removed.Format(time.RFC3339) + " by " + prev.RemovedBy
+	}
+	s.audit("plugin %q erased without tombstone by %q (was %s), reason %q", pluginID, erasedBy, prevState, reason)
+	return &domain.PluginErased{ID: pluginID, Erased: now, ErasedBy: erasedBy, RemovalReason: reason}, nil
+}
+
+// deletePluginObjects deletes every object belonging to a plugin: its public tree and its private
+// one (premium jars, in their own bucket in production). plugin.json is kept when keepState is
+// set — that is the tombstone — and otherwise deleted last.
+func (s *Service) deletePluginObjects(ctx context.Context, pluginID string, keepState bool) error {
+	var files []string
+	for _, prefix := range []string{storage.PluginPrefix(pluginID), storage.PrivatePluginPrefix(pluginID)} {
+		found, err := s.Store.ListPrefix(ctx, prefix)
+		if err != nil {
+			return err
+		}
+		files = append(files, found...)
+	}
+
+	state := storage.PluginStatePath(pluginID)
+	for _, f := range files {
+		if strings.TrimPrefix(f, "/") == state {
+			continue
+		}
+		if err := s.Store.Delete(ctx, f); err != nil {
+			return err
+		}
+	}
+	if !keepState {
+		return s.Store.Delete(ctx, state)
+	}
+	return nil
+}
+
+// pluginInvalidationPaths is everything a CDN may still hold for a plugin after its objects are
+// gone: the listing, and the whole subtree — manifests, jars, changelogs, screenshots, advisories
+// and plugin.json. Invalidating only plugin.json would leave a removed plugin's jar downloadable
+// from the edge until it expired.
+func pluginInvalidationPaths(pluginID string) []string {
+	return []string{"/" + storage.PathIndex, "/plugins/" + pluginID + "/*"}
 }
 
 // RestorePlugin lifts a removal, so the id can be published to again.
@@ -204,6 +305,7 @@ func (s *Service) RestorePlugin(ctx context.Context, pluginID, restoredBy string
 	// The index never listed a removed plugin and a restored one has no version to list, so it is
 	// unchanged; only the state document a CDN may still be serving as a tombstone is stale.
 	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PluginStatePath(pluginID)})
+	s.audit("plugin %q restored by %q", pluginID, restoredBy)
 	return &domain.PluginRestored{ID: pluginID, Restored: now, RestoredBy: restoredBy}, nil
 }
 

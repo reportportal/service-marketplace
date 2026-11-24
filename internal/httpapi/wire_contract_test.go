@@ -54,6 +54,7 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"RemovedPluginListResponse", RemovedPluginListResponse{Plugins: []domain.RemovedPlugin{
 			{ID: "p", Removed: now, RemovalReason: "reason", RemovedBy: "operator"},
 		}}},
+		{"PluginErased", domain.PluginErased{ID: "p", Erased: now, ErasedBy: "operator", RemovalReason: "reason"}},
 		{"PluginRestoredResponse", PluginRestoredResponse{ID: "p", Restored: now, RestoredBy: "operator"}},
 		{"PluginRemovedError", PluginRemovedErrorResponse{
 			Code: CodeGone, Message: "removed", Removed: now, RemovalReason: "reason", RemovedBy: "operator",

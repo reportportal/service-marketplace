@@ -231,14 +231,24 @@ paths:
         - Operator — Plugins
       summary: Remove a plugin entirely
       description: |
-        Irreversible removal (FR-OP-04). Requires `removalReason` in the request body.
-        Operator identity from the auth token is recorded as `removedBy`. Hard-deletes all
-        version artifacts from storage and writes a tombstone for subsequent `410` responses.
+        Irreversible removal (FR-OP-04). Hard-deletes every object of the plugin — public versions
+        and premium jars alike — and purges the CDN for the whole plugin. The artifacts are gone
+        for good either way. What is left behind is the operator's choice, `leaveTombstone`:
 
-        The artifacts are gone for good. The id stays reserved by the tombstone — reads and
-        publishes to it answer `410` — until an operator lifts the removal with
-        `POST /api/v1/plugins/{pluginId}/restore`, which reopens the id but does not bring any
-        version back.
+        - `true` (the default, and what a client that never heard of the option gets): a tombstone
+          stays in `plugin.json`. Requires `removalReason`, which is served publicly in the `410`
+          payloads; the operator identity from the auth token is recorded as `removedBy`. The id
+          stays reserved — reads and publishes to it answer `410` — until an operator lifts the
+          removal with `POST /api/v1/plugins/{pluginId}/restore`, which reopens the id but does
+          not bring any version back. Use for legal, abuse and security removals.
+        - `false`: the plugin is erased and **nothing** is kept, `plugin.json` included. The id is
+          as free as one never used: reads answer `404`, and the plugin's allow-listed repository
+          can publish to it again at once. `removalReason` is optional (it is only written to the
+          audit log). Works on a plugin that is already removed, which is how a tombstoned id is
+          cleared. Use for dev clean-up and for retiring an id after a rename.
+
+        Either way the action is written to the service's audit log line (who, what, when, why).
+        `409` only means a tombstone was requested for a plugin that already carries one.
       operationId: removePlugin
       parameters:
         - $ref: '#/components/parameters/PluginId'
@@ -251,13 +261,15 @@ paths:
       responses:
         '200':
           description: >-
-            Plugin removed. The only success this operation has: the plugin is tombstoned, its
-            artifacts are deleted, the catalogue index is regenerated and the tombstone is returned
-            as the body. There is no bodyless variant.
+            Plugin removed. Its artifacts are deleted and the catalogue index is regenerated. The
+            body says which of the two outcomes happened: the tombstone (`leaveTombstone` true or
+            absent) or the erase receipt (`leaveTombstone` false). There is no bodyless variant.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PluginTombstone'
+                oneOf:
+                  - $ref: '#/components/schemas/PluginTombstone'
+                  - $ref: '#/components/schemas/PluginErased'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1258,7 +1270,7 @@ components:
             message: >-
               Plugin plugin-auth-saml was removed from the registry on 2026-11-19T12:00:00Z by
               drcrazy (reason: Registry cleanup). Its id cannot be published to until an operator
-              restores it
+              restores it or erases it
             removed: '2026-11-19T12:00:00Z'
             removalReason: Registry cleanup
             removedBy: drcrazy
@@ -1685,6 +1697,28 @@ components:
           type: string
           description: Operator identity from session JWT subject or OIDC subject
 
+    PluginErased:
+      type: object
+      description: |
+        Receipt for a removal made with `leaveTombstone: false`. Nothing of the plugin is left in
+        the registry, so this body is the only record the caller is given.
+      required:
+        - id
+        - erased
+        - erasedBy
+      properties:
+        id:
+          type: string
+        erased:
+          type: string
+          format: date-time
+        erasedBy:
+          type: string
+          description: Operator identity from the session JWT subject
+        removalReason:
+          type: string
+          description: What the operator said, when they said anything
+
     PluginRemovedError:
       description: |
         `410` body of the publish routes for a removed plugin id: the standard error envelope
@@ -1854,13 +1888,19 @@ components:
 
     RemovePluginRequest:
       type: object
-      required:
-        - removalReason
       properties:
         removalReason:
           type: string
-          minLength: 1
           maxLength: 2000
+          description: |
+            Required (non-blank) unless `leaveTombstone` is `false`, because it is what the `410`
+            payloads tell the world. When erasing it is optional and only reaches the audit log.
+        leaveTombstone:
+          type: boolean
+          default: true
+          description: |
+            `true` keeps a tombstone: the id stays closed (`410`) until restored. `false` erases
+            everything, `plugin.json` included, and frees the id (`404`).
 
     SetTierRequest:
       type: object

@@ -424,6 +424,36 @@ label.inline {
 
 label.inline input { width: auto; margin: 0; accent-color: var(--mp-color-primary); }
 
+/* A radio option with a title and an explanation; the chosen one is outlined. */
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.65rem 0.8rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--mp-color-border-light);
+  border-radius: var(--mp-radius);
+  background: var(--mp-color-bg-card);
+  cursor: pointer;
+}
+
+.choice:last-child { margin-bottom: 0; }
+.choice:hover { border-color: var(--mp-color-border); }
+.choice:has(input:checked) {
+  border-color: var(--mp-color-primary);
+  box-shadow: var(--mp-focus-ring);
+}
+
+.choice input { width: auto; margin: 0.2rem 0 0; accent-color: var(--mp-color-primary); flex-shrink: 0; }
+.choice-body { display: block; }
+.choice-title { display: block; font-weight: 500; color: var(--mp-color-text); }
+.choice-hint {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.8125rem;
+  color: var(--mp-color-text-secondary);
+}
+
 .form-actions {
   display: flex;
   gap: 0.5rem;

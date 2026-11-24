@@ -58,6 +58,14 @@ func PluginPrefix(pluginID string) string {
 	return path.Join("plugins", pluginID) + "/"
 }
 
+// PrivatePluginPrefix is where a plugin's premium jars live (VersionArtifactPath). It is a
+// different top-level namespace from PluginPrefix, and in production a different bucket, so
+// listing PluginPrefix alone never sees them: anything that means "every object of this plugin"
+// has to walk both.
+func PrivatePluginPrefix(pluginID string) string {
+	return path.Join("private", "plugins", pluginID) + "/"
+}
+
 func SessionDenylistPath(jti string) string {
 	return path.Join(PathSessionDeny, jti+".json")
 }
