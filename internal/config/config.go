@@ -188,7 +188,7 @@ func validateGitLabOIDC(cfg *Config) error {
 func requireHTTPSOrigin(name, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return fmt.Errorf("%s must be an https origin (for example https://git.epam.com)", name)
+		return fmt.Errorf("%s must be an https origin (for example https://git.example.com)", name)
 	}
 	return nil
 }
