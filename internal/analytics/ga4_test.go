@@ -12,8 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // capturingTransport records the single request it receives and signals done
@@ -181,7 +180,7 @@ func TestTrackArtifactRequest_DoesNotBlockCaller(t *testing.T) {
 }
 
 // Pins that an empty clientID gets replaced with a generated UUID. Kills a
-// mutant that drops the uuid.NewString() fallback (empty client_id on wire).
+// mutant that drops the uuid.New().String() fallback (empty client_id on wire).
 func TestTrackArtifactRequest_GeneratesClientIDWhenEmpty(t *testing.T) {
 	transport := newCapturingTransport()
 	c := &GA4Client{MeasurementID: "M1", APISecret: "S1", HTTPClient: &http.Client{Transport: transport}}
@@ -197,7 +196,7 @@ func TestTrackArtifactRequest_GeneratesClientIDWhenEmpty(t *testing.T) {
 }
 
 // Pins that a caller-supplied clientID passes through unchanged. Kills a
-// mutant that always overwrites it with a fresh uuid.NewString().
+// mutant that always overwrites it with a fresh uuid.New().String().
 func TestTrackArtifactRequest_PassesThroughGivenClientID(t *testing.T) {
 	transport := newCapturingTransport()
 	c := &GA4Client{MeasurementID: "M1", APISecret: "S1", HTTPClient: &http.Client{Transport: transport}}

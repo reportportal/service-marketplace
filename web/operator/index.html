@@ -148,7 +148,7 @@
 
           <div id="block-form-wrap" class="action-panel hidden">
             <h3>Block version <span id="block-target"></span></h3>
-            <p class="panel-help">Blocked versions stay in history but cannot be newly installed.</p>
+            <p class="panel-help">Blocks this version on every ReportPortal release. To stop it from a future release upward, set a compatibility ceiling instead.</p>
             <form id="block-form">
               <label class="field">
                 <span class="field-label">Reason</span>
@@ -157,6 +157,26 @@
               <div class="form-actions">
                 <button type="submit" class="btn btn-secondary">Block version</button>
                 <button type="button" id="block-cancel" class="btn btn-ghost">Cancel</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="ceiling-form-wrap" class="action-panel hidden">
+            <h3>Compatibility ceiling <span id="ceiling-target"></span></h3>
+            <p class="panel-help">An upper bound such as <code>&lt;27.0</code>. The author's range stays as published. The jar stays downloadable; installs past the bound are refused. A bound that excludes every release is a block, not a ceiling.</p>
+            <form id="ceiling-form">
+              <label class="field">
+                <span class="field-label">ReportPortal upper bound</span>
+                <input id="ceiling-bound" type="text" required maxlength="32" placeholder="&lt;27.0" autocomplete="off">
+              </label>
+              <label class="field">
+                <span class="field-label">Reason</span>
+                <textarea id="ceiling-reason" required maxlength="2000" rows="3" placeholder="RP 27.0 removes ExtensionPoint X"></textarea>
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-secondary">Save ceiling</button>
+                <button type="button" id="ceiling-clear" class="btn btn-ghost hidden">Clear ceiling</button>
+                <button type="button" id="ceiling-cancel" class="btn btn-ghost">Cancel</button>
               </div>
             </form>
           </div>

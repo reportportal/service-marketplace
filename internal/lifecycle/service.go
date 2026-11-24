@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/reportportal/service-marketplace/internal/cdn"
 	"github.com/reportportal/service-marketplace/internal/domain"
@@ -16,10 +18,19 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrConflict  = errors.New("conflict")
-	ErrForbidden = errors.New("forbidden")
+	ErrNotFound      = errors.New("not found")
+	ErrConflict      = errors.New("conflict")
+	ErrForbidden     = errors.New("forbidden")
+	ErrCeilingNotSet = errors.New("compatibility ceiling not set")
 )
+
+// FieldViolation is a caller-correctable rejection of one request field.
+type FieldViolation struct {
+	Field   string
+	Message string
+}
+
+func (f FieldViolation) Error() string { return f.Message }
 
 type Service struct {
 	Store       storage.ObjectStore
@@ -140,6 +151,171 @@ func (s *Service) BlockVersion(ctx context.Context, pluginID, version, reason st
 		"/" + storage.PathIndex,
 	})
 	return &blocked, nil
+}
+
+const maxCeilingReasonLen = 2000
+
+// SetCompatibilityCeiling stores or replaces the upper bound on one published version.
+// The author's range is left as published. A bound whose intersection with that range
+// is empty is refused: stopping a version on every release is a block.
+func (s *Service) SetCompatibilityCeiling(ctx context.Context, pluginID, version, bound, reason, setBy string) (*domain.CompatibilityCeiling, error) {
+	reason = strings.TrimSpace(reason)
+	bound = strings.TrimSpace(bound)
+	if reason == "" {
+		return nil, FieldViolation{Field: "reason", Message: "required"}
+	}
+	if utf8.RuneCountInString(reason) > maxCeilingReasonLen {
+		return nil, FieldViolation{Field: "reason", Message: "must be at most 2000 characters"}
+	}
+	now := time.Now().UTC()
+	var stored domain.CompatibilityCeiling
+	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
+		if len(data) == 0 {
+			return nil, ErrNotFound
+		}
+		var st domain.PluginState
+		if err := json.Unmarshal(data, &st); err != nil {
+			return nil, err
+		}
+		if st.Removed != nil {
+			return nil, ErrNotFound
+		}
+		var author string
+		found := false
+		for _, v := range st.Versions {
+			if v.Version == version {
+				author = v.Compatibility
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, ErrNotFound
+		}
+		if _, err := domain.EffectiveReportPortalRange(author, bound); err != nil {
+			return nil, ceilingViolation(err, author)
+		}
+		canonical, err := domain.CanonicalCeiling(bound)
+		if err != nil {
+			return nil, ceilingViolation(err, author)
+		}
+		stored = domain.CompatibilityCeiling{
+			Version:      version,
+			ReportPortal: canonical,
+			Reason:       reason,
+			SetAt:        now,
+			SetBy:        setBy,
+		}
+		replaced := false
+		for i := range st.CompatibilityCeilings {
+			if st.CompatibilityCeilings[i].Version == version {
+				st.CompatibilityCeilings[i] = stored
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			st.CompatibilityCeilings = append(st.CompatibilityCeilings, stored)
+		}
+		return json.MarshalIndent(st, "", "  ")
+	}, 5)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if s.Publisher != nil {
+		if err := s.Publisher.RebuildIndex(ctx); err != nil {
+			return nil, err
+		}
+	}
+	s.invalidateCeiling(ctx, pluginID, version)
+	return &stored, nil
+}
+
+// ClearCompatibilityCeiling removes the ceiling on one version. The effective range
+// returns to the author's range. A version that has no ceiling is not found.
+func (s *Service) ClearCompatibilityCeiling(ctx context.Context, pluginID, version string) error {
+	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
+		if len(data) == 0 {
+			return nil, ErrNotFound
+		}
+		var st domain.PluginState
+		if err := json.Unmarshal(data, &st); err != nil {
+			return nil, err
+		}
+		if st.Removed != nil {
+			return nil, ErrNotFound
+		}
+		foundVersion := false
+		for _, v := range st.Versions {
+			if v.Version == version {
+				foundVersion = true
+				break
+			}
+		}
+		if !foundVersion {
+			return nil, ErrNotFound
+		}
+		next := make([]domain.CompatibilityCeiling, 0, len(st.CompatibilityCeilings))
+		cleared := false
+		for _, c := range st.CompatibilityCeilings {
+			if c.Version == version {
+				cleared = true
+				continue
+			}
+			next = append(next, c)
+		}
+		if !cleared {
+			return nil, ErrCeilingNotSet
+		}
+		if len(next) == 0 {
+			st.CompatibilityCeilings = nil
+		} else {
+			st.CompatibilityCeilings = next
+		}
+		return json.MarshalIndent(st, "", "  ")
+	}, 5)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if s.Publisher != nil {
+		if err := s.Publisher.RebuildIndex(ctx); err != nil {
+			return err
+		}
+	}
+	s.invalidateCeiling(ctx, pluginID, version)
+	return nil
+}
+
+func ceilingViolation(err error, author string) error {
+	switch {
+	case errors.Is(err, domain.ErrInvalidCeilingBound):
+		return FieldViolation{Field: "reportportal", Message: "must be a single upper bound, < or <= a ReportPortal CalVer such as <27.0"}
+	case errors.Is(err, domain.ErrEmptyCeilingIntersection):
+		return FieldViolation{Field: "reportportal", Message: "ceiling leaves no ReportPortal release inside the author's range; block the version instead"}
+	case errors.Is(err, domain.ErrNoAuthorRange):
+		return FieldViolation{Field: "reportportal", Message: "version has no author compatibility range to intersect"}
+	case errors.Is(err, domain.ErrUnreadableAuthorRange):
+		return FieldViolation{Field: "reportportal", Message: fmt.Sprintf("this version's own range %q can't take a ceiling; a ceiling needs a range written like \">=25.1, <27.0\" (operators >=, >, <=, <, =)", author)}
+	default:
+		return err
+	}
+}
+
+func (s *Service) invalidateCeiling(ctx context.Context, pluginID, version string) {
+	if s.Invalidator == nil {
+		return
+	}
+	_ = s.Invalidator.Invalidate(ctx, []string{
+		"/" + storage.PluginStatePath(pluginID),
+		"/" + storage.PathIndex,
+		"/" + storage.VersionPrefix(pluginID, version) + "*",
+	})
 }
 
 func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy string) (*domain.PluginTombstone, error) {

@@ -15,20 +15,20 @@ import (
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
 
-// recordingInvalidator remembers every path it was asked to purge.
-type recordingInvalidator struct {
+// pathRecorder remembers every path it was asked to purge.
+type pathRecorder struct {
 	mu    sync.Mutex
 	paths []string
 }
 
-func (r *recordingInvalidator) Invalidate(_ context.Context, paths []string) error {
+func (r *pathRecorder) Invalidate(_ context.Context, paths []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.paths = append(r.paths, paths...)
 	return nil
 }
 
-func (r *recordingInvalidator) seen() []string {
+func (r *pathRecorder) seen() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.paths...)
@@ -37,7 +37,7 @@ func (r *recordingInvalidator) seen() []string {
 type fixture struct {
 	svc   *Service
 	store *storage.LocalStore
-	inv   *recordingInvalidator
+	inv   *pathRecorder
 	log   *bytes.Buffer
 }
 
@@ -47,7 +47,7 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatalf("NewLocalStore: %v", err)
 	}
-	inv := &recordingInvalidator{}
+	inv := &pathRecorder{}
 	buf := &bytes.Buffer{}
 	return &fixture{
 		store: store,

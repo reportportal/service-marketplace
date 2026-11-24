@@ -108,18 +108,17 @@ func writeError(w http.ResponseWriter, err error) {
 func clientIP(r *http.Request, trustedProxyHops int) string {
 	// Only honor X-Forwarded-For when explicitly behind a trusted proxy.
 	if trustedProxyHops > 0 {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// every header line: a proxy may add its own line instead of
+		// appending to the client's
+		if xff := strings.Join(r.Header.Values("X-Forwarded-For"), ","); xff != "" {
 			parts := strings.Split(xff, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			// Take the client IP as seen by the last trusted hop.
-			idx := len(parts) - trustedProxyHops
-			if idx < 0 {
-				idx = 0
-			}
-			if parts[idx] != "" {
-				return parts[idx]
+			// Take the client IP as seen by the last trusted hop. Fewer
+			// entries than hops means the request did not pass through all
+			// the trusted proxies, so none of them is trusted.
+			if idx := len(parts) - trustedProxyHops; idx >= 0 {
+				if ip := strings.TrimSpace(parts[idx]); net.ParseIP(ip) != nil {
+					return ip
+				}
 			}
 		}
 	}

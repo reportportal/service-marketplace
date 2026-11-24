@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -39,6 +40,9 @@ type Deps struct {
 type Server struct {
 	deps   Deps
 	router chi.Router
+	// proxyHopsWarning logs once that a login arrived through a proxy while
+	// TRUSTED_PROXY_HOPS is 0.
+	proxyHopsWarning sync.Once
 }
 
 func NewServer(deps Deps) *Server {
@@ -54,7 +58,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// No middleware.RealIP: it copies True-Client-IP, X-Real-IP or
+	// X-Forwarded-For into RemoteAddr with no proxy check, so a client could
+	// pick its own login rate-limit key. clientIP honours X-Forwarded-For
+	// only when TRUSTED_PROXY_HOPS says a proxy is in front.
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(120 * time.Second))
 	r.Use(s.ensureXSRF)
@@ -100,6 +107,8 @@ func (s *Server) routes() chi.Router {
 		api.With(s.requireSessionRejectOIDC).Get("/removed-plugins", s.handleListRemovedPlugins)
 		api.With(s.requireSessionOrPublishOIDC).Post("/plugins/{pluginId}/versions", s.handlePublishVersion)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/block", s.handleBlockVersion)
+		api.With(s.requireSessionRejectOIDC).Put("/plugins/{pluginId}/versions/{version}/compatibility-ceiling", s.handleSetCompatibilityCeiling)
+		api.With(s.requireSessionRejectOIDC).Delete("/plugins/{pluginId}/versions/{version}/compatibility-ceiling", s.handleClearCompatibilityCeiling)
 		api.With(s.requireSessionRejectOIDC).Post("/plugins/{pluginId}/versions/{version}/advisory", s.handleAttachAdvisory)
 		api.With(s.requireSessionRejectOIDC).Post("/index/rebuild", s.handleRebuildIndex)
 

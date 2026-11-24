@@ -114,13 +114,19 @@ type PluginDetailResponse struct {
 // Both are omitted when absent, and absent means unknown rather than fine: an entry published
 // before the range was recorded has no range, and a consumer must refuse rather than guess.
 type PluginVersionSummary struct {
-	Version       string                   `json:"version"`
-	PublishedAt   *time.Time               `json:"publishedAt,omitempty"`
-	Blocked       bool                     `json:"blocked"`
-	BlockedAt     *time.Time               `json:"blockedAt,omitempty"`
-	BlockReason   string                   `json:"blockReason,omitempty"`
-	Compatibility *domain.Compatibility    `json:"compatibility,omitempty"`
-	Advisory      *domain.SecurityAdvisory `json:"advisory,omitempty"`
+	Version       string                `json:"version"`
+	PublishedAt   *time.Time            `json:"publishedAt,omitempty"`
+	Blocked       bool                  `json:"blocked"`
+	BlockedAt     *time.Time            `json:"blockedAt,omitempty"`
+	BlockReason   string                `json:"blockReason,omitempty"`
+	Compatibility *domain.Compatibility `json:"compatibility,omitempty"`
+	// EffectiveCompatibility is the author range intersected with any operator ceiling.
+	// With no ceiling it is a copy of Compatibility. Consumers evaluate this range and
+	// do not recompute the intersection.
+	EffectiveCompatibility     *domain.Compatibility    `json:"effectiveCompatibility,omitempty"`
+	CompatibilityCeiling       string                   `json:"compatibilityCeiling,omitempty"`
+	CompatibilityCeilingReason string                   `json:"compatibilityCeilingReason,omitempty"`
+	Advisory                   *domain.SecurityAdvisory `json:"advisory,omitempty"`
 }
 
 // PluginVersionListResponse — GET /api/v1/plugins/{pluginId}/versions
@@ -130,8 +136,9 @@ type PluginVersionListResponse struct {
 }
 
 // PluginVersionDetailResponse — GET /api/v1/plugins/{pluginId}/versions/{version}.
-// allOf(PluginManifestFields, {tier, blocked, blockedAt, blockReason, advisory, sha256,
-// changelogUrl, screenshotUrls}). Unlike PluginDetail this schema has no latestVersion.
+// allOf(PluginManifestFields, {tier, blocked, blockedAt, blockReason, effectiveCompatibility,
+// compatibilityCeiling, compatibilityCeilingReason, advisory, sha256, changelogUrl,
+// screenshotUrls}). Unlike PluginDetail this schema has no latestVersion.
 type PluginVersionDetailResponse struct {
 	ID            string               `json:"id"`
 	Name          string               `json:"name"`
@@ -145,14 +152,17 @@ type PluginVersionDetailResponse struct {
 	Access        domain.AccessTier    `json:"access,omitempty"`
 	ContactURL    string               `json:"contactUrl,omitempty"`
 
-	Tier           domain.TrustTier         `json:"tier"`
-	Blocked        bool                     `json:"blocked"`
-	BlockedAt      *time.Time               `json:"blockedAt,omitempty"`
-	BlockReason    string                   `json:"blockReason,omitempty"`
-	Advisory       *domain.SecurityAdvisory `json:"advisory,omitempty"`
-	SHA256         string                   `json:"sha256"`
-	ChangelogURL   *string                  `json:"changelogUrl,omitempty"`
-	ScreenshotURLs []string                 `json:"screenshotUrls"`
+	Tier                       domain.TrustTier         `json:"tier"`
+	Blocked                    bool                     `json:"blocked"`
+	BlockedAt                  *time.Time               `json:"blockedAt,omitempty"`
+	BlockReason                string                   `json:"blockReason,omitempty"`
+	EffectiveCompatibility     *domain.Compatibility    `json:"effectiveCompatibility,omitempty"`
+	CompatibilityCeiling       string                   `json:"compatibilityCeiling,omitempty"`
+	CompatibilityCeilingReason string                   `json:"compatibilityCeilingReason,omitempty"`
+	Advisory                   *domain.SecurityAdvisory `json:"advisory,omitempty"`
+	SHA256                     string                   `json:"sha256"`
+	ChangelogURL               *string                  `json:"changelogUrl,omitempty"`
+	ScreenshotURLs             []string                 `json:"screenshotUrls"`
 }
 
 // PremiumArtifactResponse — GET .../artifact for a premium plugin.

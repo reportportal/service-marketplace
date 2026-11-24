@@ -6,7 +6,7 @@ HTTP registry for ReportPortal plugin catalogue, publish, lifecycle, licensing, 
 
 ## Quick start (local)
 
-Requires [Go 1.25+](https://go.dev/dl/) on your `PATH`.
+Requires [Go 1.27.4+](https://go.dev/dl/) on your `PATH`.
 
 Production requires strong `JWT_SECRET` and `STORAGE_SIGNING_SECRET` (≥32 chars). Set `TRUSTED_PROXY_HOPS` only when behind a trusted reverse proxy.
 
@@ -83,7 +83,7 @@ curl.exe -s http://localhost:8080/api/v1/auth/config
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_TTL_SECONDS` | Operator session JWT (≥32 chars; required unless `ALLOW_INSECURE_DEFAULTS`) |
 | `STORAGE_SIGNING_SECRET` | HMAC for signed CDN URLs (≥32 chars; required unless insecure defaults) |
 | `ALLOW_INSECURE_DEFAULTS` | `true` only for local/dev — enables weak default secrets |
-| `TRUSTED_PROXY_HOPS` | Honor `X-Forwarded-For` only when >0 (login rate-limit keying) |
+| `TRUSTED_PROXY_HOPS` | Number of `X-Forwarded-For` entries the trusted proxies in front of the registry append; 0 (default) ignores the header. Keys the admin login rate limit and decides whether `X-Forwarded-Proto` marks cookies `Secure`. Behind a proxy, 0 makes all clients share the proxy address, so 5 wrong passwords from anyone lock the admin out for 15 minutes; a value above the real count lets clients pick their own key. Check a captured header: some load balancers append two entries |
 | `GITHUB_OAUTH_*` | GitHub OAuth for operator login |
 | `PUBLISH_OIDC_AUDIENCE` | Required when the OIDC allow-list is non-empty, and when GitLab OIDC is enabled |
 | `PUBLISH_OIDC_ALLOWED_SOURCES` | JSON map `source→pluginId`. GitHub uses `owner/repo`; GitLab uses `project_path` (for example `EPM-RPP/plugin-billing-epam` → `billing`) |

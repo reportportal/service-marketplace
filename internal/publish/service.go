@@ -398,9 +398,10 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 			Tier:          st.Tier,
 			ContactURL:    m.ContactURL,
 			Author:        m.Author,
-			// m is already the manifest of st.LatestVersion, so the range is the one that
-			// version declares and the copy costs no extra read
-			Compatibility: m.Compatibility.ReportPortal,
+			// m is already the manifest of st.LatestVersion. A ceiling on that version
+			// narrows the range the catalogue row offers; with no ceiling the row keeps
+			// the declared range.
+			Compatibility: effectiveListingRange(m.Compatibility.ReportPortal, st),
 		})
 	}
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].Name < plugins[j].Name })
@@ -412,6 +413,18 @@ func (s *Service) rebuildIndex(ctx context.Context) error {
 	return storage.WriteWithRetry(ctx, s.Store, storage.PathIndex, func(existing []byte, gen int64) ([]byte, error) {
 		return data, nil
 	}, 5)
+}
+
+func effectiveListingRange(author string, st domain.PluginState) string {
+	ceiling, ok := domain.FindCeiling(st.CompatibilityCeilings, st.LatestVersion)
+	if !ok {
+		return author
+	}
+	effective, err := domain.EffectiveReportPortalRange(author, ceiling.ReportPortal)
+	if err != nil {
+		return author
+	}
+	return effective
 }
 
 func BuildTestJAR(m *domain.Manifest) ([]byte, error) {

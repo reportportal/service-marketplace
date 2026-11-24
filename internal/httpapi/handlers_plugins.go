@@ -133,6 +133,7 @@ func (s *Server) handleListVersions(w http.ResponseWriter, r *http.Request) {
 		if v.Compatibility != "" {
 			item.Compatibility = &domain.Compatibility{ReportPortal: v.Compatibility}
 		}
+		item.EffectiveCompatibility, item.CompatibilityCeiling, item.CompatibilityCeilingReason = effectiveFields(v.Compatibility, st, v.Version)
 		if vs, ok := st.VersionStates[v.Version]; ok && vs.Advisory != nil {
 			advisory := *vs.Advisory
 			item.Advisory = &advisory
@@ -179,6 +180,7 @@ func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
 		ScreenshotURLs: screenshotURLs,
 		Advisory:       detail.Advisory,
 	}
+	out.EffectiveCompatibility, out.CompatibilityCeiling, out.CompatibilityCeilingReason = effectiveFields(m.Compatibility.ReportPortal, st, version)
 	if detail.BlockedAt != nil {
 		blockedAt := *detail.BlockedAt
 		out.BlockedAt = &blockedAt
@@ -545,6 +547,85 @@ func (s *Server) handleRebuildIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilt"})
+}
+
+// effectiveFields is what a consumer evaluates. The author range stays on compatibility;
+// this is that range narrowed by a ceiling, plus the operator bound and reason when one is set.
+func effectiveFields(author string, st *domain.PluginState, version string) (effective *domain.Compatibility, ceiling, reason string) {
+	if st != nil {
+		if c, ok := domain.FindCeiling(st.CompatibilityCeilings, version); ok {
+			ceiling = c.ReportPortal
+			reason = c.Reason
+		}
+	}
+	if author == "" {
+		return nil, ceiling, reason
+	}
+	reportportal := author
+	if ceiling != "" {
+		if got, err := domain.EffectiveReportPortalRange(author, ceiling); err == nil {
+			reportportal = got
+		}
+	}
+	return &domain.Compatibility{ReportPortal: reportportal}, ceiling, reason
+}
+
+func (s *Server) handleSetCompatibilityCeiling(w http.ResponseWriter, r *http.Request) {
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		ReportPortal string `json:"reportportal"`
+		Reason       string `json:"reason"`
+	}
+	if err := jsonDecode(r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	ceiling, err := s.deps.Lifecycle.SetCompatibilityCeiling(
+		r.Context(), pluginID, version, req.ReportPortal, req.Reason, operatorIdentity(r.Context()),
+	)
+	if err != nil {
+		writeCeilingErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, ceiling)
+}
+
+func (s *Server) handleClearCompatibilityCeiling(w http.ResponseWriter, r *http.Request) {
+	pluginID, version, ok := requirePluginVersion(w, r)
+	if !ok {
+		return
+	}
+	err := s.deps.Lifecycle.ClearCompatibilityCeiling(r.Context(), pluginID, version)
+	if err != nil {
+		writeCeilingErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeCeilingErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, lifecycle.ErrNotFound) {
+		writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin or version not found"})
+		return
+	}
+	if errors.Is(err, lifecycle.ErrCeilingNotSet) {
+		writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Compatibility ceiling is not set"})
+		return
+	}
+	var fv lifecycle.FieldViolation
+	if errors.As(err, &fv) {
+		writeError(w, &APIError{
+			Status:  http.StatusUnprocessableEntity,
+			Code:    CodeValidation,
+			Message: "Validation failed",
+			Errors:  []FieldError{{Field: fv.Field, Message: fv.Message}},
+		})
+		return
+	}
+	writeError(w, mapStorageErr(err))
 }
 
 func (s *Server) handleBlockVersion(w http.ResponseWriter, r *http.Request) {

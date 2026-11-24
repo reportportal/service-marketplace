@@ -215,11 +215,16 @@ function buildPublishFormData() {
 function hideActionForms() {
   document.getElementById('block-form-wrap').classList.add('hidden');
   document.getElementById('advisory-form-wrap').classList.add('hidden');
+  document.getElementById('ceiling-form-wrap').classList.add('hidden');
   actionVersion = null;
 }
 
 function showDetailResult(label, data) {
   setAlert('detail-success', label, true);
+  if (data == null) {
+    hideBox('detail-result-box');
+    return;
+  }
   const el = document.getElementById('detail-result');
   el.textContent = JSON.stringify(data, null, 2);
   showBox('detail-result-box', false);
@@ -283,11 +288,26 @@ async function loadVersions() {
       if (v.blocked) {
         badges += badgeHtml('blocked', 'warn');
       }
+      if (v.compatibilityCeiling) {
+        badges += badgeHtml('ceiling', 'warn');
+      }
       const published = v.publishedAt ? `<br><small>${escapeHtml(v.publishedAt)}</small>` : '';
+      const declared = v.compatibility && v.compatibility.reportportal;
+      const effective = v.effectiveCompatibility && v.effectiveCompatibility.reportportal;
+      let range = '';
+      if (declared) {
+        range = `<br><small>${escapeHtml(declared)}</small>`;
+        if (effective && effective !== declared) {
+          range += `<br><small>effective ${escapeHtml(effective)}</small>`;
+        }
+      }
       const reason = v.blocked && v.blockReason
         ? `<br><small class="warn-text">${escapeHtml(v.blockReason)}</small>`
         : '';
-      meta.innerHTML = `<strong>v${escapeHtml(v.version)}</strong>${badges}${published}${reason}`;
+      const ceiling = v.compatibilityCeilingReason
+        ? `<br><small class="warn-text">ceiling: ${escapeHtml(v.compatibilityCeilingReason)}</small>`
+        : '';
+      meta.innerHTML = `<strong>v${escapeHtml(v.version)}</strong>${badges}${published}${range}${reason}${ceiling}`;
 
       const actions = document.createElement('div');
       actions.className = 'row-actions';
@@ -307,6 +327,17 @@ async function loadVersions() {
       advBtn.textContent = 'Advisory';
       advBtn.addEventListener('click', () => openAdvisoryForm(v.version));
       actions.appendChild(advBtn);
+
+      const ceilingBtn = document.createElement('button');
+      ceilingBtn.type = 'button';
+      ceilingBtn.className = 'btn btn-ghost';
+      ceilingBtn.textContent = 'Ceiling';
+      ceilingBtn.addEventListener('click', () => openCeilingForm(
+        v.version,
+        v.compatibilityCeiling || '',
+        v.compatibilityCeilingReason || '',
+      ));
+      actions.appendChild(ceilingBtn);
 
       li.appendChild(meta);
       li.appendChild(actions);
@@ -342,15 +373,29 @@ async function loadVersionAdvisoryHint(version, metaEl) {
 function openBlockForm(version) {
   actionVersion = version;
   document.getElementById('advisory-form-wrap').classList.add('hidden');
+  document.getElementById('ceiling-form-wrap').classList.add('hidden');
   document.getElementById('block-target').textContent = `v${version}`;
   document.getElementById('block-reason').value = '';
   document.getElementById('block-form-wrap').classList.remove('hidden');
   document.getElementById('block-form-wrap').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+function openCeilingForm(version, bound, reason) {
+  actionVersion = version;
+  document.getElementById('block-form-wrap').classList.add('hidden');
+  document.getElementById('advisory-form-wrap').classList.add('hidden');
+  document.getElementById('ceiling-target').textContent = `v${version}`;
+  document.getElementById('ceiling-bound').value = bound;
+  document.getElementById('ceiling-reason').value = reason;
+  document.getElementById('ceiling-clear').classList.toggle('hidden', !bound);
+  document.getElementById('ceiling-form-wrap').classList.remove('hidden');
+  document.getElementById('ceiling-form-wrap').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function openAdvisoryForm(version) {
   actionVersion = version;
   document.getElementById('block-form-wrap').classList.add('hidden');
+  document.getElementById('ceiling-form-wrap').classList.add('hidden');
   document.getElementById('advisory-target').textContent = `v${version}`;
   document.getElementById('advisory-text').value = '';
   document.getElementById('advisory-severity').value = 'medium';
@@ -539,6 +584,7 @@ async function init() {
 
   document.getElementById('block-cancel').addEventListener('click', hideActionForms);
   document.getElementById('advisory-cancel').addEventListener('click', hideActionForms);
+  document.getElementById('ceiling-cancel').addEventListener('click', hideActionForms);
 
   document.getElementById('block-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -559,6 +605,55 @@ async function init() {
       errEl.textContent = formatApiError(err);
     } finally {
       setBusy(submitBtn, false, 'Blocking…', 'Block version');
+    }
+  });
+
+  document.getElementById('ceiling-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errEl = document.getElementById('detail-error');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    errEl.textContent = '';
+    if (!selectedPlugin || !actionVersion) return;
+    setBusy(submitBtn, true, 'Saving…', 'Save ceiling');
+    try {
+      const res = await api(
+        `/plugins/${encodeURIComponent(selectedPlugin.id)}/versions/${encodeURIComponent(actionVersion)}/compatibility-ceiling`,
+        {
+          method: 'PUT',
+          body: {
+            reportportal: document.getElementById('ceiling-bound').value.trim(),
+            reason: document.getElementById('ceiling-reason').value.trim(),
+          },
+        },
+      );
+      showDetailResult('Compatibility ceiling saved', res);
+      hideActionForms();
+      await loadVersions();
+    } catch (err) {
+      errEl.textContent = formatApiError(err);
+    } finally {
+      setBusy(submitBtn, false, 'Saving…', 'Save ceiling');
+    }
+  });
+
+  document.getElementById('ceiling-clear').addEventListener('click', async () => {
+    const errEl = document.getElementById('detail-error');
+    const btn = document.getElementById('ceiling-clear');
+    errEl.textContent = '';
+    if (!selectedPlugin || !actionVersion) return;
+    setBusy(btn, true, 'Clearing…', 'Clear ceiling');
+    try {
+      await api(
+        `/plugins/${encodeURIComponent(selectedPlugin.id)}/versions/${encodeURIComponent(actionVersion)}/compatibility-ceiling`,
+        { method: 'DELETE' },
+      );
+      showDetailResult('Compatibility ceiling cleared', null);
+      hideActionForms();
+      await loadVersions();
+    } catch (err) {
+      errEl.textContent = formatApiError(err);
+    } finally {
+      setBusy(btn, false, 'Clearing…', 'Clear ceiling');
     }
   });
 

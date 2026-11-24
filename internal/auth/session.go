@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/reportportal/service-marketplace/internal/storage"
 )
 
@@ -130,7 +130,7 @@ func (m *SessionManager) Issue(ctx context.Context, subject string) (string, tim
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.HS256, m.secret))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.HS256(), m.secret))
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -138,20 +138,20 @@ func (m *SessionManager) Issue(ctx context.Context, subject string) (string, tim
 }
 
 func (m *SessionManager) Verify(ctx context.Context, token string) (*SessionClaims, error) {
-	parsed, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.HS256, m.secret), jwt.WithIssuer(m.issuer))
+	parsed, err := jwt.Parse([]byte(token), jwt.WithKey(jwa.HS256(), m.secret), jwt.WithIssuer(m.issuer))
 	if err != nil {
 		return nil, ErrUnauthorized
 	}
-	typ, _ := parsed.Get(sessionTypClaim)
+	typ, _ := parsed.Field(sessionTypClaim)
 	if typ != sessionTypValue {
 		return nil, ErrUnauthorized
 	}
-	jti := parsed.JwtID()
+	jti, _ := parsed.JwtID()
 	if m.denylist != nil && m.denylist.IsRevoked(ctx, jti) {
 		return nil, ErrUnauthorized
 	}
-	sub := parsed.Subject()
-	exp := parsed.Expiration()
+	sub, _ := parsed.Subject()
+	exp, _ := parsed.Expiration()
 	return &SessionClaims{Subject: sub, JTI: jti, Exp: exp}, nil
 }
 
