@@ -64,7 +64,8 @@ paths:
       summary: List plugins
       description: |
         Returns all plugins from the precomputed registry index. Supports filtering by
-        category and free-text search (FR-U-01). Removed plugins are excluded from the listing.
+        category and free-text search (FR-U-01). Removed plugins are excluded from the listing;
+        operators find them at `GET /api/v1/removed-plugins`.
 
         Pagination is not supported in v1; the full catalogue is returned. Future additive
         pagination will not require a new API version (ADR-006).
@@ -96,6 +97,10 @@ paths:
         `id` must match the intended plugin entry. Initial trust tier is set to `official`
         in Phase 1/2 (ADR-003).
 
+        If the id belongs to a plugin that was removed (FR-OP-04) the call is refused with
+        `410 GONE`, not `409`: the id is withdrawn, not merely taken. An operator can reopen it
+        with `POST /api/v1/plugins/{pluginId}/restore`.
+
         Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
         screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
 
@@ -125,6 +130,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/PluginRemoved'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
@@ -227,6 +234,11 @@ paths:
         Irreversible removal (FR-OP-04). Requires `removalReason` in the request body.
         Operator identity from the auth token is recorded as `removedBy`. Hard-deletes all
         version artifacts from storage and writes a tombstone for subsequent `410` responses.
+
+        The artifacts are gone for good. The id stays reserved by the tombstone — reads and
+        publishes to it answer `410` — until an operator lifts the removal with
+        `POST /api/v1/plugins/{pluginId}/restore`, which reopens the id but does not bring any
+        version back.
       operationId: removePlugin
       parameters:
         - $ref: '#/components/parameters/PluginId'
@@ -260,6 +272,92 @@ paths:
           $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/plugins/{pluginId}/restore:
+    post:
+      tags:
+        - Operator — Plugins
+      summary: Restore a removed plugin id
+      description: |
+        Lifts a removal (FR-OP-04a) so the id can be published to again. Operator session only:
+        an OIDC publish token is refused with `403 TOKEN_TYPE_NOT_PERMITTED`, since removal exists
+        to stop that pipeline and the pipeline must not be able to undo it.
+
+        This reopens the id; it does not bring the plugin back. Removal hard-deleted every
+        version's artifacts, so a restored plugin has no versions and answers `404` on reads until
+        something is published to it. The tombstone fields are cleared, and `restored` /
+        `restoredBy` are kept in the plugin's state as an audit trace. Versions blocked before
+        the removal stay blocked.
+
+        Not idempotent: restoring a plugin that is not removed is `409`.
+      operationId: restorePlugin
+      parameters:
+        - $ref: '#/components/parameters/PluginId'
+      responses:
+        '200':
+          description: Removal lifted; the id accepts publishes again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PluginRestoredResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            The plugin is not removed, so there is nothing to restore (`CONFLICT`); or the stored
+            document changed while this request was applied and the retry budget was exhausted
+            (`STORAGE_CONFLICT`, transient — retry after `Retry-After`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: CONFLICT
+                message: Plugin is not removed
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/StorageUnavailable'
+      security:
+        - operatorSessionJwt: []
+        - operatorSessionCookie: []
+
+  /api/v1/removed-plugins:
+    get:
+      tags:
+        - Operator — Plugins
+      summary: List removed plugins
+      description: |
+        Every plugin currently carrying a removal tombstone, newest removal first, with when it
+        was removed, by whom and why (FR-OP-04). This is how the Operator UI's "Removed" tab is
+        filled: the public listing leaves removed plugins out by design, so a removed id can
+        otherwise only be seen by already knowing it.
+
+        Operator session only. A public list would announce the id of every plugin withdrawn
+        for a legal or abuse reason.
+      operationId: listRemovedPlugins
+      responses:
+        '200':
+          description: Removed plugins; an empty array when none are removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RemovedPluginListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
@@ -316,6 +414,12 @@ paths:
         session on a not-yet-existing pluginId still gets `404` — first publish via the Operator
         UI goes through `POST /api/v1/plugins`.
 
+        A pluginId that was removed (FR-OP-04) is refused with `410 GONE` for every caller, an
+        allow-listed OIDC token included: the registry answers with the tombstone fields
+        (`removed`, `removalReason`, `removedBy`) and a message saying the id stays closed until
+        an operator restores it (`POST /api/v1/plugins/{pluginId}/restore`). It is not `404`, so
+        a pipeline log does not read as "the plugin was never created".
+
         Publish bundle rules: required `.jar`; optional `CHANGELOG.md`; optional 0–5
         screenshot images (PNG/JPEG, max 2 MB each, NFR-08). See §6.3 in the marketplace plan.
 
@@ -346,6 +450,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/PluginRemoved'
         '413':
           $ref: '#/components/responses/PayloadTooLarge'
         '422':
@@ -1138,6 +1244,25 @@ components:
             code: NOT_FOUND
             message: Plugin not found
 
+    PluginRemoved:
+      description: |
+        The plugin id was removed (FR-OP-04) and is closed to publishing until an operator
+        restores it. Carries the same tombstone fields the read routes serve with their `410`,
+        plus the standard `code` / `message` so a CI log says what happened.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PluginRemovedError'
+          example:
+            code: GONE
+            message: >-
+              Plugin plugin-auth-saml was removed from the registry on 2026-11-19T12:00:00Z by
+              drcrazy (reason: Registry cleanup). Its id cannot be published to until an operator
+              restores it
+            removed: '2026-11-19T12:00:00Z'
+            removalReason: Registry cleanup
+            removedBy: drcrazy
+
     ValidationError:
       description: Request validation failed
       content:
@@ -1559,6 +1684,59 @@ components:
         removedBy:
           type: string
           description: Operator identity from session JWT subject or OIDC subject
+
+    PluginRemovedError:
+      description: |
+        `410` body of the publish routes for a removed plugin id: the standard error envelope
+        and the tombstone, in one object.
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/PluginTombstone'
+
+    RemovedPluginListItem:
+      type: object
+      required:
+        - id
+        - removed
+        - removalReason
+        - removedBy
+      properties:
+        id:
+          type: string
+        removed:
+          type: string
+          format: date-time
+        removalReason:
+          type: string
+        removedBy:
+          type: string
+          description: Operator identity from session JWT subject or OIDC subject
+
+    RemovedPluginListResponse:
+      type: object
+      required:
+        - plugins
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemovedPluginListItem'
+
+    PluginRestoredResponse:
+      type: object
+      required:
+        - id
+        - restored
+        - restoredBy
+      properties:
+        id:
+          type: string
+        restored:
+          type: string
+          format: date-time
+        restoredBy:
+          type: string
+          description: Operator identity from the session JWT subject
 
     BlockedVersion:
       type: object

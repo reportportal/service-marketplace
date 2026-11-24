@@ -11,7 +11,11 @@ import (
 type ErrorCode string
 
 const (
-	CodeNotFound             ErrorCode = "NOT_FOUND"
+	CodeNotFound ErrorCode = "NOT_FOUND"
+	// CodeGone marks a refusal because the target was removed (FR-OP-04). The read routes answer
+	// the same condition with a bare tombstone body; the routes that take a write answer with this
+	// envelope, so a CI log shows a message rather than three unexplained fields.
+	CodeGone                 ErrorCode = "GONE"
 	CodeUnauthorized         ErrorCode = "UNAUTHORIZED"
 	CodeForbidden            ErrorCode = "FORBIDDEN"
 	CodeConflict             ErrorCode = "CONFLICT"
@@ -61,6 +65,10 @@ type APIError struct {
 	Message string
 	Errors  []FieldError
 	Headers map[string]string
+	// Body, when set, is written as the response body instead of the standard envelope. It is
+	// for the few errors whose schema extends ErrorResponse (see PluginRemovedErrorResponse);
+	// Code and Message must still describe the same error, as logs and tests read those.
+	Body any
 }
 
 func (e *APIError) Error() string {
@@ -78,6 +86,10 @@ func writeError(w http.ResponseWriter, err error) {
 	if errors.As(err, &apiErr) {
 		for k, v := range apiErr.Headers {
 			w.Header().Set(k, v)
+		}
+		if apiErr.Body != nil {
+			writeJSON(w, apiErr.Status, apiErr.Body)
+			return
 		}
 		if len(apiErr.Errors) > 0 {
 			writeJSON(w, apiErr.Status, ValidationErrorResponse{

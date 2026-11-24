@@ -376,6 +376,7 @@ function setActiveTab(tabName) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.add('hidden'));
   document.getElementById('tab-' + tabName).classList.remove('hidden');
   if (tabName === 'licenses') loadLicenses();
+  if (tabName === 'removed') loadRemoved();
 }
 
 async function init() {
@@ -595,16 +596,17 @@ async function init() {
       `Remove plugin "${selectedPlugin.id}" permanently?\n\nThis hard-deletes artifacts and cannot be undone.`,
     );
     if (!ok) return;
+    const removedId = selectedPlugin.id;
     setBusy(submitBtn, true, 'Removing…', 'Remove plugin');
     try {
-      const res = await api(`/plugins/${encodeURIComponent(selectedPlugin.id)}`, {
+      const res = await api(`/plugins/${encodeURIComponent(removedId)}`, {
         method: 'DELETE',
         body: { removalReason: reason },
       });
       document.getElementById('removal-reason').value = '';
       closePluginDetail();
       await loadPlugins();
-      setAlert('publish-success', `Plugin removed: ${res.pluginId || ''}`.trim(), true);
+      setAlert('publish-success', `Plugin removed: ${removedId}. It is listed under the Removed tab.`, true);
       document.getElementById('publish-result').textContent = JSON.stringify(res, null, 2);
       showBox('publish-result-box', false);
     } catch (err) {
@@ -686,6 +688,70 @@ async function loadPlugins() {
     li.appendChild(actions);
     list.appendChild(li);
   });
+}
+
+function formatRemovedAt(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso ?? '') : d.toISOString().replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+}
+
+async function restorePlugin(plugin) {
+  const errEl = document.getElementById('removed-error');
+  errEl.textContent = '';
+  setAlert('removed-success', '', false);
+  const ok = window.confirm(
+    `Restore plugin id "${plugin.id}"?\n\nThis reopens the id so its repository can publish again. ` +
+      'The versions deleted by the removal are not recovered.',
+  );
+  if (!ok) return;
+  try {
+    const res = await api(`/plugins/${encodeURIComponent(plugin.id)}/restore`, { method: 'POST' });
+    setAlert('removed-success', `Restored ${res.id}. It will appear in the catalogue after its next publish.`, true);
+    await loadRemoved();
+  } catch (err) {
+    errEl.textContent = formatApiError(err);
+    // a 409 means somebody already restored it: the stale row should go, not sit there failing
+    if (err?.status === 409 || err?.status === 404) await loadRemoved().catch(() => {});
+  }
+}
+
+async function loadRemoved() {
+  const errEl = document.getElementById('removed-error');
+  const list = document.getElementById('removed-list');
+  const empty = document.getElementById('removed-empty');
+  try {
+    const data = await api('/removed-plugins');
+    errEl.textContent = '';
+    const plugins = data.plugins || [];
+    list.innerHTML = '';
+    empty.classList.toggle('hidden', plugins.length > 0);
+    list.classList.toggle('hidden', plugins.length === 0);
+
+    plugins.forEach((p) => {
+      const li = document.createElement('li');
+      const meta = document.createElement('div');
+      meta.className = 'plugin-meta';
+      meta.innerHTML =
+        `<strong>${escapeHtml(p.id)}</strong>${badgeHtml('removed', 'neutral')}<br>` +
+        `<small>${escapeHtml(formatRemovedAt(p.removed))} · by ${escapeHtml(p.removedBy)}</small><br>` +
+        `<small>Reason: ${escapeHtml(p.removalReason)}</small>`;
+
+      const actions = document.createElement('div');
+      actions.className = 'row-actions';
+      const restoreBtn = document.createElement('button');
+      restoreBtn.type = 'button';
+      restoreBtn.className = 'btn btn-ghost';
+      restoreBtn.textContent = 'Restore';
+      restoreBtn.addEventListener('click', () => restorePlugin(p));
+      actions.appendChild(restoreBtn);
+
+      li.appendChild(meta);
+      li.appendChild(actions);
+      list.appendChild(li);
+    });
+  } catch (err) {
+    errEl.textContent = formatApiError(err);
+  }
 }
 
 async function loadLicenses() {

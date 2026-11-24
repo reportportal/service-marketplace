@@ -179,12 +179,33 @@ type PluginState struct {
 	RemovalReason   string                  `json:"removalReason,omitempty"`
 	RemovedBy       string                  `json:"removedBy,omitempty"`
 	VersionStates   map[string]VersionState `json:"versionStates,omitempty"`
+	// Restored and RestoredBy record the last time an operator lifted a removal. They are an audit
+	// trace only: nothing reads them to decide anything, and the removal fields above are cleared
+	// at that moment, so without these a restored plugin would carry no sign it was ever removed.
+	Restored   *time.Time `json:"restored,omitempty"`
+	RestoredBy string     `json:"restoredBy,omitempty"`
 }
 
 type PluginTombstone struct {
 	Removed       time.Time `json:"removed"`
 	RemovalReason string    `json:"removalReason"`
 	RemovedBy     string    `json:"removedBy"`
+}
+
+// RemovedPlugin is one row of the operator's list of removed plugins: the tombstone plus the id
+// it belongs to, since the tombstone alone is only ever served under its own id's URL.
+type RemovedPlugin struct {
+	ID            string    `json:"id"`
+	Removed       time.Time `json:"removed"`
+	RemovalReason string    `json:"removalReason"`
+	RemovedBy     string    `json:"removedBy"`
+}
+
+// PluginRestored is the outcome of lifting a removal.
+type PluginRestored struct {
+	ID         string    `json:"id"`
+	Restored   time.Time `json:"restored"`
+	RestoredBy string    `json:"restoredBy"`
 }
 
 // LicensePublicKey and LicenseEntitlement are dual-purpose: they are marshalled both

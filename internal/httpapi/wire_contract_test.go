@@ -50,6 +50,14 @@ func TestWireTypesMatchOpenAPISchema(t *testing.T) {
 		{"BlockedVersion", domain.BlockedVersion{Version: "1.0.0", BlockedAt: now, Reason: "reason"}},
 		{"SecurityAdvisory", domain.SecurityAdvisory{Severity: domain.SeverityHigh, Text: "text", AttachedAt: now}},
 		{"PluginTombstone", domain.PluginTombstone{Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
+		{"RemovedPluginListItem", domain.RemovedPlugin{ID: "p", Removed: now, RemovalReason: "reason", RemovedBy: "operator"}},
+		{"RemovedPluginListResponse", RemovedPluginListResponse{Plugins: []domain.RemovedPlugin{
+			{ID: "p", Removed: now, RemovalReason: "reason", RemovedBy: "operator"},
+		}}},
+		{"PluginRestoredResponse", PluginRestoredResponse{ID: "p", Restored: now, RestoredBy: "operator"}},
+		{"PluginRemovedError", PluginRemovedErrorResponse{
+			Code: CodeGone, Message: "removed", Removed: now, RemovalReason: "reason", RemovedBy: "operator",
+		}},
 		{"PluginListItem", domain.IndexPlugin{
 			ID: "plugin-jira-cloud", Name: "Jira Cloud", LatestVersion: "1.4.2", Description: "d",
 			Category: domain.CategoryBugTracking, Access: domain.AccessPublic, Tier: domain.TierOfficial,

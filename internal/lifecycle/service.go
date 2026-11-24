@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -158,6 +159,99 @@ func (s *Service) RemovePlugin(ctx context.Context, pluginID, reason, removedBy 
 	_ = s.Publisher.RebuildIndex(ctx)
 	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PathIndex, "/" + storage.PluginStatePath(pluginID)})
 	return &tomb, nil
+}
+
+// RestorePlugin lifts a removal, so the id can be published to again.
+//
+// It reopens the id, not the plugin. Removal hard-deleted every version's artifacts and kept only
+// plugin.json (RemovePlugin), so there is nothing to bring back: the state is reset to "known id,
+// no versions" and the plugin reappears in the catalogue on its next publish. Keeping the old
+// version list would have the catalogue and the version endpoints naming builds whose manifests
+// and jars no longer exist.
+//
+// What survives is the operator's own record: the tier, and the blocked versions. A version
+// number that was blocked stays blocked if it is published again — restoring an id must not be a
+// way to put a withdrawn build back on offer.
+//
+// Not idempotent: restoring a plugin that is not removed is ErrConflict rather than a quiet
+// success, so two operators acting on the same row do not both believe they did it.
+func (s *Service) RestorePlugin(ctx context.Context, pluginID, restoredBy string) (*domain.PluginRestored, error) {
+	now := time.Now().UTC()
+	err := storage.WriteWithRetry(ctx, s.Store, storage.PluginStatePath(pluginID), func(data []byte, gen int64) ([]byte, error) {
+		if len(data) == 0 {
+			return nil, ErrNotFound
+		}
+		var st domain.PluginState
+		if err := json.Unmarshal(data, &st); err != nil {
+			return nil, err
+		}
+		if st.Removed == nil {
+			return nil, ErrConflict
+		}
+		st.Removed = nil
+		st.RemovalReason = ""
+		st.RemovedBy = ""
+		st.Versions = []domain.VersionMeta{}
+		st.LatestVersion = ""
+		st.VersionStates = nil
+		st.Restored = &now
+		st.RestoredBy = restoredBy
+		return json.MarshalIndent(st, "", "  ")
+	}, 5)
+	if err != nil {
+		return nil, err
+	}
+	// The index never listed a removed plugin and a restored one has no version to list, so it is
+	// unchanged; only the state document a CDN may still be serving as a tombstone is stale.
+	_ = s.Invalidator.Invalidate(ctx, []string{"/" + storage.PluginStatePath(pluginID)})
+	return &domain.PluginRestored{ID: pluginID, Restored: now, RestoredBy: restoredBy}, nil
+}
+
+// ListRemoved returns every removed plugin, newest removal first.
+//
+// The public catalogue deliberately leaves these out (the index is rebuilt without them), so the
+// only other way to see one is to already know its id and ask for it. This reads the plugin
+// states themselves, which is also why it is an operator route: a public list would announce the
+// id of every plugin withdrawn for a legal or abuse reason.
+//
+// A state that cannot be decoded is skipped, as the index rebuild skips it; failing the whole
+// list for one damaged document would hide the rest.
+func (s *Service) ListRemoved(ctx context.Context) ([]domain.RemovedPlugin, error) {
+	files, err := s.Store.ListPrefix(ctx, "plugins/")
+	if err != nil {
+		return nil, err
+	}
+	out := []domain.RemovedPlugin{}
+	for _, f := range files {
+		parts := strings.Split(f, "/")
+		if len(parts) != 3 || parts[2] != "plugin.json" {
+			continue
+		}
+		obj, err := s.Store.Read(ctx, f)
+		if err != nil {
+			if errors.Is(err, storage.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		var st domain.PluginState
+		if err := json.Unmarshal(obj.Data, &st); err != nil || st.Removed == nil {
+			continue
+		}
+		out = append(out, domain.RemovedPlugin{
+			ID:            parts[1],
+			Removed:       *st.Removed,
+			RemovalReason: st.RemovalReason,
+			RemovedBy:     st.RemovedBy,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Removed.Equal(out[j].Removed) {
+			return out[i].Removed.After(out[j].Removed)
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 func (s *Service) AttachAdvisory(ctx context.Context, pluginID, version string, sev domain.AdvisorySeverity, text string) (*domain.SecurityAdvisory, error) {

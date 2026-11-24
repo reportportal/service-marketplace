@@ -44,6 +44,7 @@
       <nav class="console-nav" aria-label="Operator sections">
         <div class="tab-list" role="tablist">
           <button type="button" data-tab="plugins" class="tab-btn active" role="tab" aria-selected="true">Plugins</button>
+          <button type="button" data-tab="removed" class="tab-btn" role="tab" aria-selected="false">Removed</button>
           <button type="button" data-tab="licenses" class="tab-btn" role="tab" aria-selected="false">Licenses</button>
         </div>
         <div class="nav-actions">
@@ -186,7 +187,7 @@
 
           <div id="remove-form-wrap" class="action-panel danger-panel">
             <h3>Remove plugin</h3>
-            <p class="panel-help">Irreversible: tombstones the plugin, hard-deletes artifacts, and returns 410 to clients.</p>
+            <p class="panel-help">Irreversible for the artifacts: tombstones the plugin, hard-deletes every version, and returns 410 to clients. The id stays closed to publishing until it is restored from the Removed tab; restoring reopens the id but does not bring the versions back.</p>
             <form id="remove-form">
               <label class="field">
                 <span class="field-label">Removal reason</span>
@@ -197,6 +198,21 @@
               </div>
             </form>
           </div>
+        </div>
+      </div>
+
+      <div id="tab-removed" class="tab hidden">
+        <div class="panel">
+          <div class="panel-header">
+            <h2>Removed plugins</h2>
+          </div>
+          <p class="panel-help">Plugins removed from the registry. Their ids are closed: publishing to one answers 410 Gone. Restore reopens an id so its allow-listed repository can publish again; the deleted versions are not recovered.</p>
+          <p id="removed-success" class="alert alert-success hidden"></p>
+          <p id="removed-error" class="alert alert-error"></p>
+          <div id="removed-empty" class="empty-state hidden">
+            <p>No removed plugins.</p>
+          </div>
+          <ul id="removed-list" class="list"></ul>
         </div>
       </div>
 

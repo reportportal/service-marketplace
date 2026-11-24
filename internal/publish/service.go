@@ -33,6 +33,32 @@ var (
 	ErrPayloadLarge = errors.New("payload too large")
 )
 
+// RemovedError reports that the plugin id being published to was removed (FR-OP-04).
+//
+// It is not ErrNotFound on purpose. A removed id still has its plugin.json — that is what keeps
+// every read path answering `410 Gone` — so "not found" would send a CI log reader looking for a
+// plugin that was never created, when the id is in fact withdrawn and only an operator can
+// reopen it. The tombstone rides along so the caller can say who removed it, when and why.
+type RemovedError struct {
+	PluginID  string
+	Tombstone domain.PluginTombstone
+}
+
+func (e *RemovedError) Error() string {
+	return "plugin " + e.PluginID + " has been removed from the registry"
+}
+
+func removedError(pluginID string, st *domain.PluginState) *RemovedError {
+	return &RemovedError{
+		PluginID: pluginID,
+		Tombstone: domain.PluginTombstone{
+			Removed:       *st.Removed,
+			RemovalReason: st.RemovalReason,
+			RemovedBy:     st.RemovedBy,
+		},
+	}
+}
+
 type ValidationErrors struct {
 	Errors []domain.ValidationError
 }
@@ -170,9 +196,18 @@ func (s *Service) PublishFirst(ctx context.Context, bundle *Bundle, operator str
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.Store.Read(ctx, storage.PluginStatePath(m.ID)); err == nil {
+	stObj, err := s.Store.Read(ctx, storage.PluginStatePath(m.ID))
+	switch {
+	case err == nil:
+		var st domain.PluginState
+		if err := json.Unmarshal(stObj.Data, &st); err != nil {
+			return nil, err
+		}
+		if st.Removed != nil {
+			return nil, removedError(m.ID, &st)
+		}
 		return nil, ErrConflict
-	} else if !errors.Is(err, storage.ErrNotFound) {
+	case !errors.Is(err, storage.ErrNotFound):
 		return nil, err
 	}
 	return s.publish(ctx, m, bundle, operator, true)
@@ -217,7 +252,7 @@ func (s *Service) PublishVersion(ctx context.Context, pluginID string, bundle *B
 		return nil, err
 	}
 	if st.Removed != nil {
-		return nil, ErrNotFound
+		return nil, removedError(pluginID, &st)
 	}
 	for _, v := range st.Versions {
 		if v.Version == m.Version {

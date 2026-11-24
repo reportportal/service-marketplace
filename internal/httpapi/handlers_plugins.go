@@ -370,6 +370,24 @@ func (s *Server) parsePublishBundle(r *http.Request) (*publish.Bundle, error) {
 }
 
 func mapPublishErr(err error) error {
+	var removed *publish.RemovedError
+	if errors.As(err, &removed) {
+		msg := "Plugin " + removed.PluginID + " was removed from the registry on " +
+			removed.Tombstone.Removed.Format(time.RFC3339) + " by " + removed.Tombstone.RemovedBy +
+			" (reason: " + removed.Tombstone.RemovalReason + "). Its id cannot be published to until an operator restores it"
+		return &APIError{
+			Status:  http.StatusGone,
+			Code:    CodeGone,
+			Message: msg,
+			Body: PluginRemovedErrorResponse{
+				Code:          CodeGone,
+				Message:       msg,
+				Removed:       removed.Tombstone.Removed,
+				RemovalReason: removed.Tombstone.RemovalReason,
+				RemovedBy:     removed.Tombstone.RemovedBy,
+			},
+		}
+	}
 	if errors.Is(err, publish.ErrConflict) {
 		return &APIError{Status: http.StatusConflict, Code: CodeConflict, Message: "Plugin or version already exists"}
 	}
@@ -447,6 +465,42 @@ func (s *Server) handleRemovePlugin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, tomb)
+}
+
+// handleRestorePlugin lifts a removal: operator session only, never an OIDC publish token. A token
+// scoped to one plugin must not be able to reopen an id an operator withdrew, or removal would
+// protect nothing against the very pipeline it exists to stop.
+func (s *Server) handleRestorePlugin(w http.ResponseWriter, r *http.Request) {
+	pluginID, ok := requirePluginID(w, r)
+	if !ok {
+		return
+	}
+	res, err := s.deps.Lifecycle.RestorePlugin(r.Context(), pluginID, operatorIdentity(r.Context()))
+	if err != nil {
+		if errors.Is(err, lifecycle.ErrNotFound) {
+			writeError(w, &APIError{Status: http.StatusNotFound, Code: CodeNotFound, Message: "Plugin not found"})
+			return
+		}
+		if errors.Is(err, lifecycle.ErrConflict) {
+			writeError(w, &APIError{Status: http.StatusConflict, Code: CodeConflict, Message: "Plugin is not removed"})
+			return
+		}
+		writeError(w, mapStorageErr(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, PluginRestoredResponse{ID: res.ID, Restored: res.Restored, RestoredBy: res.RestoredBy})
+}
+
+// handleListRemovedPlugins lists removed plugins for the operator UI. The public listing leaves
+// them out by design, so this is the only place a removed id can be found without already
+// knowing it.
+func (s *Server) handleListRemovedPlugins(w http.ResponseWriter, r *http.Request) {
+	removed, err := s.deps.Lifecycle.ListRemoved(r.Context())
+	if err != nil {
+		writeError(w, mapStorageErr(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, RemovedPluginListResponse{Plugins: removed})
 }
 
 // handleRebuildIndex regenerates the catalogue listing from the plugin states on storage.
