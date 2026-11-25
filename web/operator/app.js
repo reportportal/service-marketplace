@@ -958,9 +958,66 @@ async function loadLicenses() {
       `<br><small>${e.publicKeys?.length || 0} keys` +
       (e.expiresAt ? ` · expires ${escapeHtml(e.expiresAt)}` : '') +
       `</small>`;
+
+    const actions = document.createElement('div');
+    actions.className = 'row-actions';
+    const rotateBtn = document.createElement('button');
+    rotateBtn.type = 'button';
+    rotateBtn.className = 'btn btn-ghost';
+    rotateBtn.textContent = 'Rotate key';
+    rotateBtn.title = 'Add a new key alongside the existing ones; the new private key is shown once';
+    rotateBtn.addEventListener('click', () => rotateLicenseKey(e));
+    const revokeBtn = document.createElement('button');
+    revokeBtn.type = 'button';
+    revokeBtn.className = 'btn btn-danger';
+    revokeBtn.textContent = 'Revoke';
+    revokeBtn.addEventListener('click', () => revokeLicense(e));
+    actions.appendChild(rotateBtn);
+    actions.appendChild(revokeBtn);
+
     li.appendChild(meta);
+    li.appendChild(actions);
     list.appendChild(li);
   });
+}
+
+function resetLicenseAlerts() {
+  document.getElementById('license-error').textContent = '';
+  setAlert('license-success', '', false);
+  hideBox('license-result-box');
+}
+
+async function revokeLicense(entitlement) {
+  resetLicenseAlerts();
+  const ok = window.confirm(
+    `Revoke the entitlement for "${entitlement.customerId}"?\n\n` +
+      'Every license key issued to this customer stops working.',
+  );
+  if (!ok) return;
+  try {
+    await api(`/licenses/${encodeURIComponent(entitlement.customerId)}`, { method: 'DELETE' });
+    setAlert('license-success', `Entitlement revoked for ${entitlement.customerId}`, true);
+  } catch (err) {
+    document.getElementById('license-error').textContent = formatApiError(err);
+  }
+  await loadLicenses().catch(() => {});
+}
+
+async function rotateLicenseKey(entitlement) {
+  resetLicenseAlerts();
+  try {
+    const res = await api(`/licenses/${encodeURIComponent(entitlement.customerId)}/keys`, { method: 'POST' });
+    setAlert(
+      'license-success',
+      `New key issued for ${res.customerId || entitlement.customerId}. Copy the private key now; it is not shown again.`,
+      true,
+    );
+    document.getElementById('license-result').textContent = JSON.stringify(res, null, 2);
+    showBox('license-result-box', true);
+  } catch (err) {
+    document.getElementById('license-error').textContent = formatApiError(err);
+  }
+  await loadLicenses().catch(() => {});
 }
 
 init();
