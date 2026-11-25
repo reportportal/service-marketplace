@@ -958,9 +958,74 @@ async function loadLicenses() {
       `<br><small>${e.publicKeys?.length || 0} keys` +
       (e.expiresAt ? ` · expires ${escapeHtml(e.expiresAt)}` : '') +
       `</small>`;
+
+    const actions = document.createElement('div');
+    actions.className = 'row-actions';
+    const rotateBtn = document.createElement('button');
+    rotateBtn.type = 'button';
+    rotateBtn.className = 'btn btn-ghost';
+    rotateBtn.textContent = 'Rotate key';
+    rotateBtn.addEventListener('click', () => rotateLicenseKey(e));
+    const revokeBtn = document.createElement('button');
+    revokeBtn.type = 'button';
+    revokeBtn.className = 'btn btn-danger';
+    revokeBtn.textContent = 'Revoke';
+    revokeBtn.addEventListener('click', () => revokeLicense(e));
+    actions.appendChild(rotateBtn);
+    actions.appendChild(revokeBtn);
+
     li.appendChild(meta);
+    li.appendChild(actions);
     list.appendChild(li);
   });
+}
+
+function resetLicenseFeedback() {
+  document.getElementById('license-error').textContent = '';
+  setAlert('license-success', '', false);
+  hideBox('license-result-box');
+}
+
+async function revokeLicense(entitlement) {
+  resetLicenseFeedback();
+  const ok = window.confirm(
+    `Revoke the entitlement for "${entitlement.customerId}"?\n\n` +
+      'The customer loses access to premium plugins. This cannot be undone.',
+  );
+  if (!ok) return;
+  try {
+    await api(`/licenses/${encodeURIComponent(entitlement.customerId)}`, { method: 'DELETE' });
+    setAlert('license-success', `Entitlement revoked for ${entitlement.customerId}`, true);
+    await loadLicenses();
+  } catch (err) {
+    document.getElementById('license-error').textContent = formatApiError(err);
+    if (err?.status === 404) {
+      document.getElementById('license-error').textContent += '\nThe list was out of date and has been refreshed.';
+      await loadLicenses().catch(() => {});
+    }
+  }
+}
+
+async function rotateLicenseKey(entitlement) {
+  resetLicenseFeedback();
+  const ok = window.confirm(
+    `Rotate the key for "${entitlement.customerId}"?\n\n` +
+      'A new key pair is issued. The private key is shown once, so copy it before leaving this page.',
+  );
+  if (!ok) return;
+  try {
+    const res = await api(`/licenses/${encodeURIComponent(entitlement.customerId)}/keys`, { method: 'POST' });
+    setAlert('license-success', `Key rotated for ${entitlement.customerId}. Copy the private key now; it is not shown again.`, true);
+    document.getElementById('license-result').textContent = JSON.stringify(res, null, 2);
+    showBox('license-result-box', true);
+    await loadLicenses();
+  } catch (err) {
+    document.getElementById('license-error').textContent = formatApiError(err);
+    if (err?.status === 404) {
+      document.getElementById('license-error').textContent += '\nThe list was out of date and has been refreshed.';
+      await loadLicenses().catch(() => {});
+    }
+  }
 }
 
 init();
